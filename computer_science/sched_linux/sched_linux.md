@@ -5,6 +5,13 @@
 * [Linux缺省调度器](#linux%E7%BC%BA%E7%9C%81%E8%B0%83%E5%BA%A6%E5%99%A8)
 * [O(1)调度](#o1%E8%B0%83%E5%BA%A6)
 * [完全公平调度（Completely Fair Scheduler）](#%E5%AE%8C%E5%85%A8%E5%85%AC%E5%B9%B3%E8%B0%83%E5%BA%A6completely-fair-scheduler)
+  * [调度的目标](#调度的目标)
+  * [算术级数几何级数与增长率](#算术级数几何级数与增长率)
+  * [基本原理](#基本原理)
+  * [原理解析](#原理解析)
+* [核心调度器](#核心调度器)
+  * [调度器类](#调度器类)
+  * [调度策略](#调度策略)
 * [参考资料](#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99)
 
 # Linux缺省调度器
@@ -91,7 +98,7 @@ _V<sub>i</sub>_：初始值
 ---|---|---|---|---|---|---
 增长率|-|100%|100%|100%|100%|100%
 
-如果采用几何级数，比如说，权值增长率约为-20%，目标延迟是20ms，
+如果采用几何级数，比如说，增长率约为-20%，目标延迟是20ms，
 * 进程A的nice值为0，进程B的nice值为5，则它们分别获得的处理器时间15ms和5ms
 * 进程A的nice值为10，进程B的nice值为15，它们分别获得的处理器时间仍然是15ms和5ms
 
@@ -119,21 +126,25 @@ _V<sub>i</sub>_：初始值
 
 ## 原理解析
 * 将进程的nice值映射到对应的权重
+  * 数组项之间的乘数因子为1.25，这样概念上可以使进程每降低一个nice值可以多获得10%的CPU时间，每升高一个nice值则放弃10%的CPU时间。
   * kernel/sched/core.c
 ```c
 const int sched_prio_to_weight[40] = {
-   /* -20 */ 88761, 71755, 56483, 46273, 36291,
-   /* -15 */ 29154, 23254, 18705, 14949, 11916,
-   /* -10 */ 9548, 7620, 6100, 4904, 3906,
-   /* -5 */ 3121, 2501, 1991, 1586, 1277,
-   /* 0 */ 1024, 820, 655, 526, 423,
-   /* 5 */ 335, 272, 215, 172, 137,
-   /* 10 */ 110, 87, 70, 56, 45,
-   /* 15 */ 36, 29, 23, 18, 15,
+ /* -20 */     88761, 71755, 56483, 46273, 36291,
+ /* -15 */     29154, 23254, 18705, 14949, 11916,
+ /* -10 */      9548,  7620,  6100,  4904,  3906,
+ /*  -5 */      3121,  2501,  1991,  1586,  1277,
+ /*   0 */      1024,   820,   655,   526,   423,
+ /*   5 */       335,   272,   215,   172,   137,
+ /*  10 */       110,    87,    70,    56,    45,
+ /*  15 */        36,    29,    23,    18,    15,
 };
 ```
 
   由此可见，**nice值越小, 进程的权重越大**。
+
+* 静态优先级与权重之间的关系，分普通和实时进程两种情况
+![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_weight_priority.png](pic/sched_weight_priority.png)
 
 * CFS调度器的调度周期由sysctl_sched_latency变量保存。
   * 该变量可以通过sysctl调整，见kernel/sysctl.c
@@ -177,7 +188,7 @@ static u64 __sched_period(unsigned long nr_running)
              (NICE_0_LOAD = 1024, 表示nice值为0的进程权重)
 ```
 
-  可以看到, 进程权重越大, 运行同样的实际时间, vruntime增长的越慢。
+  可以看到, **进程权重越大, 运行同样的实际时间, vruntime增长的越慢**。
 
 * 一个进程在一个调度周期内的虚拟运行时间大小为:
 ```js
@@ -186,13 +197,15 @@ static u64 __sched_period(unsigned long nr_running)
              = 调度周期 * NICE_0_LOAD / 所有可运行进程总权重
 ```
   可以看到，一个进程在一个调度周期内的vruntime值大小是不和该进程自己的权重相关的，所以所有进程的vruntime值大小都是一样的。
+
 * 在非常短的时间内，也许看到的vruntime值并不相等。
   * vruntime值小，说明它以前占用cpu的时间较短，受到了“不公平”对待。
-  * 但为了确保公平，我们总是选出vruntime最小的进程来运行，形成一种“追赶”的局面。
+  * 但为了确保公平，我们**总是选出vruntime最小的进程来运行**，形成一种“追赶”的局面。
   * 这样既能公平选择进程，又能保证高优先级进程获得较多的运行时间。
 
 
 * 理想情况下，由于vruntime与进程自身的权重是不相关的，所有进程的vruntime值是一样的。
+
 * 怎么解释进程间的实际执行时间与它们的权重是成比例的？
   * 假设有进程A，其虚拟运行时间为`vruntime_A`，其实际运行的时间为`delta_exec_A`，权重为`weight_A`，于是`vruntime_A = delta_exec_A * NICE_0_LOAD / weight_A`
   * 假设有进程B，其虚拟运行时间为`vruntime_B`，其实际运行的时间为`delta_exec_B`，权重为`weight_B`，于是`vruntime_B = delta_exec_B * NICE_0_LOAD / weight_B`
@@ -217,6 +230,8 @@ static u64 __sched_period(unsigned long nr_running)
 * stop-task (sched_class_highest)
 * Deadline Scheduling: Earliest Deadline First (EDF) + Constant Bandwidth Server (CBS)
 * idle-task
+
+![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_classes.gif](pic/sched_classes.gif)
 
 ### 调度器类的顺序
 * stop-task --> deadline --> real-time --> fair --> idle
@@ -273,3 +288,5 @@ struct sched_entity {
 * https://en.wikipedia.org/wiki/Brain_Fuck_Scheduler
 * https://en.wikipedia.org/wiki/Strategy_pattern
 * https://sourcemaking.com/design_patterns/strategy
+* http://www.ibm.com/developerworks/cn/linux/l-cn-scheduler/index.html
+* http://linuxperf.com/?p=42
