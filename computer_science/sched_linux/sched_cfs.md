@@ -1,5 +1,95 @@
 # 完全公平调度(Completely Fair Scheduler)
+***
 
+#### CFS调度实体 sched_entity
+* include/linux/sched.h::sched_entity
+```c
+struct sched_entity {
+    struct load_weight  load;       /* for load-balancing */
+    struct rb_node      run_node;
+    struct list_head    group_node;
+    unsigned int        on_rq;
+
+    u64         exec_start;
+    u64         sum_exec_runtime;
+    u64         vruntime;
+    u64         prev_sum_exec_runtime;
+...
+};
+```
+
+#### 创建新进程时的place_entity()
+
+* `task_fork_fair()`函数是这么调用的
+  * kernel/sched/fair.c
+```c
+static void task_fork_fair(struct task_struct *p)
+{
+...
+  cfs_rq = task_cfs_rq(current);
+  curr = cfs_rq->curr;
+...
+  if (curr)
+      se->vruntime = curr->vruntime;
+  place_entity(cfs_rq, se, 1);
+...
+}
+```
+如果当前进程所在队列不为空，将所在队列当前进程的vruntime作为新进程vruntime的基础。
+
+* `place_entity()`函数我们在此只关心`initial = 1`的部分。
+  * kernel/sched/fair.c
+```c
+static void
+place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
+{
+    u64 vruntime = cfs_rq->min_vruntime;
+
+    /*   
+     * The 'current' period is already promised to the current tasks,
+     * however the extra weight of the new task will slow them down a
+     * little, place the new task so that it fits in the slot that
+     * stays open at the end.
+     */
+    if (initial && sched_feat(START_DEBIT))
+        vruntime += sched_vslice(cfs_rq, se);
+...
+    /* ensure we never gain time by being placed backwards. */
+    se->vruntime = max_vruntime(se->vruntime, vruntime);
+}
+```
+* 新进程的初始vruntime值就以它所在运行队列的min_vruntime为基础来设置，与老进程保持在合理的差距范围内。
+
+* sched_features是控制调度器特性的开关，每个bit表示调度器的一个特性。在`kernel/sched/features.h`文件中记录了全部的特性。见《Professional Linux Kernel Architecture》
+> Note that the real kernel sources will execute portions of the code depending on outcomes of sched_feature queries. The CF
+scheduler supports some ‘‘configurable’’ features, but they can only be turned on and off in debugging mode — otherwise, the set
+of features is fixed.
+
+* `START_DEBIT`是其中之一，如果打开这个特性，表示给新进程的vruntime初始值要设置得比默认值更大一些，这样会推迟它的运行时间，以防进程通过不停的fork来获得cpu。
+
+  * kernel/sched/features.h
+```c
+/*
+ * Place new tasks ahead so that they do not starve already running
+ * tasks
+ */
+SCHED_FEAT(START_DEBIT, true)
+```
+* `sched_vslice()`用于计算将要插入的进程的虚拟时间片，仅在`place_entity()`被调用。
+  * kernel/sched/fair.c::sched_vslice()
+```c
+/*
+ * We calculate the vruntime slice of a to-be-inserted task.
+ *
+ * vs = s/w
+ */
+static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+    return calc_delta_fair(sched_slice(cfs_rq, se), se);
+}
+```
+* 如果`START_DEBIT`位被设置，则通过加上一个调度周期内的虚拟时间片将新进程推后执行。
+* 否则新进程与父进程的vruntime一致，如果`sysctl_sched_child_runs_first`参数没有设成**1**，子进程与父进程谁先被执行还不确定。
 
 ### 避而不谈的\__calc_delta()
 
@@ -201,3 +291,6 @@ typedef unsigned long long u64;
 #### 结论
 * `__calc_delta()`函数需要保证无论是32位平台还是64位平台，都能返回一个u64类型的值。且需要解决好潜在的上溢问题。
 * 在用于计算`vruntime`时可能会由于调度实体的权重比`NICE_0_LOAD`大导致它们的商为0，因为它们用的都是整数类型，故`__calc_delta()`需要解决这个问题。
+
+### 调度器的一些features
+* kernel/sched/features.h

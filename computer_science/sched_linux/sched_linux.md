@@ -12,6 +12,8 @@
 * [核心调度器](#核心调度器)
   * [调度器类](#调度器类)
   * [调度策略](#调度策略)
+  * [调度相关的数据结构](#调度相关的数据结构)
+  * [优先级](#优先级)
 * [参考资料](#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99)
 
 # Linux缺省调度器
@@ -235,6 +237,9 @@ static u64 __sched_period(unsigned long nr_running)
 
 ### 调度器类的顺序
 * stop-task --> deadline --> real-time --> fair --> idle
+* 在各调度器类定义的时候通过`next`指针定义好了下一级调度器类
+* `stop-task`是通过宏`#define sched_class_highest (&stop_sched_class)`指定的
+* 编译时期就已决定，不能动态扩展
 
 ## 调度策略
 * include/uapi/linux/sched.h
@@ -255,30 +260,255 @@ static u64 __sched_period(unsigned long nr_running)
 调度器类 | 调度策略 |
 ---|---
 fair|SCHED_NORMAL
-fair|SCHED_BATCH
-fair|SCHED_IDLE
+... |SCHED_BATCH
+... |SCHED_IDLE
 real-time|SCHED_FIFO
-real-time|SCHED_RR
+... |SCHED_RR
 deadline|SCHED_DEADLINE
 
 
-## 调度实体结构
+## 调度相关的数据结构
+
+### 进程结构 task_struct
+* include/linux/sched.h::task_struct
 ```c
-struct sched_entity {
-    struct load_weight  load;       /* for load-balancing */
-    struct rb_node      run_node;
-    struct list_head    group_node;
-    unsigned int        on_rq;
+struct task_struct {
+...
+ int prio, static_prio, normal_prio;
+ unsigned int rt_priority;
+ const struct sched_class *sched_class;
+ struct sched_entity se;
+ struct sched_rt_entity rt;
+ struct sched_dl_entity dl;
+...
+ unsigned int policy;
+ int nr_cpus_allowed;
+ cpumask_t cpus_allowed;
+...
+}
+```
+* 优先级prio, static_prio, normal_prio
+  * **静态优先级**`static_prio` 进程启动时的优先级，除非用`nice`或`sched_setscheduler`修改，否则进程运行期间一直保持恒定。
+  * **普通优先级**`normal_prio` 基于进程静态优先级和调度策略计算出的优先级。进程fork时，子进程继承的是普通优先级。
+  * **动态优先级**`prio` 暂时的，非持久的优先级，调度器考虑的是这个优先级。
+* **实时进程优先级**`rt_priority` 值越大表示优先级越高（后面会看计算的时候用的是减法）。
+* `sched_class` 指向抽象的调度器类。
+* 调度实体`se`, `rt`, `dl`
+  * 调度器调度的是*可调度实体*，而不限于进程
+  * 一组进程可以构成一个*可调度实体*，实现*组调度*
+  * 注意：这里用的都是实体而不是指针
+* `SCHED_IDLE`进程**不负责**调度空闲进程。空闲进程由内核提供单独的机制来处理。
 
-    u64         exec_start;
-    u64         sum_exec_runtime;
-    u64         vruntime;
-    u64         prev_sum_exec_runtime;
+### 调度器类 sched_class
+* kernel/sched/sched.h::sched_class
+```c
+struct sched_class {
+    const struct sched_class *next;
 
-    u64         nr_migrations;
-};
+    void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
+    void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
+    void (*yield_task) (struct rq *rq);
+    bool (*yield_to_task) (struct rq *rq, struct task_struct *p, bool preempt);
+
+    void (*check_preempt_curr) (struct rq *rq, struct task_struct *p, int flags);
+
+    /*   
+     * It is the responsibility of the pick_next_task() method that will
+     * return the next task to call put_prev_task() on the @prev task or
+     * something equivalent.
+     *
+     * May return RETRY_TASK when it finds a higher prio class has runnable
+     * tasks.
+     */
+    struct task_struct * (*pick_next_task) (struct rq *rq,
+                        struct task_struct *prev);
+    void (*put_prev_task) (struct rq *rq, struct task_struct *p);
+
+    void (*set_curr_task) (struct rq *rq);
+    void (*task_tick) (struct rq *rq, struct task_struct *p, int queued);
+    void (*task_fork) (struct task_struct *p);
+    void (*task_dead) (struct task_struct *p);
+#ifdef CONFIG_SMP
+...
+#endif
+    /*   
+     * The switched_from() call is allowed to drop rq->lock, therefore we
+     * cannot assume the switched_from/switched_to pair is serliazed by
+     * rq->lock. They are however serialized by p->pi_lock.
+     */
+    void (*switched_from) (struct rq *this_rq, struct task_struct *task);
+    void (*switched_to) (struct rq *this_rq, struct task_struct *task);
+    void (*prio_changed) (struct rq *this_rq, struct task_struct *task,
+                 int oldprio);
+
+    unsigned int (*get_rr_interval) (struct rq *rq,
+                     struct task_struct *task);
+
+    void (*update_curr) (struct rq *rq);
+#ifdef CONFIG_FAIR_GROUP_SCHED
+...
+#endif
+```
+* `next` 指向下一个调度器类。
+* `enqueue_task` 向运行队列添加新进程。
+* `dequeue_task` 从运行队列删除进程。
+* `yield_task` 进程自愿放弃对处理器的控制权，相应的系统调用为`sched_yield`。
+* `yield_to_task` 让出处理器，并期望将控制权交给指定的进程。
+* `pick_next_task` 选择下一个将要运行的进程。
+* `put_prev_task` 用另外一个进程**替换当前进程之前**调用。
+* `set_curr_task` 改变当前进程的调度策略时调用。
+* `task_tick` 每次激活周期性调度器时，由周期性调度器调用。
+* `task_fork` 用于建立`fork`系统调用和调度器之间的关联，在`sched_fork()`函数中被调用。
+* `get_rr_interval` 返回进程的缺省时间片，对于CFS返回的是该调度周期内分配的实际时间片。相关系统调用为`sched_rr_get_interval`。
+* `update_curr` 更新当前进程的运行时间统计。
+* `check_preempt_curr` 检查当前进程是否需要重新调度。
+
+#### check_preempt_curr()
+```c
+void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
+{
+    const struct sched_class *class;
+    /* 同一调度器类之间的进程是否需要被重新调度，交由该调度器类内部去决定 */
+    if (p->sched_class == rq->curr->sched_class) {
+        rq->curr->sched_class->check_preempt_curr(rq, p, flags);
+    } else {
+        /* 由高到低检查不同调度器类之间的进程是否需要重新调度 */
+        for_each_class(class) {
+            /* 低调度器类的进程无法抢占高调度器的进程，
+               例如rq->curr->sched_class是实时调度器类，而p->sched_class是CFS */
+            if (class == rq->curr->sched_class)
+                break;            /* 无法抢占，故跳出循环 */
+            /* 反之，高调度器类的进程可以抢占低调度器的进程，
+               例如p->sched_class是实时调度器类，而rq->curr->sched_class是CFS */
+            if (class == p->sched_class) {
+                resched_curr(rq); /* 设置重新调度标志位 */
+                break;
+            }
+        }
+    }
+...
+}
 ```
 
+### 运行队列 rq
+* 每个CPU有各自的运行队列
+* 各个活动进程只出现在一个运行队列中。在多个CPU上运行同一个进程是不可能的
+* 发源于同一进程的线程可以在不同CPU上执行
+* **注意**：特定于调度器类的子运行队列是实体，而不是指针
+* kernel/sched/sched.h::rq
+```c
+/*
+ * This is the main, per-CPU runqueue data structure.
+   ...
+ */
+struct rq {
+...
+    unsigned int nr_running;
+...
+    /* capture load from *all* tasks on this cpu: */
+    struct load_weight load;
+    struct cfs_rq cfs;
+    struct rt_rq rt;
+    struct dl_rq dl;
+...
+    struct task_struct *curr, *idle, *stop;
+...
+    u64 clock;
+}
+```
+* `nr_running` 队列上可运行进程的数目，**不考虑优先级或调度类**。
+* `load` 运行队列当前的累计权重。
+* `curr` 指向当前运行进程的`task_struct`实例。
+* `idle` 指向空闲进程的`task_struct`实例。该进程在没有其他可运行进程时执行。
+* `clock` 每个运行队列的时钟。每次周期性调度器被调用的时候会更新这个值。
+
+#### runqueues
+* 系统的所有运行队列都在`runqueues`数组中，该数组中的每一个元素对应于系统中的一个CPU
+* kernel/sched/core.c
+```c
+DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
+```
+在SMP开启的情况下该宏展开为：
+```c
+__percpu __attribute__((section(".data..percpu..shared_aligned"))) \
+  __typeof__(struct rq) runqueues \
+  ____cacheline_aligned_in_smp;
+```
+关于kernel的Per-CPU变量值得用一篇文章来详叙，这里不深入讲解。
+Per-CPU相关代码见：
+* include/linux/percpu-defs.h
+* include/asm-generic/percpu.h
+* include/linux/compiler-gcc.h
+* arch/x86/kernel/setup_percpu.c
+* include/asm-generic/vmlinux.lds.h
+
+### 调度实体
+不同的调度器类分别使用各自的调度实体，谈具体调度器类的时候再详细讨论。
+* sched_entity
+* sched_rt_entity
+* sched_dl_entity
+
+## 优先级
+![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/pic/sched_priorities.png](pic/sched_priorities.png)
+
+### 计算优先级
+* `static_prio` 通常是优先级计算的起点
+* `prio` 是调度器关心的优先级，通常由`effective_prio()`计算，计算时考虑当前的优先级的值
+* `prio` 有可能会因为*非实时进程*要使用实时互斥量(RT-Mutex)而临时提高优先级至实时优先级
+* `normal_prio` 通常由`normal_prio()`计算，计算时考虑调度策略的因素
+
+```c
+/*
+ * __normal_prio - return the priority that is based on the static prio
+ */
+static inline int __normal_prio(struct task_struct *p)
+{
+    return p->static_prio;
+}
+
+/*
+ * Calculate the expected normal priority: i.e. priority
+ * without taking RT-inheritance into account. Might be
+ * boosted by interactivity modifiers. Changes upon fork,
+ * setprio syscalls, and whenever the interactivity
+ * estimator recalculates.
+ */
+static inline int normal_prio(struct task_struct *p)
+{
+    int prio;
+
+    if (task_has_dl_policy(p))
+        prio = MAX_DL_PRIO-1;
+    else if (task_has_rt_policy(p))
+        prio = MAX_RT_PRIO-1 - p->rt_priority;
+    else
+        prio = __normal_prio(p);
+    return prio;
+}
+
+/*
+ * Calculate the current priority, i.e. the priority
+ * taken into account by the scheduler. This value might
+ * be boosted by RT tasks, or might be boosted by
+ * interactivity modifiers. Will be RT if the task got
+ * RT-boosted. If not then it returns p->normal_prio.
+ */
+static int effective_prio(struct task_struct *p)
+{
+    p->normal_prio = normal_prio(p);
+    /*   
+     * If we are RT tasks or we were boosted to RT priority,
+     * keep the priority unchanged. Otherwise, update priority
+     * to the normal priority:
+     */
+    if (!rt_prio(p->prio))
+        return p->normal_prio;
+    return p->prio;
+}
+```
+* `fork`子进程时，子进程的静态优先级`static_prio`继承自父进程，动态优先级`prio`设置为父进程的普通优先级`normal_prio`。这是为了确保实时互斥量引起的优先级提高**不会**传递到子进程
+
+### 计算负载权重
 
 # 参考资料
 * https://en.wikipedia.org/wiki/Scheduling_%28computing%29
