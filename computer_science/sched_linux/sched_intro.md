@@ -133,7 +133,7 @@
 ### 实时系统可调度的条件
 ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_RR_schd_fomula_1.png](pic/sched_RR_schd_fomula_1.png)
 
-有n 个周期事件，事件 *i* 以周期 P*i* 发生，并需要 C*i* 秒CPU时间处理一个事件，可处理负载的条件。
+有n 个周期事件，事件 *i* 以周期 _P<sub>i</sub>_ 发生，并需要 _C<sub>i</sub>_ 秒CPU时间处理一个事件，可处理负载的条件。
 
 ### 实时系统调度算法分类
 * 静态调度

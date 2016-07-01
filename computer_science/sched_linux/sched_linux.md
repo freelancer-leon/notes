@@ -14,6 +14,7 @@
   * [调度策略](#调度策略)
   * [调度相关的数据结构](#调度相关的数据结构)
   * [优先级](#优先级)
+  * [周期性调度](#周期性调度)
 * [参考资料](#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99)
 
 # Linux缺省调度器
@@ -68,7 +69,7 @@ struct prio_array {
 
 ## 调度的目标
 * 任何进程获得的处理器时间是由它自己和其他所有可运行进程nice值的相对差值决定的
-* 任何nice值对应的时间不再是一个绝对值，而是处理器的使用比
+* 任何nice值对应的时间不再是一个绝对值，而是**处理器的使用比**
 * nice值对时间片的作用不再是算术级增加，而是几何级增加
 * 公平调度，确保每个进程有公平的处理器使用比
 
@@ -121,7 +122,7 @@ _V<sub>i</sub>_：初始值
 > millisecond, to ensure there is a ceiling on the incurred switching costs.
 
 ## 基本原理
-* 设定一个调度周期（sched_latency_ns），目标是让每个进程在这个周期内至少有机会运行一次。换一种说法就是每个进程等待CPU的时间最长不超过这个调度周期。
+* 设定一个调度周期（`sched_latency_ns`），目标是让每个进程在这个周期内至少有机会运行一次。换一种说法就是每个进程等待CPU的时间最长不超过这个调度周期。
 * 根据进程的数量，大家平分这个调度周期内的CPU使用权，由于进程的优先级即nice值不同，分割调度周期的时候要加权。
 * 每个进程的经过加权后的累计运行时间保存在自己的vruntime字段里。
 * 哪个进程的vruntime最小就获得本轮运行的权利。
@@ -506,9 +507,47 @@ static int effective_prio(struct task_struct *p)
     return p->prio;
 }
 ```
-* `fork`子进程时，子进程的静态优先级`static_prio`继承自父进程，动态优先级`prio`设置为父进程的普通优先级`normal_prio`。这是为了确保实时互斥量引起的优先级提高**不会**传递到子进程
+* `fork`子进程时
+  * 子进程的静态优先级`static_prio`继承自父进程
+  * 动态优先级`prio`设置为父进程的普通优先级`normal_prio`。这是为了确保实时互斥量引起的优先级提高**不会**传递到子进程
 
-### 计算负载权重
+## 周期性调度
+* 每次周期性的时钟中断，时钟中断处理函数会地调用`update_process_times()`
+  * kernel/time/timer.c
+  ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/pic/sched_update_process_times.png](pic/sched_update_process_times.png)
+* `scheduler_tick()`函数为周期性调度的入口，
+  1. 管理内核中与整个系统和各个进程的调度相关的统计量
+  2. 调用当前进程所属调度器类的周期性调度方法
+  * kernel/sched/core.c
+```c
+/*
+ * This function gets called by the timer code, with HZ frequency.
+ * We call it with interrupts disabled.
+ */
+void scheduler_tick(void)
+{
+    int cpu = smp_processor_id();
+    struct rq *rq = cpu_rq(cpu);
+    struct task_struct *curr = rq->curr;
+
+    sched_clock_tick();  /* 更新sched_clock_data */
+
+    raw_spin_lock(&rq->lock);
+    update_rq_clock(rq); /* 更新rq->clock */
+    curr->sched_class->task_tick(rq, curr, 0); /* 调用调度器类的周期性调度方法 */
+...
+    raw_spin_unlock(&rq->lock);
+...
+}
+```
+* 如果需要重新调度，`curr->sched_class->task_tick()`会在`task_struct`（更准确的说是在`thread_info`）中设置`TIF_NEED_RESCHED`标志位表示请求重新调度
+* 但**并不意味着立即抢占**，仍然需要等待内核在适当的时间完成该请求（参考[这里](http://www.linuxinternals.org/blog/2016/03/20/tif-need-resched-why-is-it-needed/)）
+
+## 进程唤醒
+
+## fork子进程
+
+## 主调度函数schedule()
 
 # 参考资料
 * https://en.wikipedia.org/wiki/Scheduling_%28computing%29
@@ -520,3 +559,4 @@ static int effective_prio(struct task_struct *p)
 * https://sourcemaking.com/design_patterns/strategy
 * http://www.ibm.com/developerworks/cn/linux/l-cn-scheduler/index.html
 * http://linuxperf.com/?p=42
+* http://www.linuxinternals.org/blog/2016/03/20/tif-need-resched-why-is-it-needed/
