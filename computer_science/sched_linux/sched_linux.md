@@ -15,6 +15,9 @@
   * [调度相关的数据结构](#调度相关的数据结构)
   * [优先级](#优先级)
   * [周期性调度](#周期性调度)
+  * [创建进程](#创建进程)
+  * [进程唤醒](#进程唤醒)
+  * [主调度函数schedule()](#主调度函数schedule())
 * [参考资料](#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99)
 
 # Linux缺省调度器
@@ -364,33 +367,6 @@ struct sched_class {
 * `update_curr` 更新当前进程的运行时间统计。
 * `check_preempt_curr` 检查当前进程是否需要重新调度。
 
-#### check_preempt_curr()
-```c
-void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
-{
-    const struct sched_class *class;
-    /* 同一调度器类之间的进程是否需要被重新调度，交由该调度器类内部去决定 */
-    if (p->sched_class == rq->curr->sched_class) {
-        rq->curr->sched_class->check_preempt_curr(rq, p, flags);
-    } else {
-        /* 由高到低检查不同调度器类之间的进程是否需要重新调度 */
-        for_each_class(class) {
-            /* 低调度器类的进程无法抢占高调度器的进程，
-               例如rq->curr->sched_class是实时调度器类，而p->sched_class是CFS */
-            if (class == rq->curr->sched_class)
-                break;            /* 无法抢占，故跳出循环 */
-            /* 反之，高调度器类的进程可以抢占低调度器的进程，
-               例如p->sched_class是实时调度器类，而rq->curr->sched_class是CFS */
-            if (class == p->sched_class) {
-                resched_curr(rq); /* 设置重新调度标志位 */
-                break;
-            }
-        }
-    }
-...
-}
-```
-
 ### 运行队列 rq
 * 每个CPU有各自的运行队列
 * 各个活动进程只出现在一个运行队列中。在多个CPU上运行同一个进程是不可能的
@@ -450,7 +426,7 @@ Per-CPU相关代码见：
 * sched_dl_entity
 
 ## 优先级
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/pic/sched_priorities.png](pic/sched_priorities.png)
+![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_priorities.png](pic/sched_priorities.png)
 
 ### 计算优先级
 * `static_prio` 通常是优先级计算的起点
@@ -514,7 +490,9 @@ static int effective_prio(struct task_struct *p)
 ## 周期性调度
 * 每次周期性的时钟中断，时钟中断处理函数会地调用`update_process_times()`
   * kernel/time/timer.c
-  ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/pic/sched_update_process_times.png](pic/sched_update_process_times.png)
+
+  ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_update_process_times.png](pic/sched_update_process_times.png)
+
 * `scheduler_tick()`函数为周期性调度的入口，
   1. 管理内核中与整个系统和各个进程的调度相关的统计量
   2. 调用当前进程所属调度器类的周期性调度方法
@@ -534,7 +512,7 @@ void scheduler_tick(void)
 
     raw_spin_lock(&rq->lock);
     update_rq_clock(rq); /* 更新rq->clock */
-    curr->sched_class->task_tick(rq, curr, 0); /* 调用调度器类的周期性调度方法 */
+    curr->sched_class->task_tick(rq, curr, 0); /*调用调度器类的周期性调度方法*/
 ...
     raw_spin_unlock(&rq->lock);
 ...
@@ -543,11 +521,137 @@ void scheduler_tick(void)
 * 如果需要重新调度，`curr->sched_class->task_tick()`会在`task_struct`（更准确的说是在`thread_info`）中设置`TIF_NEED_RESCHED`标志位表示请求重新调度
 * 但**并不意味着立即抢占**，仍然需要等待内核在适当的时间完成该请求（参考[这里](http://www.linuxinternals.org/blog/2016/03/20/tif-need-resched-why-is-it-needed/)）
 
+## 创建进程
+
+![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_core_fork.png](pic/sched_core_fork.png)
+
+* 涉及到特定调度器类相关的工作需根据新进程使用的调度器类，委托给具体调度器类的方法处理。
+* 在创建进程过程中与调度器密切相关的任务
+  * 进程优先级的初始化
+  * 进程放入队列
+  * 检查进程是否需要调度
+
+
+#### sched_fork
+* kernel/sched/core.c
+```c
+/*
+ * fork()/clone()-time setup:
+ */
+int sched_fork(unsigned long clone_flags, struct task_struct *p)
+{
+    unsigned long flags;
+    int cpu = get_cpu();
+
+    __sched_fork(clone_flags, p);
+    /*   
+     * We mark the process as running here. This guarantees that
+     * nobody will actually run it, and a signal or other external
+     * event cannot wake it up and insert it on the runqueue either.
+     */
+    p->state = TASK_RUNNING;
+
+    /*   
+     * Make sure we do not leak PI boosting priority to the child.
+     */
+    /* 这里就是之前提到的，确保fork后父进程提高的优先级不会泄漏到子进程 */
+    p->prio = current->normal_prio;
+
+    /*   
+     * Revert to default priority/policy on fork if requested.
+     */
+    /* sched_reset_on_fork参数对policy和priority的影响 */
+    if (unlikely(p->sched_reset_on_fork)) {
+        if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+            p->policy = SCHED_NORMAL;
+            p->static_prio = NICE_TO_PRIO(0);
+            p->rt_priority = 0;
+        } else if (PRIO_TO_NICE(p->static_prio) < 0)
+            p->static_prio = NICE_TO_PRIO(0);
+
+        p->prio = p->normal_prio = __normal_prio(p);
+        set_load_weight(p);
+
+        /*   
+         * We don't need the reset flag anymore after the fork. It has
+         * fulfilled its duty:
+         */
+        p->sched_reset_on_fork = 0;
+    }
+    /* 根据动态优先级决定该采用哪个调度器类，这就是之前为什么说：动态优先级是调度器考虑的优先级 */
+    if (dl_prio(p->prio)) {
+        put_cpu();
+        return -EAGAIN;
+    } else if (rt_prio(p->prio)) {
+        p->sched_class = &rt_sched_class;
+    } else {
+        p->sched_class = &fair_sched_class;
+    }
+
+    if (p->sched_class->task_fork)
+        p->sched_class->task_fork(p);
+
+    /*
+     * The child is not yet in the pid-hash so no cgroup attach races,
+     * and the cgroup is pinned to this child due to cgroup_fork()
+     * is ran before sched_fork().
+     *
+     * Silence PROVE_RCU.
+     */
+    raw_spin_lock_irqsave(&p->pi_lock, flags);
+    set_task_cpu(p, cpu);
+    raw_spin_unlock_irqrestore(&p->pi_lock, flags);
+
+...
+#if defined(CONFIG_SMP)
+    p->on_cpu = 0;
+#endif
+    init_task_preempt_count(p);
+...
+    put_cpu();
+    return 0;
+}
+```
+
+#### check_preempt_curr()
+* kernel/sched/core.c
+```c
+void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
+{
+    const struct sched_class *class;
+    /* 同一调度器类之间的进程是否需要被重新调度，交由该调度器类内部去决定 */
+    if (p->sched_class == rq->curr->sched_class) {
+        rq->curr->sched_class->check_preempt_curr(rq, p, flags);
+    } else {
+        /* 由高到低检查不同调度器类之间的进程是否需要重新调度 */
+        for_each_class(class) {
+            /* 低调度器类的进程无法抢占高调度器的进程，
+               例如rq->curr->sched_class是实时调度器类，而p->sched_class是CFS */
+            if (class == rq->curr->sched_class)
+                break;            /* 无法抢占，故跳出循环 */
+            /* 反之，高调度器类的进程可以抢占低调度器的进程，
+               例如p->sched_class是实时调度器类，而rq->curr->sched_class是CFS */
+            if (class == p->sched_class) {
+                resched_curr(rq); /*设置重新调度标志位*/
+                break;
+            }
+        }
+    }
+...
+}
+```
+
 ## 进程唤醒
 
-## fork子进程
+![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_core_wakeup.png](pic/sched_core_wakeup.png)
+
+* 进程唤醒的时候，将`enqueue_task`和`check_preempt_curr`等工作委托给具体的调度器类的方法。
+* 进程唤醒过程中与调度器相关的任务
+  * 进程重新放入运行队列
+  * 进程是否需要重新调度
 
 ## 主调度函数schedule()
+
 
 # 参考资料
 * https://en.wikipedia.org/wiki/Scheduling_%28computing%29
