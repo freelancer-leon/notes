@@ -35,7 +35,7 @@ static void task_fork_fair(struct task_struct *p)
 ...
 }
 ```
-如果当前进程所在队列不为空，将所在队列当前进程的vruntime作为新进程vruntime的基础。
+如果当前进程所在队列不为空，将所在队列当前进程的`vruntime`作为新进程`vruntime`的基础。
 
 * `place_entity()`函数我们在此只关心`initial = 1`的部分。
   * kernel/sched/fair.c
@@ -65,7 +65,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 scheduler supports some ‘‘configurable’’ features, but they can only be turned on and off in debugging mode — otherwise, the set
 of features is fixed.
 
-* `START_DEBIT`是其中之一，如果打开这个特性，表示给新进程的vruntime初始值要设置得比默认值更大一些，这样会推迟它的运行时间，以防进程通过不停的fork来获得cpu。
+* `START_DEBIT`是其中之一，如果打开这个特性，表示给新进程的`vruntime`初始值要设置得比默认值更大一些，这样会推迟它的运行时间，以防进程通过不停的fork来获得cpu。
 
   * kernel/sched/features.h
 ```c
@@ -93,7 +93,7 @@ static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 ### 避而不谈的\__calc_delta()
 
-很多关于kernel的书籍和讲CFS的文章在讲到\__calc_delta()函数的时候都选择了略过，可能是由于这一部分变动的比较大，但这里有多有趣的细节值得推敲，这里根据v4.5的代码讲一下。
+很多关于kernel的书籍和讲CFS的文章在讲到`__calc_delta()`函数的时候都选择了略过，可能是由于这一部分变动的比较大，但这里有多有趣的细节值得推敲，这里根据v4.6的代码讲一下。
 
 * kernel/sched/fair.c
 ```c

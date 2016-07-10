@@ -632,7 +632,7 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
             /* 反之，高调度器类的进程可以抢占低调度器的进程，
                例如p->sched_class是实时调度器类，而rq->curr->sched_class是CFS */
             if (class == p->sched_class) {
-                resched_curr(rq); /*设置重新调度标志位*/
+                resched_curr(rq); /* 设置重新调度标志位 */
                 break;
             }
         }
@@ -645,13 +645,173 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 
 ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_core_wakeup.png](pic/sched_core_wakeup.png)
 
-* 进程唤醒的时候，将`enqueue_task`和`check_preempt_curr`等工作委托给具体的调度器类的方法。
+* 进程唤醒的时候，将`enqueue_task`和`check_preempt_curr`等工作 *委托* 给具体的调度器类。
 * 进程唤醒过程中与调度器相关的任务
   * 进程重新放入运行队列
   * 进程是否需要重新调度
 
+
 ## 主调度函数schedule()
 
+* `__schedule()`是主调度函数
+  * kernel/sched/core.c
+```c
+/*
+ * __schedule() is the main scheduler function.
+ *
+ * The main means of driving the scheduler and thus entering this function are:
+ *
+ *   1. Explicit blocking: mutex, semaphore, waitqueue, etc.
+ *
+ *   2. TIF_NEED_RESCHED flag is checked on interrupt and userspace return
+ *      paths. For example, see arch/x86/entry_64.S.
+ *
+ *      To drive preemption between tasks, the scheduler sets the flag in timer
+ *      interrupt handler scheduler_tick().
+ *
+ *   3. Wakeups don't really cause entry into schedule(). They add a
+ *      task to the run-queue and that's it.
+ *
+ *      Now, if the new task added to the run-queue preempts the current
+ *      task, then the wakeup sets TIF_NEED_RESCHED and schedule() gets
+ *      called on the nearest possible occasion:
+ *
+ *       - If the kernel is preemptible (CONFIG_PREEMPT=y):
+ *
+ *         - in syscall or exception context, at the next outmost
+ *           preempt_enable(). (this might be as soon as the wake_up()'s
+ *           spin_unlock()!)
+ *
+ *         - in IRQ context, return from interrupt-handler to
+ *           preemptible context
+ *
+ *       - If the kernel is not preemptible (CONFIG_PREEMPT is not set)
+ *         then at the next:
+ *
+ *          - cond_resched() call
+ *          - explicit schedule() call
+ *          - return from syscall or exception to user-space
+ *          - return from interrupt-handler to user-space
+ *
+ * WARNING: must be called with preemption disabled!
+ */
+ static void __sched notrace __schedule(bool preempt)
+ {
+     struct task_struct *prev, *next;
+     unsigned long *switch_count;
+     struct rq *rq;
+     int cpu;
+
+     cpu = smp_processor_id();
+     rq = cpu_rq(cpu);
+     prev = rq->curr;
+     ...
+     local_irq_disable();
+     ...
+     raw_spin_lock(&rq->lock);
+     lockdep_pin_lock(&rq->lock);
+
+     rq->clock_skip_update <<= 1; /* promote REQ to ACT */
+
+     switch_count = &prev->nivcsw;
+     if (!preempt && prev->state) {
+         /* 如果不是发生内核抢占，且进程状态不是TASK_RUNNING */
+         if (unlikely(signal_pending_state(prev->state, prev))) {
+           /* 当前进程原来处于可中断睡眠状态，现在接收到信号，则需提升为运行进程 */
+           prev->state = TASK_RUNNING;
+         } else {
+           /* 否则委托相应调度器类的方法停止进程的活动 */
+           deactivate_task(rq, prev, DEQUEUE_SLEEP);
+           prev->on_rq = 0;
+           ...
+         }
+         switch_count = &prev->nvcsw;
+     }
+     /* 反之，如果是因为发生了内核抢占而调用__schedule()，则无需停止当前进程的活动，
+      * 这样是为了确保能尽快选择下一个进程。如果此时一个高优先级进程在等待调度，则调度器类
+      * 会选择该进程，使其运行。
+      */
+
+     /* 更新就绪队列的时钟 */
+     /* 这里会根据rq->clock_skip_update决定要不要更新时钟，如果是RQCF_ACT_SKIP则不更新。
+      * 通常在yeild_task的时候会将rq->clock_skip_update置为RQCF_REQ_SKIP,
+      * 这样，在上面将rq->clock_skip_update移位的操作会使其变为RQCF_ACT_SKIP。
+      */
+     if (task_on_rq_queued(prev))
+         update_rq_clock(rq);
+     /* 调度最重要的任务 - 选出下一个要执行的进程 */
+     next = pick_next_task(rq, prev);
+     clear_tsk_need_resched(prev); /* 清除重新调度标志TIF_NEED_RESCHED */
+     clear_preempt_need_resched(); /* 抢占计数器清零 */
+     rq->clock_skip_update = 0;
+
+     if (likely(prev != next)) {
+         /* 选择了一个新的进程 */
+         rq->nr_switches++;
+         rq->curr = next;
+         ++*switch_count;
+
+         trace_sched_switch(preempt, prev, next);
+         /* 执行硬件级的进程切换 */
+         rq = context_switch(rq, prev, next); /* unlocks the rq */
+     } else {
+         /*仍然是当前进程，最常见的情况是当前队列其他进程都在睡，只有一个进程能运行*/
+         lockdep_unpin_lock(&rq->lock);
+         raw_spin_unlock_irq(&rq->lock);
+     }
+     /* 调用做负载均衡时添加到列表里的回调 */
+     balance_callback(rq);
+}
+```
+* 调完`__schedule()`后，都需要重新调用`need_resched()`检查`TIF_NEED_RESCHED`标志看是否需要重新调度。
+* `context_switch()`调用特定于体系结构的方法，由后者负责执行底层的上下文切换。
+
+### 选择下一个进程
+* `pick_next_task()`完成选择下一个进程的工作
+  * kernel/sched/core.c::pick_next_task
+```c
+/*
+ * Pick up the highest-prio task:
+ */
+static inline struct task_struct *
+pick_next_task(struct rq *rq, struct task_struct *prev)
+{
+    const struct sched_class *class = &fair_sched_class;
+    struct task_struct *p;
+
+    /*
+     * Optimization: we know that if all tasks are in
+     * the fair class we can call that function directly:
+     */
+    if (likely(prev->sched_class == class &&
+           rq->nr_running == rq->cfs.h_nr_running)) {
+        p = fair_sched_class.pick_next_task(rq, prev);
+        if (unlikely(p == RETRY_TASK))
+            goto again;
+
+        /* assumes fair_sched_class->next == idle_sched_class */
+        if (unlikely(!p))
+            p = idle_sched_class.pick_next_task(rq, prev);
+
+        return p;
+    }
+
+again:
+    for_each_class(class) {
+        p = class->pick_next_task(rq, prev);
+        if (p) {
+            if (unlikely(p == RETRY_TASK))
+                goto again;
+            return p;
+        }
+    }
+
+    BUG(); /* the idle class will always have a runnable task */
+}
+```
+
+* `pick_next_task()`对所有进程都是CFS类的情况做了些优化
+* 主要工作还是 *委托* 给各调度器类去完成
 
 # 参考资料
 * https://en.wikipedia.org/wiki/Scheduling_%28computing%29
