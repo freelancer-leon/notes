@@ -127,8 +127,8 @@ _V<sub>i</sub>_：初始值
 ## 基本原理
 * 设定一个调度周期（`sched_latency_ns`），目标是让每个进程在这个周期内至少有机会运行一次。换一种说法就是每个进程等待CPU的时间最长不超过这个调度周期。
 * 根据进程的数量，大家平分这个调度周期内的CPU使用权，由于进程的优先级即nice值不同，分割调度周期的时候要加权。
-* 每个进程的经过加权后的累计运行时间保存在自己的vruntime字段里。
-* 哪个进程的vruntime最小就获得本轮运行的权利。
+* 每个进程的经过加权后的累计运行时间保存在自己的`vruntime`字段里。
+* 哪个进程的`vruntime`最小就获得本轮运行的权利。
 
 ## 原理解析
 * 将进程的nice值映射到对应的权重
@@ -152,8 +152,8 @@ const int sched_prio_to_weight[40] = {
 * 静态优先级与权重之间的关系，分普通和实时进程两种情况
 ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_weight_priority.png](pic/sched_weight_priority.png)
 
-* CFS调度器的调度周期由sysctl_sched_latency变量保存。
-  * 该变量可以通过sysctl调整，见kernel/sysctl.c
+* CFS调度器的调度周期由`sysctl_sched_latency`变量保存。
+  * 该变量可以通过`sysctl`调整，见kernel/sysctl.c
 ```
        >sysctl kernel.sched_latency_ns
        kernel.sched_latency_ns = 24000000
@@ -202,11 +202,11 @@ static u64 __sched_period(unsigned long nr_running)
              = (调度周期 * 进程权重 / 所有进程总权重) * NICE_0_LOAD / 进程权重
              = 调度周期 * NICE_0_LOAD / 所有可运行进程总权重
 ```
-  可以看到，一个进程在一个调度周期内的vruntime值大小是不和该进程自己的权重相关的，所以所有进程的vruntime值大小都是一样的。
+  可以看到，一个进程在一个调度周期内的`vruntime`值大小是不和该进程自己的权重相关的，所以所有进程的`vruntime`值大小都是一样的。
 
-* 在非常短的时间内，也许看到的vruntime值并不相等。
-  * vruntime值小，说明它以前占用cpu的时间较短，受到了“不公平”对待。
-  * 但为了确保公平，我们**总是选出vruntime最小的进程来运行**，形成一种“追赶”的局面。
+* 在非常短的时间内，也许看到的`vruntime`值并不相等。
+  * `vruntime`值小，说明它以前占用cpu的时间较短，受到了“不公平”对待。
+  * 但为了确保公平，我们**总是选出`vruntime`最小的进程来运行**，形成一种“追赶”的局面。
   * 这样既能公平选择进程，又能保证高优先级进程获得较多的运行时间。
 
 
@@ -221,7 +221,7 @@ static u64 __sched_period(unsigned long nr_running)
 
   可见进程间的实际执行时间和它们的权重也是成比例的。
 
-* 各个进程追求的公平时间vruntime其实就是一个nice值为0的进程在一个调度周期内应分得的时间，就像是一个基准。
+* 各个进程追求的公平时间`vruntime`其实就是一个nice值为0的进程在一个调度周期内应分得的时间，就像是一个基准。
 
 # 核心调度器
 
@@ -487,39 +487,6 @@ static int effective_prio(struct task_struct *p)
   * 子进程的静态优先级`static_prio`继承自父进程
   * 动态优先级`prio`设置为父进程的普通优先级`normal_prio`。这是为了确保实时互斥量引起的优先级提高**不会**传递到子进程
 
-## 周期性调度
-* 每次周期性的时钟中断，时钟中断处理函数会地调用`update_process_times()`
-  * kernel/time/timer.c
-
-  ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_update_process_times.png](pic/sched_update_process_times.png)
-
-* `scheduler_tick()`函数为周期性调度的入口，
-  1. 管理内核中与整个系统和各个进程的调度相关的统计量
-  2. 调用当前进程所属调度器类的周期性调度方法
-  * kernel/sched/core.c
-```c
-/*
- * This function gets called by the timer code, with HZ frequency.
- * We call it with interrupts disabled.
- */
-void scheduler_tick(void)
-{
-    int cpu = smp_processor_id();
-    struct rq *rq = cpu_rq(cpu);
-    struct task_struct *curr = rq->curr;
-
-    sched_clock_tick();  /* 更新sched_clock_data */
-
-    raw_spin_lock(&rq->lock);
-    update_rq_clock(rq); /* 更新rq->clock */
-    curr->sched_class->task_tick(rq, curr, 0); /*调用调度器类的周期性调度方法*/
-...
-    raw_spin_unlock(&rq->lock);
-...
-}
-```
-* 如果需要重新调度，`curr->sched_class->task_tick()`会在`task_struct`（更准确的说是在`thread_info`）中设置`TIF_NEED_RESCHED`标志位表示请求重新调度
-* 但**并不意味着立即抢占**，仍然需要等待内核在适当的时间完成该请求（参考[这里](http://www.linuxinternals.org/blog/2016/03/20/tif-need-resched-why-is-it-needed/)）
 
 ## 创建进程
 
@@ -640,6 +607,41 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 ...
 }
 ```
+
+## 周期性调度
+* 每次周期性的时钟中断，时钟中断处理函数会地调用`update_process_times()`
+  * kernel/time/timer.c
+
+  ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_update_process_times.png](pic/sched_update_process_times.png)
+
+* `scheduler_tick()`函数为周期性调度的入口，
+  1. 管理内核中与整个系统和各个进程的调度相关的统计量
+  2. 调用当前进程所属调度器类的周期性调度方法
+  * kernel/sched/core.c
+```c
+/*
+ * This function gets called by the timer code, with HZ frequency.
+ * We call it with interrupts disabled.
+ */
+void scheduler_tick(void)
+{
+    int cpu = smp_processor_id();
+    struct rq *rq = cpu_rq(cpu);
+    struct task_struct *curr = rq->curr;
+
+    sched_clock_tick();  /* 更新sched_clock_data */
+
+    raw_spin_lock(&rq->lock);
+    update_rq_clock(rq); /* 更新rq->clock */
+    curr->sched_class->task_tick(rq, curr, 0); /*调用调度器类的周期性调度方法*/
+...
+    raw_spin_unlock(&rq->lock);
+...
+}
+```
+* 如果需要重新调度，`curr->sched_class->task_tick()`会在`task_struct`（更准确的说是在`thread_info`）中设置`TIF_NEED_RESCHED`标志位表示请求重新调度
+* 但**并不意味着立即抢占**，仍然需要等待内核在适当的时间完成该请求（参考[这里](http://www.linuxinternals.org/blog/2016/03/20/tif-need-resched-why-is-it-needed/)）
+
 
 ## 进程唤醒
 
@@ -765,6 +767,10 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 ```
 * 调完`__schedule()`后，都需要重新调用`need_resched()`检查`TIF_NEED_RESCHED`标志看是否需要重新调度。
 * `context_switch()`调用特定于体系结构的方法，由后者负责执行底层的上下文切换。
+* 上下文切换通过调用两个特定于处理器的函数完成：
+  * **switch_mm**： 更换通过`task_struct->mm`描述的内存管理单元。
+  * **switch_to**： 切换处理器寄存器内容和内核栈。
+  * **惰性FPU模式** (Lazy FPU mode)
 
 ### 选择下一个进程
 * `pick_next_task()`完成选择下一个进程的工作
