@@ -131,6 +131,8 @@ _V<sub>i</sub>_：初始值
 * 哪个进程的`vruntime`最小就获得本轮运行的权利。
 
 ## 原理解析
+
+### 静态优先级与权重
 * 将进程的nice值映射到对应的权重
   * 数组项之间的乘数因子为1.25，这样概念上可以使进程每降低一个nice值可以多获得10%的CPU时间，每升高一个nice值则放弃10%的CPU时间。
   * kernel/sched/core.c
@@ -152,6 +154,7 @@ const int sched_prio_to_weight[40] = {
 * 静态优先级与权重之间的关系，分普通和实时进程两种情况
 ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_weight_priority.png](pic/sched_weight_priority.png)
 
+### CFS里的调度周期
 * CFS调度器的调度周期由`sysctl_sched_latency`变量保存。
   * 该变量可以通过`sysctl`调整，见kernel/sysctl.c
 ```
@@ -179,7 +182,9 @@ static u64 __sched_period(unsigned long nr_running)
         return sysctl_sched_latency;
 }
 ```
+### CFS里关于时间计算的两个公式
 
+#### 公式1
 * 一个进程在一个调度周期中的运行时间为:
 ```js
     分配给进程的运行时间 = 调度周期 * 进程权重 / 所有可运行进程权重之和
@@ -187,15 +192,18 @@ static u64 __sched_period(unsigned long nr_running)
 
   可以看到, 进程的权重越大，分到的运行时间越多。
 
+#### 公式2
 * 一个进程的实际运行时间和虚拟运行时间之间的关系为:
 ```js
     vruntime = 实际运行时间 * NICE_0_LOAD / 进程权重
              = 实际运行时间 * 1024 / 进程权重
              (NICE_0_LOAD = 1024, 表示nice值为0的进程权重)
 ```
+![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_realtime_vs_vruntime.png](pic/sched_realtime_vs_vruntime.png)
 
-  可以看到, **进程权重越大, 运行同样的实际时间, vruntime增长的越慢**。
+* 可以看到, **进程权重越大, 运行同样的实际时间, vruntime增长的越慢**。
 
+### 关于CFS的公平性的推理
 * 一个进程在一个调度周期内的虚拟运行时间大小为:
 ```js
     vruntime = 进程在一个调度周期内的实际运行时间 * NICE_0_LOAD / 进程权重
@@ -210,7 +218,7 @@ static u64 __sched_period(unsigned long nr_running)
   * 这样既能公平选择进程，又能保证高优先级进程获得较多的运行时间。
 
 
-* 理想情况下，由于vruntime与进程自身的权重是不相关的，所有进程的vruntime值是一样的。
+* 理想情况下，由于`vruntime`与进程自身的权重是不相关的，所有进程的`vruntime`值是一样的。
 
 * 怎么解释进程间的实际执行时间与它们的权重是成比例的？
   * 假设有进程A，其虚拟运行时间为`vruntime_A`，其实际运行的时间为`delta_exec_A`，权重为`weight_A`，于是`vruntime_A = delta_exec_A * NICE_0_LOAD / weight_A`
@@ -226,9 +234,6 @@ static u64 __sched_period(unsigned long nr_running)
 # 核心调度器
 
 ## 调度器类
-
-### 策略模式（Stragegy Pattern）
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/pattern-strategy.png](pic/pattern-strategy.png)
 
 ### 调度器类
 * fair (Completely_Fair_Scheduler)
@@ -655,7 +660,9 @@ void scheduler_tick(void)
 
 ## 主调度函数schedule()
 
-* `__schedule()`是主调度函数
+* `__schedule()`是主调度函数，其主要任务是：
+  * 选出下一个将要调度的进程
+  * 切换到要调度的进程
   * kernel/sched/core.c
 ```c
 /*
