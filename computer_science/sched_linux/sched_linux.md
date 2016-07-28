@@ -57,10 +57,10 @@ struct prio_array {
     struct list_head queue[MAX_PRIO]; /* priority queues */
 };
 ```
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_O1.gif](pic/sched_O1.gif)
+![pic/sched_O1.gif](pic/sched_O1.gif)
 
 ### 优先级位图映射
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_O1_2.gif](pic/sched_O1_2.gif)
+![pic/sched_O1_2.gif](pic/sched_O1_2.gif)
 
 ### O(1)调度算法的问题
 1. 将nice值映射到时间片，就必须将nice值对应到绝对的处理器时间，这会导致进程切换无法最优化进行。例如，两个高nice值（低优先级）的后台进程，往往是CPU密集型，分配到的时间片太短，导致频繁切换。
@@ -79,7 +79,7 @@ struct prio_array {
 ## 算术级数、几何级数与增长率
 
 ### 增长率
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/rate_of_return-sp.png](pic/rate_of_return-sp.png "$$ r = \cfrac{V_{f} - V_{i}}{V_{i}} $$")
+![pic/rate_of_return-sp.png](pic/rate_of_return-sp.png "$$ r = \cfrac{V_{f} - V_{i}}{V_{i}} $$")
 
 _V<sub>f</sub>_：最终值
 
@@ -152,7 +152,7 @@ const int sched_prio_to_weight[40] = {
   由此可见，**nice值越小, 进程的权重越大**。
 
 * 静态优先级与权重之间的关系，分普通和实时进程两种情况
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_weight_priority.png](pic/sched_weight_priority.png)
+![pic/sched_weight_priority.png](pic/sched_weight_priority.png)
 
 ### CFS里的调度周期
 * CFS调度器的调度周期由`sysctl_sched_latency`变量保存。
@@ -199,7 +199,7 @@ static u64 __sched_period(unsigned long nr_running)
              = 实际运行时间 * 1024 / 进程权重
              (NICE_0_LOAD = 1024, 表示nice值为0的进程权重)
 ```
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_realtime_vs_vruntime.png](pic/sched_realtime_vs_vruntime.png)
+![pic/sched_realtime_vs_vruntime.png](pic/sched_realtime_vs_vruntime.png)
 
 * 可以看到, **进程权重越大, 运行同样的实际时间, vruntime增长的越慢**。
 
@@ -242,7 +242,7 @@ static u64 __sched_period(unsigned long nr_running)
 * Deadline Scheduling: Earliest Deadline First (EDF) + Constant Bandwidth Server (CBS)
 * idle-task
 
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_classes.gif](pic/sched_classes.gif)
+![pic/sched_classes.gif](pic/sched_classes.gif)
 
 ### 调度器类的顺序
 * stop-task --> deadline --> real-time --> fair --> idle
@@ -275,6 +275,27 @@ real-time|SCHED_FIFO
 ... |SCHED_RR
 deadline|SCHED_DEADLINE
 
+## stop-task,idle-task与SCHED_IDLE
+
+* `stop`任务是系统中优先级最高的任务，它可以抢占所有的进程并且不会被任何进程抢占，其专属调度器类即`stop-task`。
+* `idle-task`调度器类与CFS里要处理的`SCHED_IDLE`没有关系。
+* `idle`任务会被任意进程抢占，其专属调度器类为`idle-task`。
+* `idle-task`和`stop-task`没有对应的调度策略。
+* 采用`SCHED_IDLE`调度策略的任务其调度器类为 **CFS**。
+
+> The stop task is the highest priority task in the system, it preempts
+> everything and will be preempted by nothing.
+* stop_task.c Comment
+
+> NOTE: these are not related to SCHED_IDLE tasks which are handled in sched/fair.c
+* idle_task.c Comment
+
+> The stop_sched_class is to stop cpu, using on SMP system, for load balancing
+> and cpu hotplug. This class have the highest scheduling priority.
+* http://stackoverflow.com/questions/15399782/what-is-the-use-of-stop-sched-class-in-linux-kernel
+
+> Idle is used to schedule the per-cpu idle task (also called *swapper* task)
+> which is run if no other task is runnable.
 
 ## 调度相关的数据结构
 
@@ -296,12 +317,12 @@ struct task_struct {
 ...
 }
 ```
-* 优先级prio, static_prio, normal_prio
+* 优先级 `prio`, `static_prio`, `normal_prio`
   * **静态优先级**`static_prio` 进程启动时的优先级，除非用`nice`或`sched_setscheduler`修改，否则进程运行期间一直保持恒定。
   * **普通优先级**`normal_prio` 基于进程静态优先级和调度策略计算出的优先级。进程fork时，子进程继承的是普通优先级。
   * **动态优先级**`prio` 暂时的，非持久的优先级，调度器考虑的是这个优先级。
 * **实时进程优先级**`rt_priority` 值越大表示优先级越高（后面会看计算的时候用的是减法）。
-* `sched_class` 指向抽象的调度器类。
+* `sched_class` 指向调度器类。在fork的时候会根据优先级决定进程该采用哪种调度策略。
 * 调度实体`se`, `rt`, `dl`
   * 调度器调度的是*可调度实体*，而不限于进程
   * 一组进程可以构成一个*可调度实体*，实现*组调度*
@@ -431,7 +452,7 @@ Per-CPU相关代码见：
 * sched_dl_entity
 
 ## 优先级
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_priorities.png](pic/sched_priorities.png)
+![pic/sched_priorities.png](pic/sched_priorities.png)
 
 ### 计算优先级
 * `static_prio` 通常是优先级计算的起点
@@ -495,7 +516,7 @@ static int effective_prio(struct task_struct *p)
 
 ## 创建进程
 
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_core_fork.png](pic/sched_core_fork.png)
+![pic/sched_core_fork.png](pic/sched_core_fork.png)
 
 * 涉及到特定调度器类相关的工作需根据新进程使用的调度器类，委托给具体调度器类的方法处理。
 * 在创建进程过程中与调度器密切相关的任务
@@ -597,12 +618,16 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
     } else {
         /* 由高到低检查不同调度器类之间的进程是否需要重新调度 */
         for_each_class(class) {
-            /* 低调度器类的进程无法抢占高调度器的进程，
-               例如rq->curr->sched_class是实时调度器类，而p->sched_class是CFS */
+            /* 低级别的调度器类的进程无法抢占高级别的调度器类的进程，
+               例如rq->curr->sched_class是实时调度器类，而p->sched_class是CFS，
+               则循环会在class等于&rt_sched_class时break。
+             */
             if (class == rq->curr->sched_class)
                 break;            /* 无法抢占，故跳出循环 */
-            /* 反之，高调度器类的进程可以抢占低调度器的进程，
-               例如p->sched_class是实时调度器类，而rq->curr->sched_class是CFS */
+            /* 反之，高级别的调度器类的进程可以抢占低级别的调度器类的进程，
+               例如p->sched_class是实时调度器类，而rq->curr->sched_class是CFS，
+               则循环会在class等于&rt_sched_class时设置标志位后break。
+             */
             if (class == p->sched_class) {
                 resched_curr(rq); /* 设置重新调度标志位 */
                 break;
@@ -617,7 +642,7 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 * 每次周期性的时钟中断，时钟中断处理函数会地调用`update_process_times()`
   * kernel/time/timer.c
 
-  ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_update_process_times.png](pic/sched_update_process_times.png)
+  ![pic/sched_update_process_times.png](pic/sched_update_process_times.png)
 
 * `scheduler_tick()`函数为周期性调度的入口，
   1. 管理内核中与整个系统和各个进程的调度相关的统计量
@@ -650,7 +675,7 @@ void scheduler_tick(void)
 
 ## 进程唤醒
 
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_core_wakeup.png](pic/sched_core_wakeup.png)
+![pic/sched_core_wakeup.png](pic/sched_core_wakeup.png)
 
 * 进程唤醒的时候，将`enqueue_task`和`check_preempt_curr`等工作 *委托* 给具体的调度器类。
 * 进程唤醒过程中与调度器相关的任务
@@ -818,7 +843,7 @@ again:
             return p;
         }
     }
-
+    /*当所有调度器类都选不出可运行的进程时，会运行idle task，并且总是一个可运行的任务*/
     BUG(); /* the idle class will always have a runnable task */
 }
 ```

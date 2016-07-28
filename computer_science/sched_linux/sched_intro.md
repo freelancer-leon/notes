@@ -16,10 +16,10 @@
 * [参考资料](#参考资料)
 
 # 进程状态
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_flow_chart_of_process_states.jpg](pic/sched_flow_chart_of_process_states.jpg)
+![pic/sched_flow_chart_of_process_states.jpg](pic/sched_flow_chart_of_process_states.jpg)
 
 # 进程的类型
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_cpu-bound_io-bound.png](pic/sched_cpu-bound_io-bound.png)
+![pic/sched_cpu-bound_io-bound.png](pic/sched_cpu-bound_io-bound.png)
 * CPU密集型（CPU-bound or compute-bound）
 * I/O密集型（I/O-bound）
 
@@ -45,8 +45,8 @@
 * I/O interrupt complete
 
 # 非抢占式调度与抢占式调度（Non-Preemptive Vs Preemptive Scheduling）
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_non-preemptive_vs_preemptive.gif](pic/sched_non-preemptive_vs_preemptive.gif)
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_non-preemptive_vs_preemptive_1.gif](pic/sched_non-preemptive_vs_preemptive_1.gif)
+![pic/sched_non-preemptive_vs_preemptive.gif](pic/sched_non-preemptive_vs_preemptive.gif)
+![pic/sched_non-preemptive_vs_preemptive_1.gif](pic/sched_non-preemptive_vs_preemptive_1.gif)
 
 * 非抢占式调度算法，不会在时钟中断发生时进行调度
 * 抢占式调度算法，在时间间隔的末端发生时钟中断，把CPU控制返回给Scheduler
@@ -83,34 +83,34 @@
 
 # 批处理调度算法
 ### 先来先服务（First-come First-served，FCFS）
- ![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_fcfs.png](pic/sched_fcfs.png)
+ ![pic/sched_fcfs.png](pic/sched_fcfs.png)
 
 ### 最短作业优先（Shortest job first）
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_sjf.png](pic/sched_sjf.png)
+![pic/sched_sjf.png](pic/sched_sjf.png)
 * Shortest job next (SJN), Shortest Process Next (SPN)
 * https://en.wikipedia.org/wiki/Shortest_job_next
 
 ### 最短剩余时间优先（Shortest remaining time next）
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_shortest_remaining_time.png](pic/sched_shortest_remaining_time.png)
+![pic/sched_shortest_remaining_time.png](pic/sched_shortest_remaining_time.png)
 * preemptive版本的SJF
 * https://en.wikipedia.org/wiki/Shortest_remaining_time
 
 # 交互式系统调度算法
 ###轮转调度（Round robin）
 * **时间片（time slice/quantum）** 每个进程被分配一个时间段，允许该进程运行的时间。
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_round_robin.png](pic/sched_round_robin.png)
+![pic/sched_round_robin.png](pic/sched_round_robin.png)
 * 假设所有进程同等重要
 * https://en.wikipedia.org/wiki/Round-robin_scheduling
 
 ### 优先级调度（Priority scheduling）
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_priority_scheduling.png](pic/sched_priority_scheduling.png)
+![pic/sched_priority_scheduling.png](pic/sched_priority_scheduling.png)
 * 调度程序在每个时钟滴答降低当前进程优先级
 * 当前进程优先级低于次高优先级进程，则进行进程切换
 * 可将进程分类，各类之间采用优先级调度，各类进程内部采用轮转调度
 * 缺点：低优先级进程很可能会产生饥饿现象
 
 ### 多级队列（Multi-level Queues）
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_mqueue.png](pic/sched_mqueue.png)
+![pic/sched_mqueue.png](pic/sched_mqueue.png)
 * 根据预定的算法插入不同的队列
 * 不能在不同级别之间任意移动
 * 每个级别间的调度算法可以任意选择
@@ -131,7 +131,7 @@
   * 偶尔错失deadline是可容忍的
 
 ### 实时系统可调度的条件
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_RR_schd_fomula_1.png](pic/sched_RR_schd_fomula_1.png)
+![pic/sched_RR_schd_fomula_1.png](pic/sched_RR_schd_fomula_1.png)
 
 有n 个周期事件，事件 *i* 以周期 _P<sub>i</sub>_ 发生，并需要 _C<sub>i</sub>_ 秒CPU时间处理一个事件，可处理负载的条件。
 

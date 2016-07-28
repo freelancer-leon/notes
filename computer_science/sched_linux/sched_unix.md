@@ -2,7 +2,7 @@
 ### 多级反馈轮转调度（round robin with multiple feedback）
 * 内核给进程分配一个CPU时间片，抢占一个超过其时间片的进程，并把它反馈到若干优先级队列中的某一个队列。
 * 一个进程在它结束之前，可能需要多次通过“反馈轮转”。
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_mlfq.png](pic/sched_mlfq.png)
+![pic/sched_mlfq.png](pic/sched_mlfq.png)
 
 * 每次重新计算优先级值的效果是，具有用户级优先级的进程在优先级队列之间移动
 * 内核不改变核心态进程的优先级
@@ -12,10 +12,10 @@
 * 换句话说，核心态进程优先级值是常量
 
 ### System V的进程优先级计算公式
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_UNIX_schd_alg.png](pic/sched_UNIX_schd_alg.png)
+![pic/sched_UNIX_schd_alg.png](pic/sched_UNIX_schd_alg.png)
 
 在下面例中Base = 60
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_UNIX_schd_eg.png](pic/sched_UNIX_schd_eg.png)
+![pic/sched_UNIX_schd_eg.png](pic/sched_UNIX_schd_eg.png)
 * 不同版本的UNIX上的CPU衰减公式和优先级公式并不一样
 
 

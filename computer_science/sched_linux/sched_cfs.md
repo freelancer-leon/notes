@@ -21,7 +21,7 @@
 
 
 # CFS数据结构
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_cfs_struct.gif](pic/sched_cfs_struct.gif)
+![pic/sched_cfs_struct.gif](pic/sched_cfs_struct.gif)
 
 ## CFS调度实体 sched_entity
 * include/linux/sched.h::sched_entity
@@ -137,7 +137,7 @@ const struct sched_class fair_sched_class = {
 	3. `check_preempt_curr`
 
 ## 关联新进程与调度器
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_cfs_task_fork.png](pic/sched_cfs_task_fork.png)
+![pic/sched_cfs_task_fork.png](pic/sched_cfs_task_fork.png)
 
 * kernel/sched/fair.c::task_fork_fair
 ```c
@@ -186,12 +186,12 @@ static void task_fork_fair(struct task_struct *p)
         resched_curr(rq); /*设置重新调度标志TIF_NEED_RESCHED*/
     }
     /* 为什么这里又要减cfs_rq->min_vruntime？
-		 * 因为新进程有可能会在别的CPU上被运行，然而每个CPU的运行队列的min_vruntime是不同的。
+     * 因为新进程有可能会在别的CPU上被运行，然而每个CPU的运行队列的min_vruntime是不同的。
      * 因此这里存的是已算出的vruntime与当前运行队列min_vruntime的差值。
      * 当该调度实体在加入其他运行队列时，需要再加上要加入队列的min_vruntime
-		 * (可查看enqueue_entity()函数)。
-		 * 同样，在进程从队列出来的时候(dequeue_entity())也需要类似的操作。
-		 */
+     * (可查看enqueue_entity()函数)。
+     * 同样，在进程从队列出来的时候(dequeue_entity())也需要类似的操作。
+     */
     se->vruntime -= cfs_rq->min_vruntime;
 
     raw_spin_unlock_irqrestore(&rq->lock, flags);
@@ -203,7 +203,7 @@ static void task_fork_fair(struct task_struct *p)
 ### 更新当前进程的时间
 * 在`task_fork_fair()`函数中我们首次看到了`update_curr()`函数，这是个很重要的函数，所有与虚拟时钟相关的计算都在这个函数中执行。
 
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_cfs_update_curr.png](pic/sched_cfs_update_curr.png)
+![pic/sched_cfs_update_curr.png](pic/sched_cfs_update_curr.png)
 
 * 调度实体的`exec_start`，`sum_exec_runtime`和`vruntime`都会在`update_curr()`中更新。
 	* kernel/sched/fair.c::update_curr
@@ -214,15 +214,15 @@ static void task_fork_fair(struct task_struct *p)
 static void update_curr(struct cfs_rq *cfs_rq)
 {
     struct sched_entity *curr = cfs_rq->curr;
-		/*获取所在队列的时钟，该值刚在task_fork_fair调用update_rq_clock更新过*/
+    /*获取所在队列的时钟，该值刚在task_fork_fair调用update_rq_clock更新过*/
     u64 now = rq_clock_task(rq_of(cfs_rq));
     u64 delta_exec;
-		/* 如果当前队列上没有进程在运行，什么都不做 */
+    /* 如果当前队列上没有进程在运行，什么都不做 */
     if (unlikely(!curr))
         return;
-		/* exec_start记录的是上一次调用update_curr()的时间，我们用当前时间减去exec_start  
-		 * 就得到了从上次计算vruntime到现在进程又运行的实际时间。
-		 */
+    /* exec_start记录的是上一次调用update_curr()的时间，我们用当前时间减去exec_start  
+     * 就得到了从上次计算vruntime到现在进程又运行的实际时间。
+     */
     delta_exec = now - curr->exec_start;
     if (unlikely((s64)delta_exec <= 0))
         return;
@@ -230,12 +230,12 @@ static void update_curr(struct cfs_rq *cfs_rq)
     curr->exec_start = now;
 
     ...
-		/* sum_exec_runtime是进程累计使用的CPU时间，因此是物理时间。在此处更新*/
+    /* sum_exec_runtime是进程累计使用的CPU时间，因此是物理时间。在此处更新*/
     curr->sum_exec_runtime += delta_exec;
     ...
     /* vruntime是进程累计使用的虚拟时间，需要将exec_start经过加权运算后得到 */
     curr->vruntime += calc_delta_fair(delta_exec, curr);
-		/*因为有进程的vruntime变了，因此该队列的min_vruntime可能也发生了变化，更新它*/
+    /*因为有进程的vruntime变了，因此该队列的min_vruntime可能也发生了变化，更新它*/
     update_min_vruntime(cfs_rq);
     ...
 }
@@ -320,9 +320,10 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
         vruntime += sched_vslice(cfs_rq, se);
     ...
     /* ensure we never gain time by being placed backwards. */
-		/*此处表明, 对于新进程而言, 新进程的vruntime值是大于等于父进程vruntime值的。
-		  所以后面如果没有设置子进程先运行, 则只要父进程本次调度运行的实际时间没有超过
-			调度周期分配的实际时间值, 父进程就会先运行, 否则, 父子进程的先后执行顺序不确定。*/
+    /*此处表明, 对于新进程而言, 新进程的vruntime值是大于等于父进程vruntime值的。
+      所以后面如果没有设置子进程先运行, 则只要父进程本次调度运行的实际时间没有超过
+      调度周期分配的实际时间值, 父进程就会先运行, 否则, 父子进程的先后执行顺序不确定
+     */
     se->vruntime = max_vruntime(se->vruntime, vruntime);
 }
 ```
@@ -360,7 +361,7 @@ static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 * 否则新进程与父进程的`vruntime`一致，如果`sysctl_sched_child_runs_first`参数没有设成**1**，子进程与父进程谁先被执行还不确定。
 
 ## 新进程进入队列
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_cfs_enqueue_task.png](pic/sched_cfs_enqueue_task.png)
+![pic/sched_cfs_enqueue_task.png](pic/sched_cfs_enqueue_task.png)
 
 ### 创建新进程时的enqueue_entity
 * `enqueue_task_fair()`完成核心调度器委托的将进程加入运行队列的工作
@@ -374,9 +375,9 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
      * Update the normalized vruntime before updating min_vruntime
      * through calling update_curr().
      */
-		/* 此处将task_fork_fair()最后减去cfs_rq->min_vruntime补回来，
-		 * 因为调度实体最后在哪个队列被执行并不一定，所以出队的时候vruntime里存的时差值。
-		 */
+    /* 此处将task_fork_fair()最后减去cfs_rq->min_vruntime补回来，
+     * 因为调度实体最后在哪个队列被执行并不一定，所以出队的时候vruntime里存的时差值。
+     */
     if (!(flags & ENQUEUE_WAKEUP) || (flags & ENQUEUE_WAKING))
         se->vruntime += cfs_rq->min_vruntime;
 
@@ -391,9 +392,9 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
         ...
     }    
     ...
-		/* 进程如果恰好时队列的当前进程，无需再次入队；
-		 * 否则新进程加入红黑树，并且on_rq标志置为 1。
-		 */
+    /* 进程如果恰好时队列的当前进程，无需再次入队；
+     * 否则新进程加入红黑树，并且on_rq标志置为 1。
+     */
     if (se != cfs_rq->curr)
         __enqueue_entity(cfs_rq, se);
     se->on_rq = 1;
@@ -420,8 +421,8 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
         return;
 ...
     /* 设置sched_feat(NEXT_BUDDY)标志倾向于优先调度新唤醒的进程；
-		   在fork场景，核心调度器调用check_preempt_curr()时wake_flags为WF_FORK。
-		 */
+       在fork场景，核心调度器调用check_preempt_curr()时wake_flags为WF_FORK。
+     */
     if (sched_feat(NEXT_BUDDY) && scale && !(wake_flags & WF_FORK)) {
         set_next_buddy(pse);
         next_buddy_marked = 1;
@@ -437,12 +438,12 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
      * prevents us from potentially nominating it as a false LAST_BUDDY
      * below.
      */
-		/* 新任务唤醒抢占路径上设置过TIF_NEED_RESCHED标志，无需下面的检查 */
+    /* 新任务唤醒抢占路径上设置过TIF_NEED_RESCHED标志，无需下面的检查 */
     if (test_tsk_need_resched(curr))
         return;
 
     /* Idle tasks are by definition preempted by non-idle tasks. */
-		/* 毫无疑问，idle tasks会被非idel tasks进程抢占 */
+    /* 毫无疑问，idle tasks会被非idel tasks进程抢占 */
     if (unlikely(curr->policy == SCHED_IDLE) &&
         likely(p->policy != SCHED_IDLE))
         goto preempt;
@@ -451,17 +452,17 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
      * Batch and idle tasks do not preempt non-idle tasks (their preemption
      * is driven by the tick):
      */
-		/* 批处理和idle tasks无法抢占非idle tasks，直接返回；
+    /* 批处理和idle tasks无法抢占非idle tasks，直接返回；
        唤醒抢占标志sched_feat(WAKEUP_PREEMPTION)没有开启，也会直接返回
-		 */
+     */
     if (unlikely(p->policy != SCHED_NORMAL) || !sched_feat(WAKEUP_PREEMPTION))
         return;
     /* 这里涉及到组调度，力求se和pse在相同的队列深度下进行比较 */
     find_matching_se(&se, &pse);
-		/* 更新当前队列虚拟时间 */
+    /* 更新当前队列虚拟时间 */
     update_curr(cfs_rq_of(se));
     BUG_ON(!pse);
-		/* 新进程能否抢占当前进程 */
+    /* 新进程能否抢占当前进程 */
     if (wakeup_preempt_entity(se, pse) == 1) {
         /*
          * Bias pick_next to pick the sched entity that is
@@ -568,7 +569,7 @@ wakeup_gran(struct sched_entity *curr, struct sched_entity *se)
 	* `se`权重较重 --> `gran`值较小 --> 不等式`vdiff > gran`较易成立 --> `se`易于抢占`curr`
 
 # 周期性调度
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_cfs_task_tick.png](pic/sched_cfs_task_tick.png)
+![pic/sched_cfs_task_tick.png](pic/sched_cfs_task_tick.png)
 * 每次时钟中断，`task_tick_fair()`会完成核心调度器的`scheduler_tick()`委托的任务
 * `task_tick_fair()`会自下而上调用对同组调度实体调用`entity_tick()`
 * `entity_tick()`需要处理一些负载均衡的情况，这里暂不详述
@@ -590,19 +591,19 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
     s64 delta;
     /*sched_slice()计算的是当前进程在一个调度周期内期望分得的实际运行时间*/
     ideal_runtime = sched_slice(cfs_rq, curr);
-		/* sum_exec_runtime: 累计运行的时间，上一次调用update_curr()会更新
-		   prev_sum_exec_runtime: 上一次撤销CPU时的累计运行时间
-			 delta_exec: 以上两个数的差值，即在当前调度周期内的实际运行时间
-		 */
+    /* sum_exec_runtime: 累计运行的时间，上一次调用update_curr()会更新
+       prev_sum_exec_runtime: 上一次撤销CPU时的累计运行时间
+       delta_exec: 以上两个数的差值，即在当前调度周期内的实际运行时间
+     */
     delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
-		/* 在一个调度周期内，实际运行时间超过了理想情况运行时间，毫无疑问需重新调度 */
+    /* 在一个调度周期内，实际运行时间超过了理想情况运行时间，毫无疑问需重新调度 */
     if (delta_exec > ideal_runtime) {
         resched_curr(rq_of(cfs_rq));
         /*
          * The current task ran long enough, ensure it doesn't get
          * re-elected due to buddy favours.
          */
-				/*在这个条件下，buddy favours会被忽略*/
+        /*在这个条件下，buddy favours会被忽略*/
         clear_buddies(cfs_rq, curr);
         return;
     }
@@ -612,22 +613,22 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
      * narrow margin doesn't have to wait for a full slice.
      * This also mitigates buddy induced latencies under load.
      */
-		/* 实际运行时间没有超出理想运行时间，且小于最小调度粒度，则无需重新调度 */
+    /* 实际运行时间没有超出理想运行时间，且小于最小调度粒度，则无需重新调度 */
     if (delta_exec < sysctl_sched_min_granularity)
         return;
     /* 取红黑树上的最小结点 */
     se = __pick_first_entity(cfs_rq);
     delta = curr->vruntime - se->vruntime;
     /* 实际运行时间没有超出理想运行时间，但大于最小调度粒度，
-		   且虚拟运行时间相较运行队列里最左结点的虚拟运行时间要小，
-			 则无需重新调度
-		 */
+       且虚拟运行时间相较运行队列里最左结点的虚拟运行时间要小，
+        则无需重新调度
+     */
     if (delta < 0)
         return;
-		/* 实际运行时间没有超出理想运行时间，但大于最小调度粒度，
-			 且虚拟运行时间与运行队列里最左结点的虚拟运行时间的差值比理想运行时间还大，
-			 需重新调度
-		 */
+    /* 实际运行时间没有超出理想运行时间，但大于最小调度粒度，
+       且虚拟运行时间与运行队列里最左结点的虚拟运行时间的差值比理想运行时间还大，
+       需重新调度
+     */
     if (delta > ideal_runtime)
         resched_curr(rq_of(cfs_rq));
 }
@@ -672,7 +673,7 @@ static u64 __sched_period(unsigned long nr_running)
  */
 static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	  /* slice得到的是该队列的实际调度周期 */
+    /* slice得到的是该队列的实际调度周期 */
     u64 slice = __sched_period(cfs_rq->nr_running + !se->on_rq);
 
     for_each_sched_entity(se) {
@@ -680,7 +681,7 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
         struct load_weight lw;
 
         cfs_rq = cfs_rq_of(se);
-				/* load是整个队列的权重 */
+        /* load是整个队列的权重 */
         load = &cfs_rq->load;
         /*如果当前进程不在队列里，在计算整个队列权重时需要把它也计算在内*/
         if (unlikely(!se->on_rq)) {
@@ -689,14 +690,14 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
             update_load_add(&lw, se->load.weight);
             load = &lw;
         }
-				/*调用__calc_delta()函数计算se在该调度周期内按比例应分得的实际运行时间*/
+        /*调用__calc_delta()函数计算se在该调度周期内按比例应分得的实际运行时间*/
         slice = __calc_delta(slice, se->load.weight, load);
     }
     return slice;
 }
 ```
 * `__calc_delta()`之前在`calc_delta_fair()`被调用到，用于计算虚拟运行时间，为什么此处又可以用来计算实际运行时间？
-	* 首先需知道`__calc_delta(delta_exec, weight, lw)`的计算公式是`delta_exec * weight / lw.weight`，它本身并不关心是用于计算虚拟运行时间还是实际运行时间的。
+  * 首先需知道`__calc_delta(delta_exec, weight, lw)`的计算公式是`delta_exec * weight / lw.weight`，它本身并不关心是用于计算虚拟运行时间还是实际运行时间的。
   * 当被`calc_delta_fair()`调用时，`__calc_delta(delta, NICE_0_LOAD, &se->load)`，用的是计算`vruntime`的公式`vruntime = 实际运行时间 * NICE_0_LOAD / 进程权重`，返回值是加权后的`vruntime`。
   * 当被`sched_slice()`调用时，`__calc_delta(队列的实际调度周期, 某个进程的权重, 整个队列的权重)`，因此这里返回值是进程在一个调度周期内**按比例应分得的**实际运行时间。
 
@@ -925,23 +926,23 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
     u64 vruntime = cfs_rq->min_vruntime;
 ...
     /* sleeps up to a single latency don't count. */
-		/* 对于唤醒的进程走的是这个分支。
-		   如果休眠进程的 vruntime 保持不变，而其他运行进程的 vruntime 一直在推进，那么等到休
-			 眠进程终于唤醒的时候，它的vruntime比别人小很多，会使它获得长时间抢占CPU的优势，其他
-			 进程就要饿死了。这显然是另一种形式的不公平。CFS是这样做的：在休眠进程被唤醒时重新设置
-			 vruntime值，以min_vruntime值为基础，给予一定的补偿，但不能补偿太多。
-		 */
+    /* 对于唤醒的进程走的是这个分支。
+       如果休眠进程的 vruntime 保持不变，而其他运行进程的 vruntime 一直在推进，那么等到休
+       眠进程终于唤醒的时候，它的vruntime比别人小很多，会使它获得长时间抢占CPU的优势，其他
+       进程就要饿死了。这显然是另一种形式的不公平。CFS是这样做的：在休眠进程被唤醒时重新设置
+       vruntime值，以min_vruntime值为基础，给予一定的补偿，但不能补偿太多。
+     */
     if (!initial) {
-			  /* 当前补偿时间是一个调度周期，之前已说过sysctl_sched_latency是可配的目标延迟 */
+        /* 当前补偿时间是一个调度周期，之前已说过sysctl_sched_latency是可配的目标延迟 */
         unsigned long thresh = sysctl_sched_latency;
 
         /*
          * Halve their sleep time's effect, to allow
          * for a gentler effect of sleepers:
          */
-				/* 当开启sched_feat(GENTLE_FAIR_SLEEPERS)时，对唤醒进程的补偿会比较少，
-				   这样被唤醒的进程会更快地被调度
-				 */
+        /* 当开启sched_feat(GENTLE_FAIR_SLEEPERS)时，对唤醒进程的补偿会比较少，
+           这样被唤醒的进程会更快地被调度
+         */
         if (sched_feat(GENTLE_FAIR_SLEEPERS))
             thresh >>= 1;
 
@@ -949,11 +950,11 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
     }
 
     /* ensure we never gain time by being placed backwards. */
-		/* 这里还要取一下最大vruntime值是因为要考虑这样一种场景：
-		   本来上面为了给因为长时间睡眠而vruntime远远小于min_vruntime的进程补偿的，但是有些
-			 进程只睡眠很短时间，这样在它醒来后vruntime还是大于min_vruntime，不能让进程通过
-			 睡眠获得额外的运行时间，所以最后选择计算出的补偿时间与进程原本vruntime中的较大者。
-		 */
+    /* 这里还要取一下最大vruntime值是因为要考虑这样一种场景：
+       本来上面为了给因为长时间睡眠而vruntime远远小于min_vruntime的进程补偿的，但是有些
+       进程只睡眠很短时间，这样在它醒来后vruntime还是大于min_vruntime，不能让进程通过
+       睡眠获得额外的运行时间，所以最后选择计算出的补偿时间与进程原本vruntime中的较大者。
+     */
     se->vruntime = max_vruntime(se->vruntime, vruntime);
 }
 ```
@@ -963,7 +964,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 ## CFS的pick_next_task实现
 * `pick_next_task_fair()`需要完成核心调度器委托的选出下一个需要调度的进程的任务
 
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_cfs_pick_next_task.png](pic/sched_cfs_pick_next_task.png)
+![pic/sched_cfs_pick_next_task.png](pic/sched_cfs_pick_next_task.png)
 
 * kernel/sched/fair.c::pick_next_task_fair
 ```c
@@ -979,7 +980,7 @@ again:
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	if (!cfs_rq->nr_running)
 		goto idle;
-  /* 如果就当前进程不是CFS类型的进程，现在要选一个CFS类型的进程来执行，则跳到简单情况处理 */
+	/* 如果就当前进程不是CFS类型的进程，现在要选一个CFS类型的进程来执行，则跳到简单情况处理 */
 	if (prev->sched_class != &fair_sched_class)
 		goto simple;
 
@@ -990,7 +991,7 @@ again:
 	 * Therefore attempt to avoid putting and setting the entire cgroup
 	 * hierarchy, only change the part that actually changes.
 	 */
-  /* 对于CFS进程间的选取下一个进程的处理 */
+	/* 对于CFS进程间的选取下一个进程的处理 */
 	do {
 		struct sched_entity *curr = cfs_rq->curr;
 
@@ -1018,7 +1019,7 @@ again:
 			if (unlikely(check_cfs_rq_runtime(cfs_rq)))
 				goto simple;
 		}
-    /*从当前进程和红黑树运行队列的进程中选出下一个进程*/
+		/*从当前进程和红黑树运行队列的进程中选出下一个进程*/
 		se = pick_next_entity(cfs_rq, curr);
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
@@ -1049,7 +1050,7 @@ again:
 				se = parent_entity(se);
 			}
 		}
-    /*旧进程放回队列，设置新进程（包含将新进程移出红黑树）*/
+		/*旧进程放回队列，设置新进程（包含将新进程移出红黑树）*/
 		put_prev_entity(cfs_rq, pse);
 		set_next_entity(cfs_rq, se);
 	}
@@ -1064,7 +1065,7 @@ simple:
 
 	if (!cfs_rq->nr_running)
 		goto idle;
-  /*这是一个内联函数，调当前任务的调度器类的put_prev_task()方法，
+	/*这是一个内联函数，调当前任务的调度器类的put_prev_task()方法，
 	  把调度实体放回它所在的队列。当前任务不一定是CFS类型的进程*/
 	put_prev_task(rq, prev);
 
@@ -1108,7 +1109,7 @@ idle:
 ### CFS的put_prev_task -- put_prev_task_fair
 * `put_prev_task_fair()`负责调用`put_prev_entity()`将调度实体放回运行队列
 
-![https://github.com/freelancer-leon/notes/blob/master/computer_science/sched_linux/pic/sched_cfs_put_prev_task.png](pic/sched_cfs_put_prev_task.png)
+![pic/sched_cfs_put_prev_task.png](pic/sched_cfs_put_prev_task.png)
 
 * 需要注意的是最后，当前队列的`curr`指针不再指向`prev`调度实体了，因为它已经被放回运行队列了
 
@@ -1133,9 +1134,9 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
      * If curr is set we have to see if its left of the leftmost entity
      * still in the tree, provided there was anything in the tree at all.
      */
-		/* 如果运行队列上没有进程排队，或者当前进程的vruntime甚至比红黑树上最左结点的
-		   vruntime还要小，则left指向当前进程。
-		 */
+    /* 如果运行队列上没有进程排队，或者当前进程的vruntime甚至比红黑树上最左结点的
+       vruntime还要小，则left指向当前进程。
+     */
     if (!left || (curr && entity_before(curr, left)))
         left = curr;
     /*初步选出了一个调度实体*/
@@ -1145,26 +1146,26 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
      * Avoid running the skip buddy, if running something else can
      * be done without getting too unfair.
      */
-		/*如果刚选出的进程曾经被设置为skip，可能需要另选一个*/
+    /*如果刚选出的进程曾经被设置为skip，可能需要另选一个*/
     if (cfs_rq->skip == se) {
         struct sched_entity *second;
 
         if (se == curr) {
-					  /*需要跳过的恰好是当前进程，则从红黑树里取最左结点*/
+            /*需要跳过的恰好是当前进程，则从红黑树里取最左结点*/
             second = __pick_first_entity(cfs_rq);
         } else {
-					  /*需要跳过的恰好是刚从红黑树里取出的最左结点，则再取下一个结点*/
+            /*需要跳过的恰好是刚从红黑树里取出的最左结点，则再取下一个结点*/
             second = __pick_next_entity(se);
-						/*如果运行队列已经空了，或者当前进程vruntime比刚取上来的进程vruntime小，
-						  second指回当前进程
-						 */
+            /*如果运行队列已经空了，或者当前进程vruntime比刚取上来的进程vruntime小，
+              second指回当前进程
+             */
             if (!second || (curr && entity_before(curr, second)))
                 second = curr;
         }
         /* 如果left不能抢占second则second作为被选中的调度实体，left被跳过。
            如果second的vruntime实在比left的vruntime大得太多，则还是会调度left，
-					 否则对left来说太不公平，尽管它已经被设为skip，所以之前要用“可能”。
-				 */
+           否则对left来说太不公平，尽管它已经被设为skip，所以之前要用“可能”。
+         */
         if (second && wakeup_preempt_entity(second, left) < 1)
             se = second;
     }
@@ -1172,18 +1173,18 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
     /*
      * Prefer last buddy, try to return the CPU to a preempted task.
      */
-		/*尝试把CPU还给被抢占的进程，条件是，last进程的vruntime和left进程的vruntime相差不大
-		  （具体可以回去看wakeup_preempt_entity()的实现）。这是为了提高cache的利用。
-			如果last进程的vruntime比left进程的vruntime大很多，说明left进程已经积累的较大的不
-			公平，需要及时被调度。
-		 */
+    /*尝试把CPU还给被抢占的进程，条件是，last进程的vruntime和left进程的vruntime相差不大
+      （具体可以回去看wakeup_preempt_entity()的实现）。这是为了提高cache的利用。
+      如果last进程的vruntime比left进程的vruntime大很多，说明left进程已经积累的较大的不
+      公平，需要及时被调度。
+     */
     if (cfs_rq->last && wakeup_preempt_entity(cfs_rq->last, left) < 1)
         se = cfs_rq->last;
 
     /*
      * Someone really wants this to run. If it's not unfair, run it.
      */
-		/*曾经要别的地方需要某个任务被立即调度，除非left的vruntime真的很小，否则调度next进程*/
+    /*曾经要别的地方需要某个任务被立即调度，除非left的vruntime真的很小，否则调度next进程*/
     if (cfs_rq->next && wakeup_preempt_entity(cfs_rq->next, left) < 1)
         se = cfs_rq->next;
     /*cfs_rq的next,last,skip进程，一旦被命中一次就会被清除*/
