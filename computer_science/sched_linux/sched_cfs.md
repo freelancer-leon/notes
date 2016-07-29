@@ -334,6 +334,12 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 scheduler supports some ‘‘configurable’’ features, but they can only be turned on and off in debugging mode — otherwise, the set
 of features is fixed.
 
+* 如有管理员权限可以查看或修改一些调度器的features。
+```
+sudo cat /sys/kernel/debug/sched_features
+GENTLE_FAIR_SLEEPERS START_DEBIT NO_NEXT_BUDDY LAST_BUDDY CACHE_HOT_BUDDY WAKEUP_PREEMPTION ARCH_POWER NO_HRTICK NO_DOUBLE_TICK LB_BIAS NONTASK_POWER TTWU_QUEUE NO_FORCE_SD_OVERLAP RT_RUNTIME_SHARE NO_LB_MIN NO_NUMA NUMA_FAVOUR_HIGHER NO_NUMA_RESIST_LOWER
+```
+
 * `START_DEBIT`是其中之一，如果打开这个特性，表示给新进程的`vruntime`初始值要设置得比默认值更大一些，这样会推迟它的运行时间，**以防进程通过不停的fork来获得CPU**。
   * kernel/sched/features.h
 ```c
