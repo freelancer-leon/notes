@@ -852,6 +852,8 @@ again:
 * 主要工作还是 *委托* 给各调度器类去完成
 
 # 参考资料
+* Linux Kernel Development (3rd Edition), Robert Love
+* Professional Linux Kernel Architecture, Wolfgang Mauerer
 * https://en.wikipedia.org/wiki/Scheduling_%28computing%29
 * https://en.wikipedia.org/wiki/O(n)%5fscheduler
 * https://en.wikipedia.org/wiki/O(1)%5fscheduler

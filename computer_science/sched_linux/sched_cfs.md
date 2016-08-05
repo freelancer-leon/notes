@@ -1234,6 +1234,8 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 * **/proc/[PID]/sched**: 显示与相关调度实体有关的信息。在读取这个文件时，将调用 *kernel/sched_debug.c* 中定义的 `proc_sched_show_task()` 函数。
 
 # 参考资料
+* Linux Kernel Development (3rd Edition), Robert Love
+* Professional Linux Kernel Architecture, Wolfgang Mauerer
 * https://www.ibm.com/developerworks/cn/linux/l-cfs
 * http://www.ithao123.cn/content-8720784.html
 * http://linuxperf.com/?p=42

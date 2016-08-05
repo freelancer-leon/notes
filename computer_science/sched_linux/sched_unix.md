@@ -28,6 +28,7 @@
 
 
 # 参考资料
+* The Design of the UNIX Operating System, Maurice J. Bach
 * https://en.wikipedia.org/wiki/Scheduling_%28computing%29
 * https://en.wikipedia.org/wiki/Multilevel_feedback_queue
 * https://en.wikipedia.org/wiki/Fair-share_scheduling

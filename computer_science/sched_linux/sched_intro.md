@@ -43,6 +43,7 @@
 * exit
 * block (I/O, signal, other)
 * I/O interrupt complete
+* Clock interrupt
 
 # 非抢占式调度与抢占式调度（Non-Preemptive Vs Preemptive Scheduling）
 ![pic/sched_non-preemptive_vs_preemptive.gif](pic/sched_non-preemptive_vs_preemptive.gif)
@@ -146,6 +147,8 @@
 
 
 # 参考资料
+* Modern Operating Systems (4th Edition), Andrew S. Tanenbaum, Herbert Bos
+* Linux Kernel Development (3rd Edition), Robert Love
 * https://en.wikipedia.org/wiki/Scheduling_%28computing%29
 * http://www.cs.rutgers.edu/~pxk/416/notes/07-scheduling.html
 * http://orzhovgilden.site11.com/projects/CPU.html
