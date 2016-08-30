@@ -295,7 +295,7 @@ static __always_inline void arch_spin_lock(arch_spinlock_t *lock)
 {
     /*TICKET_LOCK_INC为 1，加锁时tail+1，表示下一个获得锁的线程应持有的Ticket*/
     register struct __raw_tickets inc = { .tail = TICKET_LOCK_INC };
-    
+
     /*xadd将相加后的值存入指定内存地址，并返回指定地址里原来的值。
       实现时会在之前插入lock 指令，表示lock的下一条指令执行期间锁内存，于是下一条指令就是原子操作。
       这样，下面一条语句的效果就是：
@@ -386,7 +386,7 @@ static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 
 * arch/x86/include/asm/cmpxchg.h
 ```c
-/* 
+/*
  * An exchange-type operation, which takes a value and a pointer, and
  * returns the old value.
  */
@@ -544,43 +544,45 @@ static __always_inline void cpu_relax(void)
 ```
 
 * 参考Stack Overflow上一篇文章 [What does “rep; nop;” mean in x86 assembly?](http://stackoverflow.com/questions/7086220/what-does-rep-nop-mean-in-x86-assembly) 提几个问题：
-1. `rep; nop;`是什么意思？
+
+##### rep; nop; 是什么意思？
    * `rep`指令的释义：Repeats a string instruction the number of times specified in the count register or until the indicated condition of the ZF flag is no longer met. 操作码为`F3`。
      * [REP/REPE/REPZ/REPNE/REPNZ—Repeat String Operation Prefix](http://www.felixcloutier.com/x86/REP:REPE:REPZ:REPNE:REPNZ.html)
    * `nop`指令的释义：One byte no-operation instruction. 操作码为`90`。
      * [NOP — No Operation](http://www.felixcloutier.com/x86/NOP.html)
-2. 为什么不是`pause`指令？
+
+##### 为什么不是 pause 指令？
    * `pause`指令的释义：Gives hint to processor that improves performance of spin-wait loops。
    * 注意：`pause`指令的操作码为`F3 90`
    * [PAUSE — Spin Loop Hint](http://www.felixcloutier.com/x86/PAUSE.html)
 
 > **Description**
-> 
+>
 > Improves the performance of spin-wait loops. When executing a “spin-wait loop,” processors will suffer a severe performance penalty when exiting the loop because it detects a possible memory order violation. The PAUSE instruction provides a hint to the processor that the code sequence is a spin-wait loop. The processor uses this hint to avoid the memory order violation in most situations, which greatly improves processor performance. For this reason, it is recommended that a PAUSE instruction be placed in all spin-wait loops.
-> 
+>
 > An additional function of the PAUSE instruction is to reduce the power consumed by a processor while executing a spin loop. A processor can execute a spin-wait loop extremely quickly, causing the processor to consume a lot of power while it waits for the resource it is spinning on to become available. Inserting a pause instruction in a spin-wait loop greatly reduces the processor’s power consumption.
-> 
+>
 > This instruction was introduced in the Pentium 4 processors, but is backward compatible with all IA-32 processors. In earlier IA-32 processors, the PAUSE instruction operates like a NOP instruction. The Pentium 4 and Intel Xeon processors implement the PAUSE instruction as a delay. The delay is finite and can be zero for some processors. This instruction does not change the architectural state of the processor (that is, it performs essentially a delaying no-op operation).
-> 
+>
 > This instruction’s operation is the same in non-64-bit modes and 64-bit mode.
 
 * 可见`pause`指令实现自旋等待的效果更好，原因在于：
   * 给处理器一个提示，我这里想要自旋，处理器籍此优化其性能。
   * `pause`指令实现的自旋等待循环，处理器会减少能源消耗。
-  
+
 * 对于不支持超线程的处理器，用`pause`指令也是有益的。
   * 现代的处理器多为[Superscalar processor](https://en.wikipedia.org/wiki/Superscalar_processor)，这意味着它会尝试同时并行地预取，译码和执行多条指令。
   * 然而在自旋等待的场景，这么做并不会提高执行速度。
   * 采用`pause`指令可以被认为是限制在流水线上的（不必要的）指令数。
   * 参考 [http://stackoverflow.com/questions/7086220/what-does-rep-nop-mean-in-x86-assembly](http://stackoverflow.com/questions/7086220/what-does-rep-nop-mean-in-x86-assembly)
-  
+
 
 * 代码里写的`rep; nop;`，实际上它们的操作码与`pause`的操作码是相同的，这是为了向后兼容。
   * `pause`指令是Pentium 4处理器引入的，这样实现向后兼容所有的IA-32处理器。
   * 早期的IA-32处理器没有上面的优化效果，但依然会自旋等待（因为`rep; nop;`指令是支持的）。
   * [此处](https://lists.kernelnewbies.org/pipermail/kernelnewbies/2013-February/007473.html)也有人讨论过。
 
-3. 为什么不单独用`nop`指令？
+##### 为什么不单独用 nop 指令？
 
 * 见讨论 [rep; Nop / -asm pause](https://software.intel.com/en-us/forums/watercooler-catchall/topic/309231)
 
@@ -603,6 +605,7 @@ static __always_inline void __local_bh_disable_ip(unsigned long ip, unsigned int
     barrier();
 }
 #endif
+...__
 ```
 
 ## 示例
@@ -621,4 +624,3 @@ P3得锁 | 4 | 2 | 2 | Owner == Ticket == 2，P3获得锁
 P3解锁 | 4 | 3 | - | Owner + 1 == 3，P3释放锁
 P4得锁 | 4 | 3 | 3 | Owner == Ticket == 3，P4获得锁
 P4解锁 | 4 | 4 | - | Owner + 1 == 4，P4释放锁
-
