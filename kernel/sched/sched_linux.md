@@ -542,6 +542,9 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
      * nobody will actually run it, and a signal or other external
      * event cannot wake it up and insert it on the runqueue either.
      */
+    /*这里之所以要将进程的状态置为TASK_RUNNING，是为了防止内核的其他部分试图
+      将进程的状态从非运行改为运行，并且在进程的设置彻底完成之前调度进程。
+     */
     p->state = TASK_RUNNING;
 
     /*   

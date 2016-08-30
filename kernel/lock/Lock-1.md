@@ -14,7 +14,7 @@
 
 # 理论
 
-### 概念
+## 概念
 * **临界区**（Critical regions)
 * **竞争条件**（Race conditions）：如果两个执行线程可能处于同一临界区中同时执行。
 * **同步**（synchronization）：避免并发和防止竞争条件。
@@ -26,17 +26,19 @@
 * 抢占安全代码（preempt-safe）在内核抢占时能避免并发访问的安全代码。
 
 ### 并发的原因
-* 中断
-* 软中断包括tasklet
-* 内核抢占
-* 睡眠及与用户空间的同步
-* 对称多处理（Symmetrical multiprocessing）
----
+- 中断
+- 软中断包括tasklet
+- 内核抢占
+- 睡眠及与用户空间的同步
+- 对称多处理（Symmetrical multiprocessing）
+
+### 加锁的一般要考虑的问题
+
 * 最开始设计代码的时候就要考虑加锁，而不是事后才想到。
 * 要给数据而不是代码加锁。
 * 当锁争用严重时,加锁太粗会降低可伸缩性（scalability）。
 * 当锁争用不明显时，加锁太细加大系统开销，造成浪费。
-* 精髓：Start simple and grow in complexity only as needed. Simplicity is key.。
+* 精髓：**Start simple and grow in complexity only as needed. Simplicity is key.**。
 
 ### 关于编写内核代码是否加锁时考虑的问题
 * 这个数据是不是**全局**的？除了当前线程外，其他线程能不能访问它？
