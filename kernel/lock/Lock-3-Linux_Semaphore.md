@@ -39,7 +39,7 @@ static inline void sema_init(struct semaphore *sem, int val)
 {
     static struct lock_class_key __key;
     *sem = (struct semaphore) __SEMAPHORE_INITIALIZER(*sem, val);
-    lockdep_init_map(&sem->lock.dep_map, "semaphore->lock", &__key, 0); 
+    lockdep_init_map(&sem->lock.dep_map, "semaphore->lock", &__key, 0);
 }
 
 extern void down(struct semaphore *sem);
@@ -297,7 +297,7 @@ static inline int __sched __down_common(struct semaphore *sem, long state,
 	waiter.task = task;
 	waiter.up = false;
 
-	for (;;) { 
+	for (;;) {
 	    /*如果是因为信号的原因被唤醒，返回值得是-EINTR*/
 		if (signal_pending_state(state, task))
 			goto interrupted;
@@ -306,7 +306,7 @@ static inline int __sched __down_common(struct semaphore *sem, long state,
 		__set_task_state(task, state);
 		/*下面马上要调度了，不能在持有自旋锁时调度，此处需先解锁*/
 		raw_spin_unlock_irq(&sem->lock);
-		/*拿不到锁，会被调度出去*/
+		/*拿不到信号量，会被调度出去*/
 		timeout = schedule_timeout(timeout);
 		/*调度完成后再加锁，直至上层函数操作完后再解锁*/
 		raw_spin_lock_irq(&sem->lock);
@@ -314,7 +314,7 @@ static inline int __sched __down_common(struct semaphore *sem, long state,
 			return 0;
 	}
  /*因信号或超时的原因苏醒的进程需要多一个移出链表的动作。
-   对于正常的唤醒，在up()时已经将进程移出链表了。*/
+   对于正常的因信号量释放而唤醒，在up()时已经将进程移出链表了。*/
  timed_out:
 	list_del(&waiter.list);
 	return -ETIME;
@@ -345,12 +345,13 @@ static noinline int __sched __down_timeout(struct semaphore *sem, long timeout)
 }
 
 static noinline void __sched __up(struct semaphore *sem)
-{
+{ /*将睡眠在这个信号量的等待队列上的第一个等待者取出*/
 	struct semaphore_waiter *waiter = list_first_entry(&sem->wait_list,
 						struct semaphore_waiter, list);
+  /*将等待者移出队列*/
 	list_del(&waiter->list);
 	waiter->up = true;
-	/*唤醒等待链表上的任务*/
+	/*唤醒这个等待者*/
 	wake_up_process(waiter->task);
 }
 ```

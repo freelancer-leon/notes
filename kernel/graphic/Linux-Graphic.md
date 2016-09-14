@@ -653,3 +653,27 @@ static int intel_gtt_init(void)
   * 所以当不同OpenGL程序进行切换时，GPU需要切换记录Framebuffer地址的寄存器，使其指向当前正在进行绘制的程序的Framebuffer。
 
 ## 渲染Pipeline
+* OpenGL标准将3D渲染的过程划分为一些阶段，并将由这些阶段组成的这一过程形象地称为 **Pipeline**。
+* Pipeline可由软件实现（CPU），也可全部由硬件（GPU）实现，或者二者混合，取决于GPU的能力。
+
+### Pipeline的几个主要阶段
+1. 顶点处理（vertex operation）
+    * 顶点处理单元将几何对象的顶点从对象坐标系换到视点坐标系，即三维坐标投影到二维坐标。
+    * 为每个顶点赋颜色值。
+    * 进行光照处理。
+2. 图元装配（primitive assembly）
+    * 很多操作不能以顶点单独进行处理，如裁减，光栅化。
+    * 将处理过的顶点连接成为一些最基本的图元，包括点，线和三角形等。
+3. 光栅化（rasterization）
+    * 图元最终转化成像素阵列的过程。
+    * 光栅化后，图元被分解成一些片段（fragment），每个片段对应一个像素，其中有位置值（像素位置），颜色，纹理坐标和深度等属性。
+4. 片段处理（fragment operation）
+    * 对每个片段进行相关测试，如深度测试，模版测试。
+
+![Pipeline](pic/graph-pipeline.png)
+
+* Intel GPU 3D渲染的过程
+![Intel GPU 3D render](pic/graph-intel-3d-render.png)
+
+* GPU命令流
+![GPU command flow](pic/graph-gpu-cmd-flow.png)

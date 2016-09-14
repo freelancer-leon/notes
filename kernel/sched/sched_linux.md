@@ -297,6 +297,156 @@ deadline|SCHED_DEADLINE
 > Idle is used to schedule the per-cpu idle task (also called *swapper* task)
 > which is run if no other task is runnable.
 
+## cpu_idle
+* init/main.c
+```c
+...
+/*  
+ * We need to finalize in a non-__init function or else race conditions
+ * between the root thread and the init thread may cause start_kernel to
+ * be reaped by free_initmem before the root thread has proceeded to
+ * cpu_idle.
+ *      
+ * gcc-3.4 accidentally inlines this function, so use noinline.
+ */
+
+static __initdata DECLARE_COMPLETION(kthreadd_done);
+
+static noinline void __init_refok rest_init(void)
+{
+    int pid;
+
+    rcu_scheduler_starting();
+    /*
+     * We need to spawn init first so that it obtains pid 1, however
+     * the init task will end up wanting to create kthreads, which, if
+     * we schedule it before we create kthreadd, will OOPS.
+     */
+    kernel_thread(kernel_init, NULL, CLONE_FS);
+    numa_default_policy();
+    pid = kernel_thread(kthreadd, NULL, CLONE_FS | CLONE_FILES);
+    rcu_read_lock();
+    kthreadd_task = find_task_by_pid_ns(pid, &init_pid_ns);
+    rcu_read_unlock();
+    complete(&kthreadd_done);
+
+    /*
+     * The boot idle thread must execute schedule()
+     * at least once to get things moving:
+     */
+    init_idle_bootup_task(current); /*当前进程的调度器类设置为idle_sched_class*/
+    schedule_preempt_disabled();
+    /* Call into cpu_idle with preempt disabled */
+    cpu_startup_entry(CPUHP_ONLINE);
+}
+...
+asmlinkage __visible void __init start_kernel(void)
+{
+  ...
+  rest_init();
+}
+```
+
+* kernel/sched/idle.c
+```c
+/*
+ * Generic idle loop implementation
+ *
+ * Called with polling cleared.
+ */
+static void cpu_idle_loop(void)
+{
+    while (1) {
+        /*
+         * If the arch has a polling bit, we maintain an invariant:
+         *
+         * Our polling bit is clear if we're not scheduled (i.e. if
+         * rq->curr != rq->idle).  This means that, if rq->idle has
+         * the polling bit set, then setting need_resched is
+         * guaranteed to cause the cpu to reschedule.
+         */
+
+        __current_set_polling();
+        quiet_vmstat();
+        tick_nohz_idle_enter();
+
+        while (!need_resched()) {
+            check_pgt_cache();
+            rmb();
+
+            if (cpu_is_offline(smp_processor_id())) {
+                cpuhp_report_idle_dead();
+                arch_cpu_idle_dead();
+            }
+
+            local_irq_disable();
+            arch_cpu_idle_enter();
+
+            /*
+             * In poll mode we reenable interrupts and spin.
+             *
+             * Also if we detected in the wakeup from idle
+             * path that the tick broadcast device expired
+             * for us, we don't want to go deep idle as we
+             * know that the IPI is going to arrive right
+             * away
+             */
+            if (cpu_idle_force_poll || tick_check_broadcast_expired())
+                cpu_idle_poll();
+            else
+                cpuidle_idle_call();
+
+            arch_cpu_idle_exit();
+        }
+
+        /*
+         * Since we fell out of the loop above, we know
+         * TIF_NEED_RESCHED must be set, propagate it into
+         * PREEMPT_NEED_RESCHED.
+         *
+         * This is required because for polling idle loops we will
+         * not have had an IPI to fold the state for us.
+         */
+        preempt_set_need_resched();
+        tick_nohz_idle_exit();
+        __current_clr_polling();
+
+        /*
+         * We promise to call sched_ttwu_pending and reschedule
+         * if need_resched is set while polling is set.  That
+         * means that clearing polling needs to be visible
+         * before doing these things.
+         */
+        smp_mb__after_atomic();
+
+        sched_ttwu_pending();
+        schedule_preempt_disabled();
+    }
+}
+...
+void cpu_startup_entry(enum cpuhp_state state)
+{
+    /*  
+     * This #ifdef needs to die, but it's too late in the cycle to
+     * make this generic (arm and sh have never invoked the canary
+     * init for the non boot cpus!). Will be fixed in 3.11
+     */
+#ifdef CONFIG_X86
+    /*  
+     * If we're the non-boot CPU, nothing set the stack canary up
+     * for us. The boot CPU already has it initialized but no harm
+     * in doing it again. This is a good place for updating it, as
+     * we wont ever return from this function (so the invalid
+     * canaries already on the stack wont ever trigger).
+     */
+    boot_init_stack_canary();
+#endif
+    arch_cpu_idle_prepare(); /*留给平台相关的代码做cpu_idle的准备工作。*/
+    cpuhp_online_idle(state);
+    cpu_idle_loop();
+}
+```
+
 ## 调度相关的数据结构
 
 ### 进程结构 task_struct
