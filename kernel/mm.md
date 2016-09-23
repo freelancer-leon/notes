@@ -58,7 +58,7 @@ struct page {
   * 一些体系结构的内存的物理寻址范围比虚拟寻址范围大得多，有一些内存不能永久地映射到内核空间上。
 * 因为存在这些制约条件，Linux主要使用四种区：
   * ZONE_DMA —— 这个区的页能用来执行DMA操作
-  * ZONE_DMA32 —— 和ZONE_DMA类似，用来执行DMA操作。不同之处在于，这些页面只能被32为设备访问。在某些体系结构中，该区将比ZONE_DMA更大
+  * ZONE_DMA32 —— 和ZONE_DMA类似，用来执行DMA操作。不同之处在于，这些页面只能被32位设备访问。在某些体系结构中，该区将比ZONE_DMA更大
   * ZONE_NORMAL —— 该区包含能正常映射的页
   * ZONE_HIGHMEM —— 该区包含 *“高端内存”*，其中的页不能永久映射到内存
   * include/linux/mmzone.h
@@ -346,7 +346,7 @@ Need DMA-able memory, cannot sleep | Use `(GFP_DMA | GFP_ATOMIC)`, or perform yo
   * 此时，硬件设备上用到的任何内存区都必须是物理上连续的块。
 * 仅供软件使用的内存块就可以使用只有虚拟地址连续的内存块。
 * 对内核而言，所有内存看起来都是逻辑上连续的。
-* 很多代码用`kmalloc()`而不是`vmalloc()`主要是处于性能的考虑（`kmalloc()比`vmalloc()`快）。
+* 很多代码用`kmalloc()`而不是`vmalloc()`主要是处于性能的考虑（`kmalloc()`比`vmalloc()`快）。
   * `vmalloc()`把物理上不连续的页转换为虚拟地址空间上连续的页，必须专门建立页表项。
   * 通过`vmalloc()`获得的页必须一个一个地进行映射（因为物理上不连续），会导致比直接内存映射大得多的TLB抖动。
 * 因此`vmalloc()`仅在不得已时才会用——典型的就是为了获得大块内存时，如，模块被动态插入到内核。
@@ -355,3 +355,360 @@ Need DMA-able memory, cannot sleep | Use `(GFP_DMA | GFP_ATOMIC)`, or perform yo
 > **TLB (translation lookside buffer)** 是一种 **硬缓冲区**，很多体系结构用它来缓冲 **虚拟地址到物理地址的映射关系**。它极大地提高了系统性能，因为大多数内存都要进行虚拟寻址。
 
 # slab层（Slab Layer）
+
+* slab分配器扮演了 **通用数据结构缓存** 的角色。
+* slab分配器试图在几个基本原则之间寻求一种平衡：
+  * 频繁使用的数据结构也会频繁分配和释放，因此应当缓存它们。
+  * 频繁地分配和回收必然会导致内存碎片（难以找到大块连续可用的内存）。为了避免这种现象，空闲链表的缓存会连续地存放。因为已经释放的数据结构又会放回空闲链表，因此不会导致碎片。
+  * 回收的对象可以立即投入下一次分配，因此，对于频繁的分配和释放，空闲链表能够提高其性能。
+  * 如果分配器知道对象大小，页大小和总的高速缓存的大小这样的概念，它会作出更明智的决策。
+  * 如果让部分缓存专属于单个处理器（对系统上的每个处理器独立而唯一），那么，分配和释放就可以在不加SMP锁的情况下运行。
+  * 如果分配器是与NUMA相关的，它就可以从相同的内存结点为请求者进行分配。
+  * 对存放的对象进行着色（color），以防止多个对象映射到相同的高速缓存行（cache line）。
+
+## slab层的设计
+* 不同对象划分为 **高速缓存组**，其中每个高速缓存组都存放 **不同类型** 的对象。**每种对象类型** 对应一个高速缓存。
+* `kmalloc()`接口建立在slab层之上，使用了一组通用高速缓存。
+* 高速缓存被划分为 **slab**，slab由一个或多个物理上连续的页组成。
+* 一般情况下，slab也就仅仅由一页组成。每个高速缓存可以由多个slab组成。
+* 每个slab都包含一些被缓存的数据结构。
+* 每个slab处于三种状态之一：满，部分满，空。
+* 当内核某一部分需要一个新对象时：
+  * 先从 *部分满* 的slab中进行分配。
+  * 没有 *部分满*，则从 *空* slab中进行分配。
+  * 没有 *空* slab，则创建一个slab。
+
+#### 高速缓存结构 kmem_cache
+* 每个高速缓存都用`kmem_cache`结构表示。
+* include/linux/slab_def.h
+```c
+/*
+ * Definitions unique to the original Linux SLAB allocator.
+ */
+
+struct kmem_cache {
+    /*per-cpu数据，每次分配/释放期间都会访问*/
+    struct array_cache __percpu *cpu_cache;
+
+/* 1) Cache tunables. Protected by slab_mutex */
+    unsigned int batchcount;
+    unsigned int limit;
+    unsigned int shared;
+
+    unsigned int size;
+    struct reciprocal_value reciprocal_buffer_size;
+/* 2) touched by every alloc & free from the backend */
+
+    unsigned int flags;     /* constant flags */
+    unsigned int num;       /* # of objs per slab */
+
+/* 3) cache_grow/shrink */
+    /* order of pgs per slab (2^n) */
+    unsigned int gfporder;
+
+    /* force GFP flags, e.g. GFP_DMA */
+    gfp_t allocflags;
+
+    size_t colour;          /* cache colouring range */
+    unsigned int colour_off;    /* colour offset */
+    struct kmem_cache *freelist_cache;
+    unsigned int freelist_size;
+
+    /* constructor func */
+    void (*ctor)(void *obj);
+
+/* 4) cache creation/removal */
+    const char *name;
+    struct list_head list;
+    int refcount;
+    int object_size;
+    int align;
+
+/* 5) statistics */
+...
+
+    struct kmem_cache_node *node[MAX_NUMNODES];
+};
+...
+```
+
+#### 三个 slab 链表和 Per-CPU 的 array_cache
+
+* mm/slab.h
+```c
+/*
+ * struct array_cache
+ *
+ * Purpose:
+ * - LIFO ordering, to hand out cache-warm objects from _alloc
+ * - reduce the number of linked list operations
+ * - reduce spinlock operations
+ *
+ * The limit is stored in the per-cpu structure to reduce the data cache
+ * footprint.
+ *
+ */
+struct array_cache {
+    unsigned int avail;
+    unsigned int limit;
+    unsigned int batchcount;
+    unsigned int touched;
+    void *entry[];  /*
+             * Must have this definition in here for the proper
+             * alignment of array_cache. Also simplifies accessing
+             * the entries.
+             */
+};
+...
+/*
+ * The slab lists for all objects.
+ */
+struct kmem_cache_node {
+    spinlock_t list_lock;
+
+#ifdef CONFIG_SLAB
+    struct list_head slabs_partial; /* partial list first, better asm code */
+    struct list_head slabs_full;
+    struct list_head slabs_free;
+    unsigned long free_objects;
+    unsigned int free_limit;
+    unsigned int colour_next;   /* Per-node cache coloring */
+    struct array_cache *shared; /* shared per node */
+    struct alien_cache **alien; /* on other nodes */
+    unsigned long next_reap;    /* updated without locking */
+    int free_touched;       /* updated without locking */
+#endif
+
+#ifdef CONFIG_SLUB
+    unsigned long nr_partial;
+    struct list_head partial;
+#ifdef CONFIG_SLUB_DEBUG
+    atomic_long_t nr_slabs;
+    atomic_long_t total_objects;
+    struct list_head full;
+#endif
+#endif
+
+};
+```
+
+* `kmem_getpages()`创建新的slab。
+  * `kmem_getpages()`和`alloc_pages()`都会调用`__alloc_pages_nodemask()`来分配页。
+* `kmem_freepages()`释放内存。
+* slab层只有当给定高速缓存部分中即 **没有满** 也 **没有空** 的slab的时才会调用页分配函数。
+* 只有在下列情况下才会调用 *释放函数*：
+  * 当可用内存变得紧缺时，系统试图释放出更多的内存以供使用；
+  * 当高速缓存显示撤销时。
+* slab层的管理是在每个高速缓存的基础上，通过提供给整个系统一个简单的接口来完成的。通过接口就可以：
+  * 创建和撤销新的高速缓存。
+  * 在高速缓存内分配和释放对象。
+* 创建一个高速缓存后，slab层所起的作用就像一个专用的分配器，可以为具体的对象类型进行分配。
+
+#### __SetPageSlab()宏
+* include/linux/page-flags.h
+```c
+enum pageflags {
+  PG_locked,      /* Page is locked. Don't touch. */
+  PG_error,
+  PG_referenced,
+  PG_uptodate,
+  PG_dirty,
+  PG_lru,
+  PG_active,
+  PG_slab,
+...
+};
+...
+static inline struct page *compound_head(struct page *page)
+{
+    unsigned long head = READ_ONCE(page->compound_head);
+
+    if (unlikely(head & 1))
+        return (struct page *) (head - 1);
+    return page;
+}
+
+static __always_inline int PageTail(struct page *page)
+{
+    return READ_ONCE(page->compound_head) & 1;
+}
+...
+/*
+ * Page flags policies wrt compound pages
+ *
+ * PF_ANY:
+ *     the page flag is relevant for small, head and tail pages.
+ *
+ * PF_HEAD:
+ *     for compound page all operations related to the page flag applied to
+ *     head page.
+ *
+ * PF_NO_TAIL:
+ *     modifications of the page flag must be done on small or head pages,
+ *     checks can be done on tail pages too.
+ *
+ * PF_NO_COMPOUND:
+ *     the page flag is not relevant for compound pages.
+ */
+#define PF_ANY(page, enforce)   page
+#define PF_HEAD(page, enforce)  compound_head(page)
+#define PF_NO_TAIL(page, enforce) ({                    \
+        VM_BUG_ON_PGFLAGS(enforce && PageTail(page), page); \
+        compound_head(page);})
+#define PF_NO_COMPOUND(page, enforce) ({                \
+        VM_BUG_ON_PGFLAGS(enforce && PageCompound(page), page); \
+        page;})
+
+/*
+ * Macros to create function definitions for page flags
+ */
+#define TESTPAGEFLAG(uname, lname, policy)              \
+static __always_inline int Page##uname(struct page *page)       \
+    { return test_bit(PG_##lname, &policy(page, 0)->flags); }
+...
+#define __SETPAGEFLAG(uname, lname, policy)             \
+static __always_inline void __SetPage##uname(struct page *page)     \
+    { __set_bit(PG_##lname, &policy(page, 1)->flags); }
+
+#define __CLEARPAGEFLAG(uname, lname, policy)               \
+static __always_inline void __ClearPage##uname(struct page *page)   \
+    { __clear_bit(PG_##lname, &policy(page, 1)->flags); }
+...
+#define __PAGEFLAG(uname, lname, policy)                \
+    TESTPAGEFLAG(uname, lname, policy)              \
+    __SETPAGEFLAG(uname, lname, policy)             \
+    __CLEARPAGEFLAG(uname, lname, policy)
+
+...
+__PAGEFLAG(Slab, slab, PF_NO_TAIL)
+```
+* 宏展开后的函数定义
+```c
+/*__ arch/x86/include/asm/bitops.h*/
+/**
+ * __set_bit - Set a bit in memory
+ * @nr: the bit to set
+ * @addr: the address to start counting from
+ *
+ * Unlike set_bit(), this function is non-atomic and may be reordered.
+ * If it's called on the same region of memory simultaneously, the effect
+ * may be that only one operation succeeds.
+ */
+static __always_inline void __set_bit(long nr, volatile unsigned long *addr)
+{
+    asm volatile("bts %1,%0" : ADDR : "Ir" (nr) : "memory");
+}
+
+static __always_inline void __SetPageSlab(struct page *page)
+    { __set_bit(PG_slab, &({
+      do {
+        if (unlikely(1 && PageTail(page))) {
+            dump_page(page, "VM_BUG_ON_PAGE(" __stringify(1 && PageTail(page))")");
+            BUG();
+        }
+      } while (0);
+      compound_head(page);})->flags); }
+```
+
+## slab分配器的接口
+
+* `kmem_cache_create()`创建一个新的高速缓存。
+  * `SLAB_HWCACHE_LINE` slab层把一个slab内的所有对象和硬件cache line对齐。可以提高性能，但增加了内存开销，空间换时间。
+  * `SLAB_POISON` 内存毒化标志，用已知的值填充slab。
+  * `SLAB_RED_ZONE` 在已分配的内存周围插入“红色警界区”以探测缓冲越界。
+  * `SLAB_PANIC` 分配失败时提醒slab层。这在要求分配只能成功的时候非常有用。
+  * `SLAB_CACHE_DMA` 命令slab层用 *可以执行DMA的内存* 给每个slab分配空间。
+    * 只在 *分配的对象用于DMA*，且 *必须驻留在`ZONE_DMA`区`时* 才需要这个标志。
+    * 否则不需要，也不应该设置。
+  * **不能用于中断上下文**，会睡眠。
+* `kmem_cache_destory()`撤销给定的高速缓存。
+  * **不能用于中断上下文**，会睡眠。
+  * 除此之外还需确保：
+    * 高速缓存中所有的slab都必须为空。
+    * 在调用`kmem_cache_destory()`过程中（更别提之后了）不再访问这个高速缓存。调用者必须确保同步。
+* `kmem_cache_alloc()`从给定的高速缓存中分配对象。
+  * 如果高速缓存中所有的slab中都没有空闲对象，slab层必须通过`kmem_getpages()`获取新的页。
+* `kmem_cache_free()`释放一个对象，并返还给原先的slab。
+* slab层负责内存紧缺情况下所有底层的对齐，着色，分配，释放，回收等。
+* 如果要频繁创建很多相同类型的对象，应该考虑使用slab高速缓存，而不是自己实现空闲链表。
+
+# 栈上的静态分配
+* 每个进程的 **内核栈** 大小即依赖 *体系结构*，也与 *编译选项* 有关。
+* 历史上，每个进程都有 **两页** 的内核栈。
+* 32位 - 4KB/page - 8K/task stack
+* 64位 - 8KB/page - 16K/task stack
+
+## 单页内核栈
+* 激活该选项时，每个进程的内核栈只有一页。
+  * 让每个进程减小内存消耗。
+  * 随着运行时间增加，物理内存碎片化，给一个新进程分配VM的压力也在增大。
+  * 中断处理程序不再占用当前进程的内核栈，而用自己的栈——中断栈。
+
+## 在内核栈上Fair Play
+* 在具体函数中让所有全局变量所占空间之和不要超过几百字节。
+* 在栈上进行大量静态分配（如分配大型数组或大型结构体）是很危险的。
+* 因此，大块内存采用动态分配。
+
+# 高端内存的映射
+* 根据定义，高端内存中的页不能永久映射到内核地址空间上。
+* 通过`alloc_pages()`以`__GFP_HIGHMEM`标志获得的page不可能有逻辑地址。
+* 在x86体系结构上，高于896MB的所有物理内存的范围都是高端内存，它并不会 *永久地* 或 *自动地* 映射到内核地址空间。
+* PAE（Physical Address Extension），该feature可以使x86处理器尽管只有32位的虚拟地址空间，但物理上能寻址到36位（2<sup>36</sup> = 64GB）的内存空间。
+* 一旦这些页被分配，就必须映射到内核的逻辑地址空间上。在x86上，高端内存的页被映射到了3GB～4GB。
+
+## 永久映射
+* `kmap()` 将给定的`page`结构映射到内核地址空间。
+* arch/x86/mm/highmem_32.c
+```c
+void *kmap(struct page *page)
+{
+    might_sleep();
+    if (!PageHighMem(page))
+        return page_address(page);
+    return kmap_high(page);
+}
+EXPORT_SYMBOL(kmap);
+```
+* include/linux/highmem.h
+```c
+...
+#ifndef ARCH_HAS_KMAP
+static inline void *kmap(struct page *page)
+{
+    might_sleep();
+    return page_address(page);
+}
+static inline void kunmap(struct page *page)
+{
+}
+
+static inline void *kmap_atomic(struct page *page)
+{
+    preempt_disable();
+    pagefault_disable();
+    return page_address(page);
+}
+#define kmap_atomic_prot(page, prot)    kmap_atomic(page)
+
+static inline void __kunmap_atomic(void *addr)
+{
+    pagefault_enable();
+    preempt_enable();
+}
+...
+#endif
+...
+```
+* `kmap()`在高端内存或低端内存上都能用。
+  * 如果`page`结构对应的是低端内存中的一页，函数只会单纯地返回该页的虚拟地址。
+  * 如果页位于高端内存，则会建立一个永久映射，再返回地址。
+* `kmap()` **只能用于进程上下文**，可以睡眠。
+* 允许永久映射的数量有限，当不再需要高端内需时，需用`kunmap()`解除映射。
+
+## 临时映射
+* **临时映射（原子映射）** 当必须创建一个映射，而当前上下文又不能睡眠时。
+* 有一组保留的映射，它们可以存放新创建的临时映射。内核可以原子地把高端内存中的一个页映射到某个保留的映射中。
+* 临时映射可以用于中断上下文，因为获取映射时绝不会阻塞。也可用于其他不能重新调度的地方。
+* `kmap_atomic()`建立一个临时映射。
+* `kmap_atomic()`禁止内核抢占，因为映射对每个处理器都是唯一的。
+* `kunmap_atomic()`取消映射。
