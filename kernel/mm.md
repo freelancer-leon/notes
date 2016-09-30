@@ -701,14 +701,95 @@ static inline void __kunmap_atomic(void *addr)
 ```
 * `kmap()`在高端内存或低端内存上都能用。
   * 如果`page`结构对应的是低端内存中的一页，函数只会单纯地返回该页的虚拟地址。
-  * 如果页位于高端内存，则会建立一个永久映射，再返回地址。
+  * 如果页位于 *高端内存*，则会建立一个永久映射，再返回地址。
 * `kmap()` **只能用于进程上下文**，可以睡眠。
 * 允许永久映射的数量有限，当不再需要高端内需时，需用`kunmap()`解除映射。
 
 ## 临时映射
 * **临时映射（原子映射）** 当必须创建一个映射，而当前上下文又不能睡眠时。
 * 有一组保留的映射，它们可以存放新创建的临时映射。内核可以原子地把高端内存中的一个页映射到某个保留的映射中。
-* 临时映射可以用于中断上下文，因为获取映射时绝不会阻塞。也可用于其他不能重新调度的地方。
+* 临时映射 **可以用于中断上下文**，因为获取映射时绝不会阻塞。也可用于其他不能重新调度的地方。
 * `kmap_atomic()`建立一个临时映射。
 * `kmap_atomic()`禁止内核抢占，因为映射对每个处理器都是唯一的。
 * `kunmap_atomic()`取消映射。
+
+# Per-CPU
+
+* 对于给定处理器，Per-CPU的数据是唯一的。
+* 虽然访问Per-CPU数据不需要锁同步，但是禁止内核抢占还是需要的，防止出现伪并发。
+* `get_cpu()`和`put_cpu()`包含了对内核抢占的禁用和重新激活。
+* 2.6 Per-CPU相关文件：
+  * include/linux/percpu.h
+  * arch/x86/include/asm/percpu.h
+  * include/linux/percpu-defs.h
+  * mm/slab.c
+  * mm/percpu.c
+
+## 编译时Per-CPU数据
+
+* 声明Per-CPU变量
+  ```c
+  DECLARE_PER_CPU(type, name)
+  ```
+* 定义Per-CPU变量
+  ```c
+  DEFINE_PER_CPU(type, name)
+  ```
+* `get_cpu_var(var)`，`put_cpu_var(var)`和`per_cpu(name, cpu)`宏
+  ```c
+  #define per_cpu(var, cpu)   (*per_cpu_ptr(&(var), cpu))
+
+  /*
+   * Must be an lvalue. Since @var must be a simple identifier,
+   * we force a syntax error here if it isn't.
+   */
+  #define get_cpu_var(var)                        \
+  (*({                                    \
+      preempt_disable();                      \
+      this_cpu_ptr(&var);                     \
+  }))
+
+  /*
+   * The weird & is necessary because sparse considers (void)(var) to be
+   * a direct dereference of percpu variable (var).
+   */
+  #define put_cpu_var(var)                        \
+  do {                                    \
+      (void)&(var);                           \
+      preempt_enable();                       \
+  } while (0)
+  ```
+#### 注意
+* `per_cpu(name, cpu)`既不禁止抢占，也不提供锁保护。
+
+> Another subtle note:These compile-time per-CPU examples **do not work for modules** because the linker actually creates them in a unique executable section (for the curious, `.data.percpu` ). If you need to access per-CPU data from modules, or if you need to create such data dynamically, there is hope.
+
+## 运行时Per-CPU数据
+
+* 运行时创建和释放Per-CPU接口
+  ```c
+  void *alloc_percpu(type); /* a macro */
+  void *__alloc_percpu(size_t size, size_t align);
+  void free_percpu(const void *);
+  ```
+* `__alignof__` 是gcc的一个功能，它返回指定类型或lvalue所需的（或建议的，要知道有些古怪的体系结构并没有字节对齐的要求） 对齐 **字节数**。
+  * 如果指定一个lvalue，那么将返回lvalue的最大对齐字节数。
+* 使用运行时的Per-CPU数据
+  ```c
+  get_cpu_var(ptr); /* return a void pointer to this processor’s copy of ptr */
+  put_cpu_var(ptr); /* done; enable kernel preemption */
+  ```
+## 使用Per-CPU数据的原因
+
+* 减少数据锁定
+  * 记住“只有这个处理器能访问这个数据”的规则是编程约定。
+  * 并不存在措施禁止你从事欺骗活动。
+  * 有越界的可能？
+* 大大减少缓存失效
+  * 失效发生在处理器试图使它们的缓存保持同步时。
+    * 如果一个处理器操作某个数据，而该数据又存放在其他处理器缓存中，那么存放该数据的那个处理器必须清理或刷新自己的缓存。
+    * 持续不断的缓存失效称为 **缓存抖动**。这样对系统性能影响颇大。
+  * 使用Per-CPU将使得缓存影响降至最低，因为理想情况下只会访问自己的数据。
+  * *percpu* 接口 **cache-align** 所有数据，以便确保在访问一个处理器的数据时，不会将另一个处理器的数据带入同一个cache line上。
+* 注意：不能在访问Per-CPU数据过程中睡眠，否则，醒来可能在其他CPU上。
+* Per-CPU的新接口并不兼容之前的内核。
