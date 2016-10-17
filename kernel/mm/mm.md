@@ -367,6 +367,7 @@ Need DMA-able memory, cannot sleep | Use `(GFP_DMA | GFP_ATOMIC)`, or perform yo
   * 对存放的对象进行着色（color），以防止多个对象映射到相同的高速缓存行（cache line）。
 
 ## slab层的设计
+![mm_slab](pic/mm_slab_1.gif)
 * 不同对象划分为 **高速缓存组**，其中每个高速缓存组都存放 **不同类型** 的对象。**每种对象类型** 对应一个高速缓存。
 * `kmalloc()`接口建立在slab层之上，使用了一组通用高速缓存。
 * 高速缓存被划分为 **slab**，slab由一个或多个物理上连续的页组成。
@@ -377,6 +378,19 @@ Need DMA-able memory, cannot sleep | Use `(GFP_DMA | GFP_ATOMIC)`, or perform yo
   * 先从 *部分满* 的slab中进行分配。
   * 没有 *部分满*，则从 *空* slab中进行分配。
   * 没有 *空* slab，则创建一个slab。
+* 注意 slabs_empty 列表中的 slab 是进行 **回收（reaping）** 的主要备选对象。正是通过此过程，slab 所使用的内存被返回给操作系统供其他用户使用。
+* slab 列表中的每个 slab 都是一个连续的内存块（一个或多个连续页），它们被划分成一个个对象。这些对象是从特定缓存中进行分配和释放的基本元素。
+* 注意 slab 是 slab 分配器进行操作的最小分配单位，因此如果需要对 slab 进行扩展，这也就是所扩展的最小值。
+* 由于对象是从 slab 中进行分配和释放的，因此单个 slab 可以在 slab 列表之间进行移动。
+  * 例如，当一个 slab 中的所有对象都被使用完时，就从 slabs_partial 列表中移动到 slabs_full 列表中。
+  * 当一个 slab 完全被分配并且有对象被释放后，就从 slabs_full 列表中移动到 slabs_partial 列表中。
+  * 当所有对象都被释放之后，就从 slabs_partial 列表移动到 slabs_empty 列表中。
+
+### slab 背后的动机
+与传统的内存管理模式相比， slab 缓存分配器提供了很多优点。
+* 首先，内核通常依赖于对小对象的分配，它们会在系统生命周期内进行无数次分配。slab 缓存分配器通过对类似大小的对象进行缓存而提供这种功能，从而避免了常见的碎片问题。
+* slab 分配器还支持通用对象的初始化，从而避免了为同一目而对一个对象重复进行初始化。
+* 最后，slab 分配器还可以支持硬件缓存对齐和着色，这允许不同缓存中的对象占用相同的缓存行，从而提高缓存的利用率并获得更好的性能。
 
 #### 高速缓存结构 kmem_cache
 * 每个高速缓存都用`kmem_cache`结构表示。
@@ -791,5 +805,9 @@ static inline void __kunmap_atomic(void *addr)
     * 持续不断的缓存失效称为 **缓存抖动**。这样对系统性能影响颇大。
   * 使用Per-CPU将使得缓存影响降至最低，因为理想情况下只会访问自己的数据。
   * *percpu* 接口 **cache-align** 所有数据，以便确保在访问一个处理器的数据时，不会将另一个处理器的数据带入同一个cache line上。
-* 注意：不能在访问Per-CPU数据过程中睡眠，否则，醒来可能在其他CPU上。
+* 注意：**不能在访问Per-CPU数据过程中睡眠**，否则，醒来可能在其他CPU上。
 * Per-CPU的新接口并不兼容之前的内核。
+
+
+# 参考资料
+* https://www.ibm.com/developerworks/cn/linux/l-linux-slab-allocator/

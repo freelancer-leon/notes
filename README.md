@@ -3,8 +3,9 @@
 
 # Kernel
 - [Bottom Half 下半部](https://github.com/freelancer-leon/notes/blob/master/kernel/Bottom_Half.md)
-- [内存管理](https://github.com/freelancer-leon/notes/blob/master/kernel/mm.md)
 - [时间和定时器](https://github.com/freelancer-leon/notes/blob/master/kernel/time.md)
+- [内存管理](https://github.com/freelancer-leon/notes/blob/master/kernel/mm/mm.md)
+- [虚拟文件系统（VFS）](https://github.com/freelancer-leon/notes/blob/master/kernel/vfs.md)
 - [图形](https://github.com/freelancer-leon/notes/blob/master/kernel/graphic/Linux-Graphic.md)
 - [NMI](https://github.com/freelancer-leon/notes/blob/master/kernel/nmi)
 
