@@ -1,5 +1,7 @@
 # 虚拟文件系统（VFS）
 
+![vfsops](pic/vfsops.png)
+
 # 文件系统抽象层
 * 为了支持多文件系统，VFS提供了一个通用文件系统模型，该模型囊括了任何文件系统的常用功能集和行为。
 * VFS抽象层之所以能衔接各种各样的文件系统，是因为它定义了所有文件系统都支持的、基本的、概念上的接口和数据结构。
@@ -257,6 +259,9 @@ struct file_operations {
 ```
 
 # 文件系统相关的数据结构
+
+![vfs](pic/vfs.png)
+
 * 每种文件系统由一个特殊的数据结构来描述其功能和行为，即`struct file_system_type`。
 * **每种文件系统不管有多少个实例挂载到系统中，还是根本就没挂载到系统中，都只有一个`struct file_system_type`结构。**
 * 当文件系统被挂载时，将有一个`struct mount`结构体（的对象）在挂载点被创建。该对象用来代表文件系统的实例。
@@ -420,3 +425,6 @@ struct mnt_namespace {
     u64 event;                  /*事件计数*/
 };
 ```
+
+# 参考资料
+* [Dynamic Tracing with DTrace & SystemTap - Virtual File System](http://myaut.github.io/dtrace-stap-book/kernel/fs.html)

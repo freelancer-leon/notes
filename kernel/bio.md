@@ -1,5 +1,7 @@
 # Block I/O 层
 
+![https://www.thomas-krenn.com/en/wiki/Linux_Storage_Stack_Diagram](pic/Linux-storage-stack-diagram_v4.0.svg)
+
 # 基本概念
 
 ## 块设备
@@ -280,7 +282,7 @@ EXPORT_SYMBOL(bio_put);
   * 读请求具有同步性，并且彼此之间往往相互依靠，所以读请求响应时间直接影响系统性能。
 * 注意，减少请求饥饿必须以降低全局吞吐量为代价。
 
-![io-sched-deadline](kernel/pic/deadline-io-sched.png)
+![io-sched-deadline](pic/deadline-io-sched.png)
 
 * **排队队列**：以磁盘物理位置为次序维护的请求队列。
 * **读请求FIFO队列**：以时间为基准，将读请求插入的队列。

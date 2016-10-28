@@ -5,8 +5,11 @@
 - [Bottom Half 下半部](https://github.com/freelancer-leon/notes/blob/master/kernel/Bottom_Half.md)
 - [时间和定时器](https://github.com/freelancer-leon/notes/blob/master/kernel/time.md)
 - [内存管理](https://github.com/freelancer-leon/notes/blob/master/kernel/mm/mm.md)
+- [进程地址空间](https://github.com/freelancer-leon/notes/blob/master/kernel/mm/mm-1-process_addr.md)
 - [虚拟文件系统（VFS）](https://github.com/freelancer-leon/notes/blob/master/kernel/vfs.md)
+- [页缓存和页回写](https://github.com/freelancer-leon/notes/blob/master/kernel/page_cache.md)
 - [块I/O层（BIO）](https://github.com/freelancer-leon/notes/blob/master/kernel/bio.md)
+- [设备模型](https://github.com/freelancer-leon/notes/blob/master/kernel/dev_model.md)
 - [图形](https://github.com/freelancer-leon/notes/blob/master/kernel/graphic/Linux-Graphic.md)
 - [NMI](https://github.com/freelancer-leon/notes/blob/master/kernel/nmi)
 

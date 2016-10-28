@@ -378,7 +378,12 @@ VM_NONLINEAR | This area is a nonlinear mapping.
 * `VM_RAND_READ`标志暗示应用程序对映射内容执行随机的（非有序的）读操作。内核可以有选择性地减少或者彻底取消文件预读。
 * 系统调用`madvise(2)`可以设置`VM_SEQ_READ`和`VM_RAND_READ`标志。
   * 设置参数分别是`MADV_SEQUENTIAL`和`MADV_RANDOM`。
-* **文件预读** 是指在读取数据时有意地按顺序多读取一些本次请求以外的数据——希望多读的数据很快就能够被用到。
+* **文件预读（read-ahead）** 是指在读取数据时有意地按顺序多读取一些本次请求以外的数据——希望多读的数据很快就能够被用到。
+  * 关于文件预读的算法简介可以看 [这里](http://www.penglixun.com/tech/system/linux_cache_discovery.html#3_Cache) 。
+  * 还有一篇相关的论文，但比较旧 [The Performance Impact of Kernel Prefetching on Buffer Cache Replacement Algorithms](http://www.cs.arizona.edu/projects/dream/papers/sigm05_prefetch.pdf)
+  * 相关的函数 [readahead(2)](http://man7.org/linux/man-pages/man2/readahead.2.html)
+
+![read-ahead sample](pic/cache_read-ahead.gif)
 
 ## VMA操作
 * `struct vm_area_struct`中的`vm_ops`域指向与指定内存区域相关的操作函数表。内核使用表中的方法操作VMA。
@@ -463,3 +468,180 @@ struct vm_operations_struct {
   * `mm_rb`指向红黑树的根结点。
   * 每个`struct vm_area_struct`通过自身的`vm_rb`域连接到树中。
 * 链表用于 **遍历**，红黑树用于 **定位** 特定VMA。
+
+# 操作内存区域
+
+## find_vma()
+* `find_vma()`在给定地址空间内找出 **第一个**`vm_end`大于`addr`的VMA。
+  * 注意，返回的VMA的首地址可能大于`addr`，所以`addr`并不已定在返回的VMA中。
+* mm/mmap.c
+```c
+/* Look up the first VMA which satisfies  addr < vm_end,  NULL if none. */
+struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
+{
+    struct rb_node *rb_node;
+    struct vm_area_struct *vma;
+
+    /* Check the cache first. */
+    /*首先从该mm的mmap_cache中去找，如果找到了就返回。
+      struct task_struct有成员vm_area_struct *vmacache[VMACACHE_SIZE]存的vma cache。*/
+    vma = vmacache_find(mm, addr);
+    if (likely(vma))
+        return vma;
+    /*如果找不到，则在红黑树中找。*/
+    rb_node = mm->mm_rb.rb_node;
+
+    while (rb_node) {
+        struct vm_area_struct *tmp;
+        /*红黑树中取出VMA*/
+        tmp = rb_entry(rb_node, struct vm_area_struct, vm_rb);
+
+        if (tmp->vm_end > addr) { /*找到一个，但我们要的是第一个*/
+            vma = tmp;            /*不管是不是，先记录下来*/
+            if (tmp->vm_start <= addr) /*addr落在区间内，必然是第一个*/
+                break;                 /*结束查找*/
+            /*addr比vm_start还小，不在区间内，可能还有vm_end更小的VMA，还得继续找*/
+            rb_node = rb_node->rb_left;
+        } else
+            /*当前VMA的vm_end已然比addr小了，向红黑树的右方向继续查找。
+              如果右边节点为空，则上一次循环已经记录的vma就是要找的VMA。
+              否则重复这个过程。*/
+            rb_node = rb_node->rb_right;
+    }
+
+    if (vma)
+        vmacache_update(addr, vma);
+    return vma;
+}
+
+EXPORT_SYMBOL(find_vma);
+```
+
+## find_vma_prev()
+* `find_vma_prev()`与`find_vma()`一样，不同之处在于`find_vma_prev()`还会在参数`pprev`中返回第一个小于`addr`的VMA。
+* mm/mmap.c
+```c
+/*
+ * Same as find_vma, but also return a pointer to the previous VMA in *pprev.
+ */
+struct vm_area_struct *
+find_vma_prev(struct mm_struct *mm, unsigned long addr,
+            struct vm_area_struct **pprev)
+{
+    struct vm_area_struct *vma;
+
+    vma = find_vma(mm, addr);
+    if (vma) {
+        *pprev = vma->vm_prev;
+    } else {
+        /*当没有比addr大的vm_end时，树的最右节点就是第一个小于addr的VMA*/
+        struct rb_node *rb_node = mm->mm_rb.rb_node;
+        *pprev = NULL;
+        while (rb_node) {
+            *pprev = rb_entry(rb_node, struct vm_area_struct, vm_rb);
+            rb_node = rb_node->rb_right;
+        }
+    }
+    return vma;
+}
+```
+* **注意**：当没有比`addr`大的`vm_end`时，此时`find_vma_prev()`返回值为空，树的最右节点就是第一个小于`addr`的VMA，`pprev`会指向它。
+
+# mmap()和do_mmap()：创建地址区间
+
+* `do_mmap()` 加入一个新的线性地址空间到进程的地址空间中。
+  * 如果新的地址空间有已存在的地址空间，且它们有相同的权限，则两个区间合并。
+  * 否则创建一个新的VMA地址空间。
+  ```c
+  unsigned long do_mmap(struct file *file, unsigned long addr,
+              unsigned long len, unsigned long prot,
+              unsigned long flags, vm_flags_t vm_flags,
+              unsigned long pgoff, unsigned long *populate)
+  ```
+  * `file`指定文件， `pgoff`开始映射的页面偏移的位置。
+    * **匿名映射（anonymous mapping）** `file`为空，`pgoff`为0的情况，表示没有文件相关。
+    * **文件映射（file-backed mapping）** 指定了`file`和`pgoff`的映射。
+    * 使用页面偏移而不是文件偏移，可以映射更大的文件和更大的偏移位置。
+  * `prot` VMA中页面的访问权限
+
+Page Protection Flags | Flag Effect on the Pages in the New Interval
+---|---
+PROT_READ | Corresponds to VM_READ
+PROT_WRITE | Corresponds to VM_WRITE
+PROT_EXEC | Corresponds to VM_EXEC
+PROT_NONE | Cannot access page
+
+* `flags` 对应到VMA的标志
+
+Map Type Flags | Flag Effect on the New Interval
+---|---
+MAP_SHARED | The mapping can be shared.
+MAP_PRIVATE | The mapping cannot be shared.
+MAP_FIXED | The new interval must start at the given address addr.
+MAP_ANONYMOUS | The mapping is not file-backed, but is anonymous.
+MAP_GROWSDOWN | Corresponds to `VM_GROWSDOWN`.
+MAP_DENYWRITE | Corresponds to `VM_DENYWRITE`.
+MAP_EXECUTABLE | Corresponds to `VM_EXECUTABLE`.
+MAP_LOCKED | Corresponds to `VM_LOCKED`.
+MAP_NORESERVE | No need to reserve space for the mapping.
+MAP_POPULATE | Populate (prefault) page tables.
+MAP_NONBLOCK | Do not block on I/O.
+
+* 如果没能与相邻区域合并，则会：
+  * 从`vm_area_cachep`（slab）缓存中分配一个`struct vm_area_struct`。
+  * 使用`vma_link()`将新分配的内存区域添加到地址空间的内存区域链表和红黑树中。
+  * 更新`struct mm_struct`的`total_vm`域。
+  * 返回新分配地址区间的起始地址。
+* 对应的系统调用为`mmap2()`：
+  ```c
+  void *mmap2(void *addr, size_t length, int prot,
+                      int flags, int fd, off_t pgoffset);
+  ```
+* POSIX定义的`mmap()`仍然保留，但底层是基于`mmap2()`实现的。
+
+# munmap()和do_munmap()：删除地址空间
+
+* `do_munmap()` 从特定的进程地址空间中删除指定地址区间。
+  ```c
+  int do_munmap(struct mm_struct *mm, unsigned long start, size_t len)
+  ```
+* 对应的系统调用为`munmap()`
+  ```c
+  int munmap(void *addr, size_t length);
+  ```
+
+# 页表
+
+* *应用程序操作的对象* 是映射到物理内存之上的 *虚拟内存*。
+* CPU直接操作的是 *物理内存*。
+* 应用程序访问一个虚拟地址时，要先将虚拟地址转换成物理地址，然后处理器才能解析地址访问请求。
+* 地址转换需要通过查询 *页表* 才能完成。
+  * 地址转换需要将虚拟地址分段，每段虚拟地址作为一个索引指向页表
+  * 页表项指向下一级别的页表或者指向最终的物理页面。
+* Linux用的三级页表完成地址转换。
+* 顶级页表——**页全局目录（page global directory，PDG）**
+  * 包含一个`pdg_t`类型的数组，多数体系结构中等同于`unsigned long`
+  * 表项指向二级页目录中的表项 *PMD*
+* 二级页表——**中间页目录（page middle directory，PMD）**
+  * `pmd_t`类型数组
+  * 表项指向 *PTE* 中的表项
+* 最后一级页表——**页表（page table）**
+  * 包含`pte_t`类型的页表项 **（PTE）**
+  * 页表项指向物理页面
+
+![page table level](pic/page_table_level.png)
+
+* 多数体系结构中，搜索页表的工作由硬件完成（至少某种程度上），但前提是内核正确设置页表。
+* 每个进程都有自己的页表，当然，线程会共享页表。
+  * `struct mm_struct`的`pgd_t *pgd`域指向进程的页全局目录 **PDG**。
+  * 注意：操作和检索页表使必须使用`struct mm_struct`中的`page_table_lock`锁，以防竞争。
+* **翻译后缓冲器（translation lookaside buffer，TLB）**——为了加快从虚拟内存中页面到物理内存中对应地址的搜索，多数体系结构都实现了一个将虚拟地址映射到物理地址的硬件缓存。
+  * 当访问一个虚拟地址时，CPU先检查TLB中是否缓存了该虚拟地址到物理地址的映射，如果在缓存中直接命中，物理地址立刻返回。
+  * 否则，通过页面搜索需要的物理地址。
+
+# 参考资料
+
+* [How the Kernel Manages Your Memory](http://duartes.org/gustavo/blog/post/how-the-kernel-manages-your-memory/)
+* [How Linux Kernel Manages Application Memory](http://techblog.cloudperf.net/2016/07/how-linux-kernel-manages-application_18.html)
+* [The Performance Impact of Kernel Prefetching on Buffer Cache Replacement Algorithms](http://www.cs.arizona.edu/projects/dream/papers/sigm05_prefetch.pdf)
+* [Linux Cache 机制探究](http://www.penglixun.com/tech/system/linux_cache_discovery.html)
