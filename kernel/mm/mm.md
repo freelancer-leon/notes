@@ -57,10 +57,10 @@ struct page {
   * 一些硬件只能用某种特定的内存地址来执行DMA（直接内存访问）。
   * 一些体系结构的内存的物理寻址范围比虚拟寻址范围大得多，有一些内存不能永久地映射到内核空间上。
 * 因为存在这些制约条件，Linux主要使用四种区：
-  * ZONE_DMA —— 这个区的页能用来执行DMA操作
-  * ZONE_DMA32 —— 和ZONE_DMA类似，用来执行DMA操作。不同之处在于，这些页面只能被32位设备访问。在某些体系结构中，该区将比ZONE_DMA更大
-  * ZONE_NORMAL —— 该区包含能正常映射的页
-  * ZONE_HIGHMEM —— 该区包含 *“高端内存”*，其中的页不能永久映射到内存
+  * `ZONE_DMA` —— 这个区的页能用来执行DMA操作
+  * `ZONE_DMA32` —— 和ZONE_DMA类似，用来执行DMA操作。不同之处在于，这些页面只能被32位设备访问。在某些体系结构中，该区将比ZONE_DMA更大
+  * `ZONE_NORMAL` —— 该区包含能正常映射的页
+  * `ZONE_HIGHMEM` —— 该区包含 *“高端内存”*，其中的页不能永久映射到内存
   * include/linux/mmzone.h
 ```c
 ...
@@ -646,6 +646,10 @@ static __always_inline void __SetPageSlab(struct page *page)
 * slab层负责内存紧缺情况下所有底层的对齐，着色，分配，释放，回收等。
 * 如果要频繁创建很多相同类型的对象，应该考虑使用slab高速缓存，而不是自己实现空闲链表。
 
+## 查看slab信息
+* [`cat /proc/slabinfo`](http://man7.org/linux/man-pages/man5/slabinfo.5.html)
+* [`slbtop`](http://man7.org/linux/man-pages/man1/slabtop.1.html)
+
 # 栈上的静态分配
 * 每个进程的 **内核栈** 大小即依赖 *体系结构*，也与 *编译选项* 有关。
 * 历史上，每个进程都有 **两页** 的内核栈。
@@ -811,3 +815,5 @@ static inline void __kunmap_atomic(void *addr)
 
 # 参考资料
 * https://www.ibm.com/developerworks/cn/linux/l-linux-slab-allocator/
+* [/PROC/MEMINFO之谜](http://linuxperf.com/?p=142)
+* [怎样诊断SLAB泄露问题](http://linuxperf.com/?p=148)

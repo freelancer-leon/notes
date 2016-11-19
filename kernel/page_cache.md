@@ -57,6 +57,7 @@
 * Linux page cache的目标是缓存任何基于page的对象，而不仅限于文件，包含各种类型的文件和各种类型的内存映射。
   * Linux page cache用`struct address_space`对象来管理 *缓存项* 和 *页I/O操作*。
   * 文件可以有多个虚拟地址，但只能在物理内存有一份。
+* 更贴切的名称：`page_cache_entity`或`physical_pages_of_a_file`
 * include/linux/fs.h
 ```c
 struct address_space {
@@ -162,6 +163,24 @@ struct address_space_operations {
   * 这个缓存通常称为 **缓冲区高速缓存（buffer cache）**，它没有作为独立缓存，而是作为page cache的一部分。
   * buffer是用page来映射block的，所以它正好在page cache中。
 
+* 关于buffer和cache，一个能观测到的地方是`free`命令，解释见[此处](http://linuxperf.com/?p=32)：
+  ```
+  >free
+               total       used       free     shared    buffers     cached
+  Mem:      16340212   15223624    1116588    1153504     216356    4967596
+  -/+ buffers/cache:   10039672    6300540
+  Swap:     16680956     123448   16557508
+  ```
+  * “Buffers” 来自于`nr_blockdev_pages()`的返回值。
+  * “Cached” 来自于以下公式：
+  ```
+  global_page_state(NR_FILE_PAGES) – total_swapcache_pages – i.bufferram
+  ```
+  * 以上计算cached的公式中，`global_page_state(NR_FILE_PAGES)`来自`vmstat[NR_FILE_PAGES]`，表示所有的缓存页(page cache)的总和，它包括：
+    * Cached
+    * buffers
+    * 交换区缓存(swap cache)
+
 # flusher线程
 
 * 由于page cache的作用，写操作实际上会被延迟，但内存中累积起来的脏页最终必须被写回磁盘。
@@ -187,6 +206,14 @@ laptop_mode | A Boolean value controlling laptop mode. See the following section
 
 * 为了避免拥塞，内核采用了 **每个磁盘对应一个flusher线程** 的策略。
 
+# VFS, Filesystem and page cache
+
+* VFS，文件系统和page cache这三者关系简述如下：
+
+> How the registered file system call-backs would eventually manage the inode, dentry and the page data cache buffers would depend on its own inherent logic. So here there is a kind of loop where the VFS calls the file system module call-backs and those modules would in turn call other kernel helper functions to handle specific cache buffer operations like clean, flush, write-back etc. In the end when the file system call-backs return the control back to VFS the associated caches should be already configured and ready for use.
+
+![https://tekrants.files.wordpress.com/2015/04/inode-pagecache.jpg?w=636](pic/inode-pagecache.jpg)
+
 # 参考资料
 * Professional Linux Kernel Architecture, Wolfgang Mauerer
 * Understanding The Linux Kernel 3rd Edition, Daniel P. Bovet, Marco Cesati
@@ -194,3 +221,5 @@ laptop_mode | A Boolean value controlling laptop mode. See the following section
 * [Dynamic Tracing with DTrace & SystemTap - Virtual memory](http://myaut.github.io/dtrace-stap-book/kernel/virtmem.html)
 * [How the Kernel Manages Your Memory](http://duartes.org/gustavo/blog/post/how-the-kernel-manages-your-memory/)
 * [Linux Storage Cache](https://msreekan.com/2015/04/24/linux-storage-cache/)
+* [How Linux Kernel Manages Application Memory](http://techblog.cloudperf.net/2016/07/how-linux-kernel-manages-application_18.html)
+* [FREE命令显示的BUFFERS与CACHED的区别](http://linuxperf.com/?p=32)

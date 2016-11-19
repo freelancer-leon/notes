@@ -11,6 +11,9 @@
   * 避免在目标文件中显示地进行初始化，减少了空间的浪费。
 
 # 内存描述符
+
+![http://static.duartes.org/img/blogPosts/mm_struct.png](pic/mm_struct.png)
+
 * 内核用`struct mm_struct`表示进程的地址空间，该结构包含了和进程地址空间有关的全部信息。
 * include/linux/mm_types.h
 ```c
@@ -141,7 +144,9 @@ struct mm_struct {
 * `mm_count` 记录的是`struct mm_struct`的主引用计数。
   * 当`mm_users`的值减为0（即所有使用该地址空间的线程退出）时，`mm_count`的值才变为0。
   * 当内核在一个地址空间上操作，并需要使用与该地址相关联的引用计数时，内核便增加`mm_count`。
-* `mmap`和`mm_rb`描述的对象是相同的：该地址空间中的全部内存区域。只是组织（存放）的方式不同。
+* `mmap`和`mm_rb`描述的对象是相同的：该地址空间中的全部内存区域。只是[组织（存放）的方式不同](#VMA的树形结构和链表结构)。
+  * `mmap` 链表的方式，按起始虚拟地址排序
+  * `mm_rb` 红黑树的方式。方便内核快速找到一个给定虚拟地址所在VMA
 * `mmlist` 链接点。所有的`struct mm_struct`对象都通过`mmlist`域连接成双向链表。
   * 该链表首元素是`init_mm`，代表init进程的地址空间。
   * 操作该链表需加`mmlist_lock`锁来防止并发访问。
@@ -252,6 +257,9 @@ context_switch(struct rq *rq, struct task_struct *prev,
 ```
 
 # 虚拟内存区域（vm_area_struct）
+
+![http://static.duartes.org/img/blogPosts/memoryDescriptorAndMemoryAreas.png](pic/memoryDescriptorAndMemoryAreas.png)
+
 * `struct vm_area_struct` 描述了指定地址空间内连续区间上的一个独立内存范围。
 * 内核将每个VMA作为一个单独的内存对象管理，每个VMA都拥有一致的属性，比如访问权限等，另外，相应的操作也一致。
 * 按照这样的方式，每一个VMA就可以代表不同类型的内存区域，对应于进程地址空间中的唯一区间。
@@ -615,7 +623,7 @@ MAP_NONBLOCK | Do not block on I/O.
 * *应用程序操作的对象* 是映射到物理内存之上的 *虚拟内存*。
 * CPU直接操作的是 *物理内存*。
 * 应用程序访问一个虚拟地址时，要先将虚拟地址转换成物理地址，然后处理器才能解析地址访问请求。
-* 地址转换需要通过查询 *页表* 才能完成。
+* 地址转换需要通过查询 **[页表](https://en.wikipedia.org/wiki/Page_table)** 才能完成。
   * 地址转换需要将虚拟地址分段，每段虚拟地址作为一个索引指向页表
   * 页表项指向下一级别的页表或者指向最终的物理页面。
 * Linux用的三级页表完成地址转换。
@@ -631,13 +639,66 @@ MAP_NONBLOCK | Do not block on I/O.
 
 ![page table level](pic/page_table_level.png)
 
-* 多数体系结构中，搜索页表的工作由硬件完成（至少某种程度上），但前提是内核正确设置页表。
+* 多数体系结构中，搜索页表的工作由硬件（如MMU）完成（至少某种程度上），但前提是内核正确设置页表。
 * 每个进程都有自己的页表，当然，线程会共享页表。
   * `struct mm_struct`的`pgd_t *pgd`域指向进程的页全局目录 **PDG**。
   * 注意：操作和检索页表使必须使用`struct mm_struct`中的`page_table_lock`锁，以防竞争。
-* **翻译后缓冲器（translation lookaside buffer，TLB）**——为了加快从虚拟内存中页面到物理内存中对应地址的搜索，多数体系结构都实现了一个将虚拟地址映射到物理地址的硬件缓存。
-  * 当访问一个虚拟地址时，CPU先检查TLB中是否缓存了该虚拟地址到物理地址的映射，如果在缓存中直接命中，物理地址立刻返回。
-  * 否则，通过页面搜索需要的物理地址。
+  * 当进程切换发生的时候，进程的给 **用户空间** 的页表也会随之切换。
+* **[翻译后缓冲器（translation lookaside buffer，TLB）](https://en.wikipedia.org/wiki/Translation_lookaside_buffer)**——为了加快从虚拟内存中页面到物理内存中对应地址的搜索，多数体系结构都实现了一个将虚拟地址映射到物理地址的硬件缓存。
+  * 当访问一个虚拟地址时，CPU的MMU先检查TLB中是否缓存了该虚拟地址到物理地址的映射，如果在缓存中直接命中，物理地址立刻返回。
+  * 否则，通过页表搜索需要的物理地址。
+  * TLB中缓冲的是 **页表条目（PTE）**，而不是物理页。因此TLB命中返回PTE给MMU后，节省了MMU去查询页表的时间，仍然需要通过cache/memory去获取内容。
+* **[MMU](https://en.wikipedia.org/wiki/Memory_management_unit)** 是一种负责处理中央处理器（CPU）的内存访问请求的计算机硬件。它的功能包括：
+  * 虚拟地址到物理地址的转换（即虚拟内存管理）
+  * 内存保护、CPU cache的控制
+  * 在较为简单的计算机体系结构中，负责总线的仲裁以及存储体切换（bank switching，尤其是在8位的系统上）
+*  **[缺页（page fault）](https://en.wikipedia.org/wiki/Page_fault)**
+
+> A **page fault** (sometimes called #PF, PF or hard fault[a]) is a type of interrupt, called trap, raised by computer hardware when a running program accesses a memory page that is mapped into the virtual address space, but not actually loaded into main memory. The hardware that detects a page fault is the processor's memory management unit (MMU), while the exception handling software that handles page faults is generally a part of the operating system kernel. When handling a page fault, the operating system generally tries to make the required page accessible at the location in physical memory, or terminates the program in case of an illegal memory access.
+
+* MMU在缺页中的角色：
+  * *MMU* 作为活动的主体，查询 *页表*。
+  * 当发生缺页时，（硬件）引发缺页异常，将控制权交回内核（软件）处理。
+* 从页表的角度来说，发生page fault时，PTE的状态可能是：
+  * PTE是有的，虚拟地址曾经被使用过，但已被换出，PTE的 *Present* flag已被清除。
+  * 该虚拟地址从未被映射过，PTE完全为空（全零）。
+* arch/x86/include/asm/pgtable.h
+```c
+static inline int pte_present(pte_t a)
+{
+    return pte_flags(a) & (_PAGE_PRESENT | _PAGE_PROTNONE);
+}
+```
+* arch/x86/include/asm/pgtable_types.h
+```c
+#define _PAGE_BIT_PRESENT   0   /* is present */
+...
+#define _PAGE_PRESENT   (_AT(pteval_t, 1) << _PAGE_BIT_PRESENT)
+...
+static inline pteval_t native_pte_val(pte_t pte)
+{
+    return pte.pte;
+}
+
+static inline pteval_t pte_flags(pte_t pte)
+{
+    return native_pte_val(pte) & PTE_FLAGS_MASK;
+}
+...
+```
+###### Classic page-table format used on the Intel x86, Pentium, and Pentium Pro family, as well as on the PowerPC 821 and 860 PowerQUICC processors.
+![http://www.lynx.com/wp-content/uploads/2013/08/mmu-fig2-02b-300x291.gif](pic/mmu-x86-paging.gif)
+* 这里只采用了两级页表。
+
+# 题外话
+## 共享库、静态链接和二进制程序在运行时对内存消耗有怎样的影响？
+* 这里要明确的一点是，共享库对减小存储器（硬盘、flash）的消耗肯定是有一定帮助的。
+  * 比如说printf.o的实现不需要copy给程序A和程序B，链接到 libc.so 就可以了。
+  * 但使用共享库肯定会增加符号表和其他sections的一些开支，但跟上一点比起来，这些开支微不足道了。
+* 对于运行期间来说，共享库节约对内存消耗的主要体现在运行不同程序的时候。
+  * 对于 **同一程序** 来说，磁盘上的文件在运行时都对应到同一page cache，不管它是二进制程序还是和它相关的共享库。比如，运行多个bash，bash程序的`.text`的内容不会在物理内存中存在多个物理页。所以这里共享库对节约内存没什么意义。
+  * 对于链接到同一共享库的 **不同程序** 来说，则可以从共享库的映射中获得好处，因为同一共享库的`.text`只会映射到同一物理页。如，bash 和 vi 都链接到的 libc.so 共享同一物理页。
+  * 用静态链接显然就没有这一好处了，静态链接实际上把内容合并到程序的二进制文件中，在运行不同程序时无法区分这些相同的内容，因此必然会消耗更多的内存。
 
 # 参考资料
 
@@ -645,3 +706,4 @@ MAP_NONBLOCK | Do not block on I/O.
 * [How Linux Kernel Manages Application Memory](http://techblog.cloudperf.net/2016/07/how-linux-kernel-manages-application_18.html)
 * [The Performance Impact of Kernel Prefetching on Buffer Cache Replacement Algorithms](http://www.cs.arizona.edu/projects/dream/papers/sigm05_prefetch.pdf)
 * [Linux Cache 机制探究](http://www.penglixun.com/tech/system/linux_cache_discovery.html)
+* [Using the Microprocessor MMU for Software Protection in Real-Time Systems](http://www.lynx.com/using-the-microprocessor-mmu-for-software-protection-in-real-time-systems/)

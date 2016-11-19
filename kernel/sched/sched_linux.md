@@ -1017,3 +1017,4 @@ again:
 * http://www.ibm.com/developerworks/cn/linux/l-cn-scheduler/index.html
 * http://linuxperf.com/?p=42
 * http://www.linuxinternals.org/blog/2016/03/20/tif-need-resched-why-is-it-needed/
+* [What Does an Idle CPU Do?](http://duartes.org/gustavo/blog/post/what-does-an-idle-cpu-do/)

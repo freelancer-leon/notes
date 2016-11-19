@@ -107,7 +107,7 @@ restart:
     /* Reset the pending bitmask before enabling irqs */
     set_softirq_pending(0);
 
-    local_irq_enable();
+    local_irq_enable();  /*开启之前关闭的中断，如run_ksoftirqd()。因此软中断处理程序期间中断是打开的。*/
 
     h = softirq_vec;
 
@@ -136,7 +136,7 @@ restart:
     }
 
     rcu_bh_qs();
-    local_irq_disable();
+    local_irq_disable(); /*返回之前恢复中断的关闭状态。*/
 
     pending = local_softirq_pending();
     if (pending) {
