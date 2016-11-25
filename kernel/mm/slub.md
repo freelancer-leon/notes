@@ -3,11 +3,13 @@
 ## 可回收的slab
 * slab cache是否可回收可查看文件`/sys/kernel/slab/<slab name>/reclaim_account`。
 * include/linux/slab.h
+
   ```c
   /* The following flags affect the page allocator grouping pages by mobility */
   #define SLAB_RECLAIM_ACCOUNT    0x00020000UL        /* Objects are reclaimable */
   #define SLAB_TEMPORARY      SLAB_RECLAIM_ACCOUNT    /* Objects are short-lived */
   ```
+
 * mm/slub.c
   ```c
   static ssize_t reclaim_account_show(struct kmem_cache *s, char *buf)
@@ -26,9 +28,11 @@
   SLAB_ATTR(reclaim_account);
   ```
 * 由此可见，该标志位可以通过后期写文件的方式修改：
+
   ```
   # echo 1 > /sys/kernel/slab/kmalloc-4096/reclaim_account
   ```
+
 * 该标志在`slabinfo`工具的`Flg`列对应的标志是小写`a`。
 
 # slub调试
@@ -58,10 +62,10 @@ echo 1 > /sys/kernel/slab/<slab name>/trace
 
 #### 为什么有的slab不能打开trace？
 * 例如：
-```
-# echo 1 > /sys/kernel/slab/kmalloc-4096/trace
--sh: echo: write error: Invalid argument
-```
+  ```
+  # echo 1 > /sys/kernel/slab/kmalloc-4096/trace
+  -sh: echo: write error: Invalid argument
+  ```
 
 * trace功能跟`SLAB_TRACE`标志位有关
   * include/linux/slab.h
