@@ -1,5 +1,5 @@
 # 目录
-- [ Bottom Half的类型 ](#Bottom%5fHalf的类型)
+- [Bottom Half的类型](#Bottom%5fHalf的类型)
 - [Softirq](#Softirq)
 - [tasklet](#tasklet)
 - [工作队列（work queue）](#工作队列（work%5fqueue）)

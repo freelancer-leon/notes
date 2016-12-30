@@ -6,7 +6,7 @@
 - [CFS数据结构](#cfs数据结构)
 	- [CFS调度实体 sched_entity](#cfs调度实体-schedentity)
 	- [CFS调度运行队列 cfs_rq](#cfs调度运行队列-cfsrq)
-	- [CFS调度器类fair_sched_class](#cfs调度器类fairschedclass)
+	- [CFS调度器类fair_sched_class](#cfs调度器类-fairschedclass)
 - [创建进程](#创建进程)
 	- [关联新进程与调度器](#关联新进程与调度器)
 	- [新进程进入队列](#新进程进入队列)
@@ -82,7 +82,7 @@ struct cfs_rq {
 * `last` 指向最近被调度出去的实体。
 * `skip` 指向调度时需要跳过的实体。
 
-## CFS调度器类fair_sched_class
+## CFS调度器类 fair_sched_class
 * kernel/sched/fair.c
 ```c
 /*
@@ -382,12 +382,12 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
      * through calling update_curr().
      */
     /* 此处将task_fork_fair()最后减去cfs_rq->min_vruntime补回来，
-     * 因为调度实体最后在哪个队列被执行并不一定，所以出队的时候vruntime里存的时差值。
+     * 因为调度实体最后在哪个队列被执行并不一定，所以出队的时候vruntime里存的是差值。
      */
     if (!(flags & ENQUEUE_WAKEUP) || (flags & ENQUEUE_WAKING))
         se->vruntime += cfs_rq->min_vruntime;
 
-    /*   
+    /*
      * Update run-time statistics of the 'current'.
      */
     update_curr(cfs_rq);
@@ -396,9 +396,9 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
     if (flags & ENQUEUE_WAKEUP) {
         place_entity(cfs_rq, se, 0);
         ...
-    }    
+    }
     ...
-    /* 进程如果恰好时队列的当前进程，无需再次入队；
+    /* 进程如果恰好是队列的当前进程，无需再次入队；
      * 否则新进程加入红黑树，并且on_rq标志置为 1。
      */
     if (se != cfs_rq->curr)

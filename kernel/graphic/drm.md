@@ -21,19 +21,19 @@
 
 # DRM
 
-* **直接渲染管理器（Direct Rendering Manager (DRM)）** 是 Linux 内核负责与现代显卡的 GPU 交互的子系统。
-* DRM 暴露一个 API 给用户空间程序，可以用于发送命令和数据给 GPU，执行例如配置[显示模式设定](https://en.wikipedia.org/wiki/Mode_setting)的操作。
-* 用户空间程序可以用 DRM API 命令 GPU 完成[硬件加速](https://en.wikipedia.org/wiki/Hardware_acceleration)[3D渲染](https://en.wikipedia.org/wiki/3D_rendering)和[视频解码](https://en.wikipedia.org/wiki/Video_decoding)，以及[GPGPU计算](https://en.wikipedia.org/wiki/General-purpose_computing_on_graphics_processing_units)。
+在计算机领域里，**直接渲染管理器（Direct Rendering Manager (DRM)）** 是 Linux 内核负责与现代显卡的 GPU 交互的子系统。DRM 暴露一个 API 给用户空间程序，可以用于发送命令和数据给 GPU，执行例如配置[显示模式设定](https://en.wikipedia.org/wiki/Mode_setting)的操作。DRM 最初作为 X Server 的[直接渲染基础](https://en.wikipedia.org/wiki/Direct_Rendering_Infrastructure)的内核空间的组件而开发，但如今它也被其他图形栈替代方案，如 [Wayland](https://en.wikipedia.org/wiki/Wayland_(display_server_protocol))所使用。
+
+用户空间程序可以用 DRM API 命令 GPU 完成[硬件加速](https://en.wikipedia.org/wiki/Hardware_acceleration)[3D渲染](https://en.wikipedia.org/wiki/3D_rendering)和[视频解码](https://en.wikipedia.org/wiki/Video_decoding)，以及[GPGPU计算](https://en.wikipedia.org/wiki/General-purpose_computing_on_graphics_processing_units)。
 
 # 概览
 
-Linux Kernel已经有一个允许管理一个图形适配器的[framebuffer](https://en.wikipedia.org/wiki/Framebuffer)的 API，叫[fbdev](https://en.wikipedia.org/wiki/Linux_framebuffer)，但它无法被用于处理基于现代3D加速[GPU](https://en.wikipedia.org/wiki/GPU)的显卡的需求。这类显卡通常需要设置和管理一个位于显存（[Video RAM](https://en.wikipedia.org/wiki/Video_RAM)）的命令队列，分发命令给GPU，并且它们也需要恰当地管理缓冲区和自身空闲显存。最初的用户空间程序（如X Server）直接管理这些资源，但这些程序通常把它们当作访问该显卡资源的唯一的使用者。当两个或更多程序同时尝试去控制同一显卡，并以它们各自的方式去设置它们的资源时，大部分时候都以灾难告终。
+Linux 内核已经有一个允许管理一个图形适配器的 [framebuffer](https://en.wikipedia.org/wiki/Framebuffer) 的 API，叫 [fbdev](https://en.wikipedia.org/wiki/Linux_framebuffer)，但它无法用于处理基于现代3D加速 [GPU](https://en.wikipedia.org/wiki/GPU) 的显卡的需求。这类显卡通常需要设置和管理一个位于显存（[Video RAM](https://en.wikipedia.org/wiki/Video_RAM)）的命令队列，分发命令给 GPU，并且它们也需要恰当地管理缓冲区和自身空闲显存。最初的用户空间程序（如 X Server）直接管理这些资源，但这些程序通常把它们当作访问该显卡资源的唯一的使用者。当两个或更多程序同时尝试去控制同一显卡，并以它们各自的方式去设置它们的资源时，大部分时候都以灾难告终。
 
-直接渲染管理器被创建的最初目的是让多个程序可以通过它使用显卡的资源。DRM 以互斥的方式访问显卡，并负责初始化和维护命令队列、显存和任何其他的硬件资源。想使用GPU的程序将它们的请求发送给 DRM，DRM 作为仲裁者小心地避免可能的冲突。
+直接渲染管理器被创建的最初目的是让多个程序可以通过它使用显卡的资源。DRM 以互斥的方式访问显卡，并负责初始化和维护命令队列、显存和任何其他的硬件资源。想使用 GPU 的程序将它们的请求发送给 DRM，DRM 作为仲裁者小心地避免可能的冲突。
 
-此后，DRM 的范围逐年扩大以涵盖更多之前由用户空间程序处理的功能，例如 framebuffer 管理和模式设定，内存共享对象和内存同步。一些这样的扩充有它们自己特定的名字，如图形执行管理器（GEM）或者内核模式设定（KMS），以及当它们提供的功能被特别提及时所暗指的盛行术语。但它们确实时整个内核DRM子系统的一部分。
+此后，DRM 的范围逐年扩大以涵盖更多之前由用户空间程序处理的功能，例如 framebuffer 管理和模式设定，内存共享对象和内存同步。一些这样的扩充有它们自己特定的名字，如图形执行管理器（GEM）或者内核模式设定（KMS），以及当它们提供的功能被特别提及时所暗指的盛行术语。但它们确实时整个内核 DRM 子系统的一部分。
 
-在一个计算机里有两个 GPU 的趋势 —— 一个独立的GPU和一个集成的 —— 导致了新的问题，例如，GPU 切换也应该由 DRM 层解决。为了适应 [Nvidia Optimus](https://en.wikipedia.org/wiki/Nvidia_Optimus) 技术，DRM 提供 GPU offloading 的能力，叫做PRIME。
+在一个计算机里有两个 GPU 的趋势 —— 一个独立的GPU和一个集成的 —— 导致了新的问题，例如，GPU 切换也应该由 DRM 层解决。为了适应 [Nvidia Optimus](https://en.wikipedia.org/wiki/Nvidia_Optimus) 技术，DRM 提供 GPU offloading 的能力，叫做 PRIME。
 
 
 ##### DRM允许多个程序并发访问3D显卡避免冲突
@@ -44,39 +44,40 @@ Linux Kernel已经有一个允许管理一个图形适配器的[framebuffer](htt
 * with DRM
 ![https://en.wikipedia.org/wiki/File:Access_to_video_card_with_DRM.svg](pic/Access_to_video_card_with_DRM.svg.png)
 
+
 # 软件架构
 
-直接渲染管理器驻留在内核空间，所以用户空间程序必须使用内核系统调用来请求它的服务。然而，DRM没有定义它自己的专属的系统调用。反而，它遵循 UNIX “一切皆文件”的原则，通过在`/dev`层次下用设备文件的方式在文件系统名字空间暴露 GPU。DRM 探测到的每个 GPU 被引用为DRM设备，且一个设备文件`/dev/dri/cardX`（X是一个连续的数字）被创建出来用于交互。想和该 GPU 交互的用户空间程序必须打开文件并使用`ioctl`调用来和 DRM 交互。不同的`ioctl`对应不同的 DRM API 函数。
+直接渲染管理器运行在内核空间，所以用户空间程序必须使用内核系统调用来请求它的服务。然而，DRM没有定义它自己的专属的系统调用。反而，它遵循 UNIX “一切皆文件”的原则，通过在`/dev`层次下用设备文件的方式在文件系统名字空间暴露 GPU。DRM 探测到的每个 GPU 被引用为DRM设备，且一个设备文件`/dev/dri/cardX`（X是一个连续的数字）被创建出来用于交互。想和该 GPU 交互的用户空间程序必须打开文件并使用`ioctl`调用来和 DRM 交互。不同的`ioctl`对应不同的 DRM API 函数。
 
-一个叫 *libdrm* 的库被创建来帮助用户空间的程序与DRM子系统交互。这个库仅仅是用 C 实现的函数封装了每个 DRM API 的`ioctl`，也包括常量、结构和其他辅助元素。libdrm 的使用不仅避免将内核接口直接暴露给用户空间，而且显示出通常的在程序间重用和共享的优点。
+一个叫 *libdrm* 的库被创建来帮助用户空间的程序与DRM子系统交互。这个库仅仅是用 C 实现的函数封装了每个 DRM API 的`ioctl`，也包括常量、结构和其他辅助元素。libdrm 的使用不仅避免将内核接口直接暴露给用户空间，而且体现出常见的在程序间重用和共享的优点。
 
 ##### 一个进程使用内核的直接渲染管理器访问3D加速图形卡
 ![https://upload.wikimedia.org/wikipedia/commons/thumb/6/62/High_level_Overview_of_DRM.svg/1246px-High_level_Overview_of_DRM.svg.png](pic/High_level_Overview_of_DRM.svg.png)
 
-DRM 由两部分组成：一个通用的“DRM 核”和一个为每种支持的硬件特定的（”DRM驱动”）部分。DRM 核提供基本的框架，以供不同的的 DRM 驱动注册，并且提供给用户空间一个通用的硬件无关功能的`ioctl`的最小集。在另一方面，一个 DRM 驱动实现硬件相关部分的 API，特定与它支持的 GPU 类型；它还需要提供剩下的没有被 DRM 核覆盖到的`ioctl`实现，但它也可以扩展API，提供额外的`ioctl`以支持只在这些硬件上可用的额外的功能。当一个特定的DRM驱动提供一个增强API，用户空间 libdrm 也由一个额外的libdrm驱动库扩展，这样用户空间可以籍此与额外的`ioctl`交互。
+DRM 由两部分组成：一个通用的“DRM 核心”和一个为每种支持的硬件特定的（”DRM 驱动”）部分。DRM 核心提供基本的框架，以供不同的的 DRM 驱动注册，并且提供给用户空间一个通用的硬件无关功能的`ioctl`的最小集。在另一方面，一个 DRM 驱动实现硬件相关部分的 API，特定于它所支持的 GPU 类型；它还需要提供剩下的没有被 DRM 核覆盖到的`ioctl`实现，但它也可以扩展 API，提供额外的`ioctl`以支持只在这些硬件上可用的额外的功能。当一个特定的 DRM 驱动提供一个增强 API，用户空间 libdrm 也由一个额外的libdrm驱动库扩展，这样用户空间可以籍此与额外的`ioctl`交互。
 
-##### 直接渲染管理器架构细节：DRM核和DRM驱动（包含 GEM 和 KMS）和 libdrm 的交互
+##### 直接渲染管理器架构细节：DRM 核心和 DRM 驱动（包含 GEM 和 KMS）和 libdrm 的交互
 ![https://upload.wikimedia.org/wikipedia/commons/thumb/3/3d/DRM_architecture.svg/1246px-DRM_architecture.svg.png](pic/DRM_architecture.svg.png)
 
 ## API
-DRM核心导出几个接口到用户空间应用程序，通常通过相应的 libdrm 封装的函数来使用。此外，驱动导出驱动相关的接口给用户空间驱动和 device-aware 的应用程序通过`ioctl`和`sysfs`文件使用。外部的接口包括：内存映射，上下文管理，DMA 操作，AGP 管理，vblank 控制，fence 管理，内存管理和输出管理。
+DRM 核心导出几个接口到用户空间应用程序，通常通过相应的 libdrm 封装的函数来使用。此外，驱动导出设备相关的接口给用户空间驱动和 device-aware 的应用程序通过`ioctl`和`sysfs`文件使用。外部的接口包括：内存映射，上下文管理，DMA 操作，AGP 管理，vblank 控制，fence 管理，内存管理和输出管理。
 
 ### DRM-Master 和 DRM-Auth
-在DRM API里有几个操作（ioctls）要么是为了安全的目的，要么是为了并发的问题，必须被限制被一个单用户空间的每设备的进程使用。为了实现这个限制，DRM 限制这些 ioctls 只被那些被认为是一个 DRM 设备的“master”的进程调用，通常叫做 *DRM-Master*。所有进程中只有一个被标识为master，该进程拥有被打开的`/dev/dri/cardX`的设备节点的文件句柄，特别是第一个调用`SET_MASTER`的`ioctl`的那个进程。任何不是 DRM-Master 进程尝试使用一个这些受限的 ioctls 会返回一个错误。一个进程也可以放弃他的 master 角色 —— 并让其他进程获取它 —— 通过调用`DROP_MASTER`的`ioctl`。
+在DRM API里有几个操作（ioctls）要么是为了安全的目的，要么是为了并发的问题，必须被限制被一个单用户空间的每设备的进程使用。为了实现这个限制，DRM 限制这些 ioctls 只被那些被认为是一个 DRM 设备的“master”的进程调用，通常叫做 *DRM-Master*。所有进程中只有一个被标识为 master，该进程拥有被打开的`/dev/dri/cardX`的设备节点的文件句柄，特别是第一个调用`SET_MASTER`的`ioctl`的那个进程。任何不是 DRM-Master 进程尝试使用一个这些受限的 ioctls 会返回一个错误。一个进程也可以放弃他的 master 角色 —— 并让其他进程获取它 —— 通过调用`DROP_MASTER`的`ioctl`。
 
 X Server —— 或任何其他显示服务器 —— 通常是在每个它管理的 DRM 设备中获取 DRM-Master 状态的进程，通常它会在它启动的时候打开相应的设备节点，并为整个图形会话持有这些权限，直至它结束或死亡。
 
 对于剩下的用户空间进程，有其他的方式去获取一些在 DRM 设备上调用受限操作的权限，叫做 *DRM-Auth*。对于 DRM 设备它是一个基本的认证方法，为了证明这点，进程得有 DRM-Master 的允许去获取这些权限。这些过程的组成：
-* 客户使用`GET_MAGIC`的`ioctl`从 DRM 设备得到一个唯一的token —— 一个32位整数，并把它传给 DRM-Master 进程，无论通过何种方式（通常是某种 IPC，例如，在[DRI2](https://en.wikipedia.org/wiki/DRI2) 中有一个任何 X client 可以发送给 X Server 的`DRI2Authenticate`请求）
+* 客户使用`GET_MAGIC`的`ioctl`从 DRM 设备得到一个唯一的 token —— 一个32位整数，并把它传给 DRM-Master 进程，无论通过何种方式（通常是某种 IPC，例如，在[DRI2](https://en.wikipedia.org/wiki/DRI2) 中有一个任何 X client 可以发送给 X Server 的`DRI2Authenticate`请求）
 * DRM-Master 进程通过调用 `AUTH_MAGIC`的`ioctl`轮流发回 token 给 DRM 设备
-* 设备放行特定的权限给那些认证 token 与从 DRM-Master 收到的 token 匹配的进程文件句柄。
+* 设备放行特定的权限给那些认证 token 与从 DRM-Master 收到的 token 匹配的进程的文件句柄。
 
 ## 图像执行管理器
 由于显存大小的增加和图形 API 复杂度的增长，例如 [OpenGL](https://en.wikipedia.org/wiki/OpenGL)，在每次上下文切换时重新初始化图形卡状态的策略付出的性能代价太昂贵了。现代 Linux 桌面也需要一个优化的方式去与[合成管理器](https://en.wikipedia.org/wiki/Compositing_manager)共享 off-screen 缓冲区。这些需求促使管理内核内部的图形缓冲区新方法的开发。*图像执行管理器（Graphics Execution Manager，GEM)）* 作为这些方法之一应运而生。
 
-GEM 提供了一个有着明确的内存管理原语的API。通过 GEM，一个用户空间程序可以创建，处理和销毁存活在GPU的显存中的内存对象。这些对象叫做“GEM对象”，从用户空间程序的视角来看，它们是持久的，并且每次在程序重新获得GPU控制权的时候不需要重新载入。当一个用户空间程序需要一块显存（去存储一个 framebuffer，[纹理](https://en.wikipedia.org/wiki/Texture_mapping)或任何其他GPU需要的数据）的时候，它使用GEM的API请求分配给 DRM 驱动。DRM 驱动跟踪显存的使用，并且在有空闲内存可用的时候能够遵守请求，将一个“句柄”返回给用户空间以便随后在即将到来的操作里引用分配的内存。GEM API 也提供填充和不再需要时释放缓冲区的操作。当用户空间进程关闭 DRM 驱动文件描述符时，来自未释放的 GEM 句柄的内存得到恢复 —— 有意地或者因为它的终结。
+GEM 提供了一个有着明确的内存管理原语的 API。通过 GEM，一个用户空间程序可以创建，处理和销毁存活在 GPU 的显存中的内存对象。这些对象叫做“GEM 对象”，从用户空间程序的视角来看，它们是持久的，并且每次在程序重新获得 GPU 控制权的时候不需要重新载入。当一个用户空间程序需要一块显存（去存储一个 framebuffer，[纹理](https://en.wikipedia.org/wiki/Texture_mapping)或任何其他 GPU 需要的数据）的时候，它使用 GEM 的 API 请求分配给 DRM 驱动。DRM 驱动跟踪显存的使用，并且在有空闲内存可用的时候能够遵守请求，将一个“句柄”返回给用户空间以便随后在即将到来的操作里引用分配的内存。GEM API 也提供填充和不再需要时释放缓冲区的操作。当用户空间进程关闭 DRM 驱动文件描述符时，来自未释放的 GEM 句柄的内存得到恢复 —— 有意地或者因为它的终结。
 
-GEM 也允许两个或更多的用户空间进程使用相同的 DRM 设备（因此 DRM 驱动也是相同的）去共享一个GEM对象。GEM 句柄对一个进程来说是一个本地唯一的32位整数，但对其他进程来说是可重复的，因此并不适合共享。所需要的是一个全局的名字空间，且 GEM 通过使用被叫做 *GEM names* 的全局句柄提供了这样一个名字空间。一个 GEM name 引用一个且只有一个 GEM 对象，这个对象用一个唯一的32位整数，由相同的 DRM 驱动在相同的 DRM 设备中创建。GEM 提供一个操作，*flink*，从一个 GEM 句柄中去获取一个 GEM name。然后进程可以传递这个 GEM name —— 这个32位整数 —— 以任何可用的IPC机制给其他进程。GEM name 可以被接收进程用于获得一个指向原来的 GEM 对象的本地 GEM 句柄。
+GEM 也允许两个或更多的用户空间进程使用相同的 DRM 设备（因此 DRM 驱动也是相同的）去共享一个 GEM 对象。GEM 句柄对一个进程来说是一个本地唯一的32位整数，但对其他进程来说是可重复的，因此并不适合共享。所需要的是一个全局的名字空间，且 GEM 通过使用被叫做 *GEM names* 的全局句柄提供了这样一个名字空间。一个 GEM name 引用一个且只有一个 GEM 对象，这个对象用一个唯一的32位整数，由相同的 DRM 驱动在相同的 DRM 设备中创建。GEM 提供一个操作，*flink*，从一个 GEM 句柄中去获取一个 GEM name。然后进程可以传递这个 GEM name —— 这个32位整数 —— 以任何可用的IPC机制给其他进程。GEM name 可以被接收进程用于获得一个指向原来的 GEM 对象的本地 GEM 句柄。
 
 不幸的是，用 GEM names 共享缓冲区并不安全。一个有恶意的访问相同的 DRM 设备的第三方进程可以简单地依靠探测32位整数的方式尝试和猜测一个被其他两个进程共享的缓冲区的 GEM name。一旦 GEM name 被找到，它的内容可以被访问和修改，侵犯缓冲区的信息的保密性和完整性。这个缺点在 [DMA-BUF](https://en.wikipedia.org/wiki/DMA-BUF) 支持被引入到 DRM 之后被克服了。
 
@@ -152,30 +153,33 @@ KMS 把在一个显示控制器的显示输出流水线上能普遍地找到的�
 ![pic/graph-planes.png](pic/graph-planes.png)
 
 ### 原子显示
-In recent years there has been an ongoing effort to bring atomicity to some regular operations pertaining the KMS API, specifically to the mode setting and page flipping operations.[33][50] This enhanced KMS API is what is called Atomic Display (formerly known as atomic mode-setting and atomic or nuclear pageflip).
+在近几年有一些努力在给与 KMS API 有关的一些常规操作带来原子性，特别是对模式设定和页翻转操作。这个 KMS API 增强被叫做 *原子显示* （即之前所知的 *原子模式设定* 和 *atomic* 或 *nuclear* 页翻转）。
 
-The purpose of the atomic mode-setting is to ensure a correct change of mode in complex configurations with multiple restrictions, by avoiding intermediate steps which could lead to an inconsistent or invalid video state;[50] it also avoids risky video states when a failed mode-setting process has to be undone ("rollback").[51]:9 Atomic mode-setting allows to know beforehand if certain specific mode configuration is appropriate, by providing mode testing capabilities.[50] When an atomic mode is tested and its validity confirmed, it can be applied with a single indivisible (atomic) commit operation. Both test and commit operations are provided by the same new ioctl with different flags.
+原子模式设定的目的是为了确保在有多重限制的复杂配置里一个改动是正确的，避免会导致不一致或无效的显示状态的中间步骤；也避免当一个失败的模式设定处理取消（“回滚”）时的冒险的显示状态。原子模式设定通过提供模式测试能力，允许事先了解某一特定的模式配置是否合适。当一个原子模式经过测试且它的校验得到确认，它就能以一个单一的不可分割（原子）的提交操作被应用。测试和提交操作都由同一个新的`ioctl`提供，但它们的 flags 不同。
 
-Atomic page flip on the other hand allows to update multiple planes on the same output (for instance the primary plane, the cursor plane and maybe some overlays or secondary planes) all synchronized within the same VBLANK interval, ensuring a proper display without tearing.[51]:9,14[50] This requirement is especially relevant to mobile and embedded display controllers, that tend to use multiple planes/overlays to save power.
+在另一方面，原子页翻转允许在同一个输出上（例如，primary plane、cursor plane 和可能的一些叠加或 secondary planes）更新多个 planes，所有的同步都在同一个 [VBLANK](https://en.wikipedia.org/wiki/Vertical_blanking_interval) 间隔内，以确保一个没有撕裂的合适的显示。这个要求尤其与移动和嵌入式显示控制器相关，因其更倾向于使用多重 planes/叠加层 来节能。
 
-The new atomic API is built upon the old KMS API. It uses the same model and objects (CRTCs, encoders, connectors, planes, ...), but with an increasing number of object properties that can be modified.[50] The atomic procedure is based on changing the relevant properties to build the state that we want to test or commit. The properties we want to modify depend on whether we want to do a mode-setting (mostly CRTCs, encoders and connectors properties) or page flipping (usually planes properties). The ioctl is the same for both cases, being the difference the list of properties passed with each one.[52]
+新原子 API 在旧的 KMS API 之上建立的。它用相同的模型和对象 （CRTCs，encoders，connectors，planes，……），但增加了可修改的对象属性的数量。原子过程基于修改相关的属性去构建我们想要测试或提交的状态。我们想要修改的属性取决于我们是否想做一个模式设定（绝大部分的 CRTCs，encoders 和 connectors 属性）或页翻转（通产是 planes 属性）。对于这两种情况，`ioctl`是一样的，不同的是传递给每个 `ioctl` 的属性列表。
 
 ## 渲染节点
+在原始的 DRM API 里，DRM 设备 `/dev/dri/cardX` 被用于授权的（模式设定，其他显示控制）和非授权的（渲染，GPGPU 计算）操作。因为安全的缘故，打开和关联 DRM 设备文件需要特别的权限“等同与 root 权限”。这导致一个只有一些可信赖的用户空间程序（X Server，一个图像合成器，……）有 DRM API 的完全访问权限的架构，包括像模式设定 API 的权限部分。剩下的用户空间应用程序想要渲染或进行 GPGPU 计算需要由 DRM 设备的拥有者（”DRM Master”）通过用一个特定的认证接口放行。认证通过的应用程序可以用一个受限版本的不需要特权操作的 DRM API 渲染或进行计算。这个设计强加了一个严重的限制：必须总有一个运行着的图形服务器（X Server，一个 Wayland 合成器，……）作为一个 DRM 设备的 DRM-Master，以便其他用户空间的程序可以被放行使用设备，甚至是不需要任何图形显示如 GPGPU 计算的情况。
 
-In the original DRM API, the DRM device /dev/dri/cardX is used for both privileged (modesetting, other display control) and non-privileged (rendering, GPGPU compute) operations.[9] For security reasons, opening the associated DRM device file requires special privileges "equivalent to root-privileges".[53] This leads to an architecture where only some reliable user space programs (the X server, a graphical compositor, ...) have full access to the DRM API, including the privileged parts like the modeset API. The remainder user space applications that want to render or make GPGPU computations should be granted by the owner of the DRM device ("DRM Master") through the use of a special authentication interface.[54] Then the authenticated applications can render or make computations using a restricted version of the DRM API without privileged operations. This design imposes a severe constraint: there must always be a running graphics server (the X Server, a Wayland compositor, ...) acting as DRM-Master of a DRM device so that other user space programs can be granted to use the device, even in cases not involving any graphics display like GPGPU computations.[53][54]
-
-The "render nodes" concept try to solve these scenarios by splitting the DRM user space API in two interfaces, one privileged and another non-privileged, and using separated device files (or "nodes") for each one.[9] For every GPU found, its corresponding DRM driver —if it supports the render nodes feature— creates a device file /dev/dri/renderDX, called the render node, in addition to the primary node /dev/dri/cardX.[54][9] Clients that use a direct rendering model and applications that want to take advantage of the computing facilities of a GPU, can do it without requiring additional privileges by simply opening any existing render node and dispatching GPU operations using the limited subset of the DRM API supported by those nodes —provided they have file system permissions to open the device file. Display servers, compositors and any other program that requires the modeset API or any other privileged operation must open the standard primary node that grants access to the full DRM API and use it as usual. Render nodes restricted API explicitly disallow the GEM flink operation to prevent buffer sharing using insecure GEM global names; only PRIME (DMA-BUF) file descriptors can be used to share buffers with another client, including the graphics server.[9][54]
+“渲染节点”的概念通过将 DRM 用户空间 API 分为两个接口尽力解决这些情况，一个授权的和其他非授权的，并每个都使用不同的设备文件（或“节点”）。对于每个找到的 GPU，它对应的 DRM 驱动 —— 如果它支持渲染节点特性 —— 创建一个设备文件 `/dev/dri/renderDX`，称作 *渲染节点*，此外还有一个主节点 `/dev/dri/cardX`。使用一个直接渲染模型的客户端和应用程序想要使用一个 GPU 的计算能力，不再需要额外的权限，通过简单地打开一个已存在的渲染节点就可以这么做，通过这些节点使用有限的 DRM API 支持的子集进行批处理 GPU 操作 —— 提供给它们打开设备文件的文件系统权限。显示服务器，合成器和其他需要模式设定 API 或其他必须打开标准主节点操作权限的程序准许访问完全的 DRM API 并像往常一样使用它。渲染节点显式地限制了不允许 GEM flink操作的 API 去阻止用不安全的 GEM 全局名字的缓冲区共享；只有 PRIME（DMA-BUF）文件描述符在没有其他客户端时能被用于共享缓冲区，包括图形服务器。
 
 # 硬件支持
+![https://upload.wikimedia.org/wikipedia/commons/thumb/f/ff/Linux_AMD_graphics_stack.svg/1280px-Linux_AMD_graphics_stack.svg.png](pic/Linux_AMD_graphics_stack.svg.png)
 
 # 开发
-The Direct Rendering Manager is developed within the Linux kernel, and its source code resides in the /drivers/gpu/drm directory of the Linux source code. The subsystem maintainter is Dave Airlie, with other maintainers taking care of specific drivers.[97] As usual in the Linux kernel development, DRM submaintainers and contributors send their patches with new features and bug fixes to the main DRM maintainer which integrates them into its own Linux repository. The DRM maintainer in turn submits all of these patches that are ready to be mainlined to Linus Torvalds whenever a new Linux version is going to be released. Torvalds, as top maintainer of the whole kernel, holds the last word on whether a patch is suitable or not for inclusion in the kernel.
+直接渲染管理器在 Linux 内核中开发，它的源代码在 Linux 源码的 `/drivers/gpu/drm` 目录。改子系统的维护者是 Dave Airlie，还有其他的维护者在照看特定的驱动。当一个新 Linux 版本要被释出的时候，DRM 的维护者轮流提交所有这些准备合并到主线的补丁给 Linus Torvalds。Torvalds，作为整个内核的顶级维护者，有一个补丁是否合适或者不包含进内核的最终决定权。
 
-For historical reasons, the source code of the libdrm library is maintained under the umbrella of the Mesa project.[98]
+因为历史的原因，libdrm 库的源代码由 Mesa 项目维护。
 
 # 历史
 
 # Adoption
+直接渲染管理器内核子系统最初开发来用于 XFree86 4.0 显示服务器的新[直接渲染基础](https://en.wikipedia.org/wiki/Direct_Rendering_Infrastructure)，后来被它的后继者 X.Org Server 继承。因此，DRM 的主要用户是链接到在 Mesa 3D 库中的硬件加速 OpenGL 实现的 DRI 客户端，也包括 X Server 它自己。如今，DRM 也被几个 Wayland 合成器使用，包括 [Weston](https://en.wikipedia.org/wiki/Weston_(display_server)) 参考合成器。[kmscon](https://en.wikipedia.org/wiki/Kmscon) 是一个运行在用户空间的使用 DRM 的 KMS 功能的虚拟控制台实现。
+
+在 2015 年，私有的 [Nvidia GeForce 驱动](https://en.wikipedia.org/wiki/Nvidia_GeForce_driver) 358.09 （beta）版得到了 DRM 模式设定接口的支持，以一个叫做`nvidia-modeset.ko`新内核模式实现。这个新得驱动组件连同`nvidia.ko`内核模块一起工作，去执行 GPU 的显示引擎（例如，显示控制器）。
 
 # 另请参阅
 

@@ -1,5 +1,7 @@
 # 内存管理
 
+![http://ilinuxkernel.com/wp-content/uploads/2011/09/091011_1614_Linux1.png](pic/mm_segm_paging.png)
+
 # 页（Pages）
 
 * 物理页为内存管理的最基本单元。
@@ -145,6 +147,9 @@ ZONE_HIGHMEM | Dynamically mapped pages | > 896MB
   * 但不能同时从两个区分配，因为 **分配是不能跨区界限的**。
 * 不是所有体系结构都定义了全部区。
   * 如Intel x86-64体系结构可以映射和处理64位的地址空间，所以x86-64没有`ZONE_HIGHMEM`，所有的物理内存都处于`ZONE_DMA`和`ZONE_NORMAL`。
+* `ZONE_HIGHMEM` 映射的示例：
+
+![http://ilinuxkernel.com/wp-content/uploads/2011/09/091011_1614_Linux4.png](pic/mm_highmem.png)
 
 * include/linux/mmzone.h
 ```c
@@ -668,6 +673,9 @@ static __always_inline void __SetPageSlab(struct page *page)
 * 因此，大块内存采用动态分配。
 
 # 高端内存的映射
+
+![http://ilinuxkernel.com/wp-content/uploads/2011/09/091011_1614_Linux5.png](pic/mm_highmem_sections.png)
+
 * 根据定义，高端内存中的页不能永久映射到内核地址空间上。
 * 通过`alloc_pages()`以`__GFP_HIGHMEM`标志获得的page不可能有逻辑地址。
 * 在x86体系结构上，高于896MB的所有物理内存的范围都是高端内存，它并不会 *永久地* 或 *自动地* 映射到内核地址空间。
@@ -817,3 +825,4 @@ static inline void __kunmap_atomic(void *addr)
 * https://www.ibm.com/developerworks/cn/linux/l-linux-slab-allocator/
 * [/PROC/MEMINFO之谜](http://linuxperf.com/?p=142)
 * [怎样诊断SLAB泄露问题](http://linuxperf.com/?p=148)
+* [Linux内核高端内存](http://ilinuxkernel.com/?p=1013)
