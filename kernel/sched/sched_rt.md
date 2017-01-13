@@ -1,3 +1,4 @@
+
 # Linux 实时调度
 ***
 # 目录
@@ -24,8 +25,8 @@
 
 # 概述
 * Linux 支持`SCHED_RR`和`SCHED_FIFO`两种实时调度策略。
+  * **先进先出（`SCHED_FIFO`）** 没有时间片，被调度器选择后只要不被抢占，阻塞，或者自愿放弃处理器，可以运行任意长的时间。
   * **轮转调度（`SCHED_RR`）** 有时间片，其值在进程运行时会减少。时间片用完后，该值重置，进程置于队列末尾。
-  * **先见先出（`SCHED_FIFO`）** 没有时间片，被调度器选择后只要不被抢占，或者放弃处理器，可以运行任意长的时间。
 * 两种调度策略都是静态优先级，内核不为这两种实时进程计算动态优先级。
 * 这两种实现都属于 *软实时*。
 * 实时优先级的范围：**0 ~ MAX_RT_PRIO-1**
@@ -80,8 +81,11 @@ struct rt_rq {
 ```
 * 关联到 Per-CPU 的`struct rq`调度队列的 *实时调度队列*（当然也是每个CPU只有一个），有对应的`struct rt_rq rt`成员。
 * 当多核环境`CONFIG_SMP`或`CONFIG_RT_GROUP_SCHED`特性开启时，会有`highest_prio`成员
-  * 其子成员`curr`指示最高的已排队的实时任务的优先级
-  * 在多核环境时会有子成员`next`指示次高优先级
+  * 其子成员`curr`指示最高的已排队的实时任务的优先级，但未必就是当前队列上正在执行的任务的优先级。
+  * 在多核环境时会有子成员`next`指示次高优先级。
+* `rt_nr_running` 队列上可运行的实时任务的数量。
+* `rt_nr_migratory` 队列上可以被迁移到其他运行队列的实时任务的数量。
+* `overloaded` 当运行队列上有多于一个实时任务且它们中至少有一个可以被迁移到其他运行队列时设置。
 * `rt_queued` 实时调度队列在运行队列`rq`上的标志。
 * `rt_throttled` 该实时调度队列的实时限流是否已经触发。
 * `rt_time` 该实时调度队列的实时任务的所消耗的总时间。
@@ -585,14 +589,17 @@ static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flag
 
 # Real Time Scheduler Throttling
 
-* 在介绍实时任务的周期性调度之前需要先了解一下 *Real Time Scheduler Throttling*：
-  * 实时进程是根据优先级抢占运行的。当没有更高优先级的实时进程抢占，而此进程如果有 bug 等原因长时间运行，不调度其它进程，系统就会出现无响应。
-  * **Real Time Scheduler Throttling** 是为了防止出现这种情况的防护机制，它允许管理员给实时任务分配带宽。
+* 在介绍实时任务的周期性调度之前需要先了解一下 *Real Time Scheduler Throttling*，如果除去这部分内容和负载均衡，实时进程的周期性调度做的事情非常简单。
+* 实时进程是根据优先级抢占运行的。当没有更高优先级的实时进程抢占，而此进程如果有 bug 等原因长时间运行，不调度其它进程，系统就会出现无响应。
+* **Real Time Scheduler Throttling** 是为了防止出现这种情况的防护机制，它允许管理员给实时任务分配带宽。
 
 * Realtime throttling 可以通过两个 sysctl 参数进行控制
   * **/proc/sys/kernel/sched_rt_period_us**
+
   > Defines the period in μs (microseconds) to be considered as 100% of CPU bandwidth. The default value is 1,000,000 μs (1 second). Changes to the value of the period must be very well thought out as a period too long or too small are equally dangerous.
+
   * **/proc/sys/kernel/sched_rt_runtime_us**
+
   > The total bandwidth available to all realtime tasks. The default values is 950,000 μs (0.95 s) or, in other words, 95% of the CPU bandwidth. **Setting the value to -1 means that realtime tasks may use up to 100% of CPU times.** This is only adequate when the realtime tasks are well engineered and have no obvious caveats such as unbounded polling loops.
 
 * Realtime throttling 机制缺省定义为 95% 的 CPU 时间可以被用于实时任务，剩余 5% 会被分给非实时任务。
@@ -833,8 +840,10 @@ static inline u64 sched_avg_period(void)
       that fraction to scale down the cpu_power for regular tasks.
   ```
 
-### 实时带宽的检测
+### 实时带宽限流的检测
 * 之前介绍过的 *Real Time Scheduler Throttling* 功能的检测在`update_curr_rt()`的`sched_rt_runtime_exceeded()`函数。
+* `sched_rt_runtime_exceeded()`返回值为 **1** 时，`update_curr_rt()`会设置重新调度标志，表示需要限流。
+* `sched_rt_runtime_exceeded()`返回值为 **0** 时，实时任务至少不会因为 RT Throttling 的原因被抢占（当然，还有其他别的原因而被抢占）。
 * kernel/sched/rt.c
 ```c
 ...
@@ -904,7 +913,7 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
                 }
                 /*上面有可能更改了 rt_throttled，需要再次判断是否限流，且考虑优先级提升因素*/
                 if (rt_rq_throttled(rt_rq)) {
-                        sched_rt_rq_dequeue(rt_rq); /*调度实体移出调度队列*/
+                        sched_rt_rq_dequeue(rt_rq); /*调度实体移出调度队列，不再被调度*/
                         return 1;
                 }
         }
@@ -925,18 +934,19 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
  * We ran out of runtime, see if we can borrow some from our neighbours.
  */
 static void do_balance_runtime(struct rt_rq *rt_rq)
-{
-        struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq); /*取本队列所属任务组的实时带宽数据*/
+{        /*取本队列所属任务组的实时带宽数据*/
+        struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
+         /*取实时调度队列所属的 root domain*/
         struct root_domain *rd = rq_of_rt_rq(rt_rq)->rd;
         int i, weight;
         u64 rt_period;
-
+        /*rd->span 表示此 root domain 的 rq 可运行的 CPU 的一个 mask。
+          cpumask_weight()就是计算该 mask 里被设置的位的 CPU 个数，*/
         weight = cpumask_weight(rd->span);
 
         raw_spin_lock(&rt_b->rt_runtime_lock);
-        rt_period = ktime_to_ns(rt_b->rt_period); /*任务组的实时运行周期，转成纳米*/
-        /*rd->span 表示此调度域的 rq 可运行的 CPU 的一个 mask。
-          那么以下 for 循环就是遍历此 mask 上的 CPU*/
+        rt_period = ktime_to_ns(rt_b->rt_period); /*任务组的实时运行周期，转成纳秒*/
+        /*以下 for 循环就是遍历该 root domain 上的每个 CPU*/
         for_each_cpu(i, rd->span) {
                 struct rt_rq *iter = sched_rt_period_rt_rq(rt_b, i);
                 s64 diff;
@@ -964,7 +974,7 @@ static void do_balance_runtime(struct rt_rq *rt_rq)
                 /*最大运行时间 - 累计运行时间 = 该队列上可用的运行时间（diff）*/
                 diff = iter->rt_runtime - iter->rt_time;
                 if (diff > 0) { /*该队列还有可用实时运行时间*/
-                        /*取可用时间的 1/n*/
+                        /*取可用时间的 1/weight*/
                         diff = div_u64((u64)diff, weight);
                         /*如果出现借的太多，甚至超过实时运行周期，那就少借点*/
                         if (rt_rq->rt_runtime + diff > rt_period)
@@ -993,13 +1003,321 @@ static void balance_runtime(struct rt_rq *rt_rq)
         /*队列实时任务的累计时间超过了分配的最大运行时间*/
         if (rt_rq->rt_time > rt_rq->rt_runtime) {
                 raw_spin_unlock(&rt_rq->rt_runtime_lock);
-                do_balance_runtime(rt_rq);  /*均衡各队列的最大运行时间*/
+                do_balance_runtime(rt_rq);  /*均衡各队列的最大可运行时间*/
                 raw_spin_lock(&rt_rq->rt_runtime_lock);
         }
 }
 ```
-* 实时进程所在的 CPU 占用超时，可以向其他的CPU借用，将其他CPU的时间借用过来，这样此实时进程所在的CPU占有率达到100%，这样做的目的是为了避免实时进程由于缺少 CPU 时间而向其他的 CPU 迁移，减少不必要的迁移成本。
-* 此 CPU 上为绑定核的普通进程可以迁移到其他cpu上，这样就会得到调度。但是如果此 CPU 上有进程绑定核了，那么就会造成饥饿。
+* 实时进程所在的 CPU 占用超时，可以向其他的 CPU 借用，将其他 CPU 的时间借用过来，这样此实时进程所在的CPU占有率达到100%。这样做的目的是为了避免实时进程由于缺少 CPU 时间而向其他的 CPU 迁移，减少不必要的迁移成本。
+* 此 CPU 上为绑定核的普通进程可以迁移到其他CPU上，这样就会得到调度。但是如果此 CPU 上有进程绑定核了，那么就会造成饥饿。
+* 注意：时间借用仅限于同一 root domain 的 CPU 之间。
+
+##### cpumask_weight计算
+* CPU 权重的计算`cpumask_weight()`入参为类型为`struct cpumask`的 CPU 掩码，它会根据当前系统的 CPU 个数算出提供的位码里有多少个位被设置了，作为返回值。
+* include/linux/cpumask.h
+```c
+/* Don't assign or return these: may not be this big! */
+typedef struct cpumask { DECLARE_BITMAP(bits, NR_CPUS); } cpumask_t;
+
+/**
+ * cpumask_bits - get the bits in a cpumask
+ * @maskp: the struct cpumask *
+ *
+ * You should only assume nr_cpu_ids bits of this mask are valid.  This is
+ * a macro so it's const-correct.
+ */
+#define cpumask_bits(maskp) ((maskp)->bits)
+
+#if NR_CPUS == 1
+#define nr_cpu_ids              1
+#else
+extern int nr_cpu_ids;
+#endif
+
+#ifdef CONFIG_CPUMASK_OFFSTACK
+/* Assuming NR_CPUS is huge, a runtime limit is more efficient.  Also,
+ * not all bits may be allocated. */
+#define nr_cpumask_bits nr_cpu_ids
+#else
+#define nr_cpumask_bits NR_CPUS
+#endif
+...
+/**
+ * cpumask_weight - Count of bits in *srcp
+ * @srcp: the cpumask to count bits (< nr_cpu_ids) in.
+ */
+static inline unsigned int cpumask_weight(const struct cpumask *srcp)
+{
+        return bitmap_weight(cpumask_bits(srcp), nr_cpumask_bits);
+}
+```
+* `cpumask_bits(srcp)`很简单，就是返回`struct cpumask`结构的`bits`成员。
+* `nr_cpumask_bits`在 *SMP* 系统中就是 CPU 的数目，注意其值与`NR_CPUS`和`nr_cpu_ids`的关联，在上面列出。通常情况下，会走上面的分支，被替换为`nr_cpu_ids`，系统中实际支持的 CPU 数。
+* 重点看`bitmap_weight()`
+* include/linux/bitmap.h
+```c
+#define BITMAP_LAST_WORD_MASK(nbits) (~0UL >> (-(nbits) & (BITS_PER_LONG - 1)))
+
+#define small_const_nbits(nbits) \
+        (__builtin_constant_p(nbits) && (nbits) <= BITS_PER_LONG) /*__*/
+...
+static __always_inline int bitmap_weight(const unsigned long *src, unsigned int nbits)
+{
+        if (small_const_nbits(nbits))
+                return hweight_long(*src & BITMAP_LAST_WORD_MASK(nbits));
+        return __bitmap_weight(src, nbits);
+}
+...
+```
+* 假设是 32 位平台，`BITS_PER_LONG`的值为 32，64 位的类推。
+* 假设当前系统有 8 个 CPU，则`nr_cpu_ids`为 8，即`bitmap_weight()`的入参`nbits`的值为 8。
+* 难理解的地方在`BITMAP_LAST_WORD_MASK()`的实现，这个宏的目的是，根据给定的 *位数* 返回 *位掩码*，比如，`nbits`为 8，返回位掩码为 `00000000 00000000 00000000 11111111`，即将`~0UL`右移 24 位得到。这 24 位怎么得来的呢？
+  * `-(nbits) & (BITS_PER_LONG - 1))`就是用来算右移的位数的，与`BITS_PER_LONG - nbits`的结果一致。
+  * 正整数对应的负整数的二进制表示为：正整数的反码（按位取反）加一（即为补码）。这也是为了保证它们相加的结果为零。
+  * 这也导致这样的一个特性：一个 **正整数对应的负整数的二进制表示** 与 **它所属类型的极限值与它的差加一所得的无符号整数值** 一致，比如下面的序列：
+
+short int | bit code | unsigned short int | 5 bit maximum = 31
+---|---|---|---
+ 1 | 0000 0000 0000 0001 | 1 | 1
+ -1 | 1111 1111 1111 1111 | 65535 | 31
+ 2 | 0000 0000 0000 0010 | 2 | 2
+ -2 | 1111 1111 1111 1110 | 65534 | 30
+ 5 | 0000 0000 0000 0101 | 5 | 5
+ -5 | 1111 1111 1111 1011 | 65531 | 27
+ 8 | 0000 0000 0000 1000 | 8 | 8
+ -8 | 1111 1111 1111 1000 | 65528 | 24
+
+* 当类型为`unsigned short int`时，16 bit 整数的极限值为`65536 - 1= 65535`。我们没有 65535 这么多个 CPU，也不需要一个最多 65535 个 bit 的位掩码。
+* 依据之前的假设，`BITS_PER_LONG`的值为 32，我们当前的极限值为`BITS_PER_LONG - 1 = 31`，也即二进制`1 1111`，只有 5 个 bit 有效的位掩码，此时`-(nbits)`得到`nbits`所对应的负整数的二进制位码，再与 5 bit 所能表示的整数的极限值`BITS_PER_LONG - 1`做`&`运算去掉高位（因为我们没有这么多 CPU），如前所述，这个二进制的位码与`BITS_PER_LONG - nbits`的结果是一致的。比如说，当`nbits`为 8，那么`1 1000`作为无符号整数的解释结果为 24，也就是上表的第四列。将`~0UL`右移 24 位得到`00000000 00000000 00000000 11111111`的位掩码。
+* 这个位掩码和`rd->span`里的 CPU 范围的`&` 运算的结果再交给`hweight_long()`计算里面被置位的数目。
+* 当 64 位平台`BITS_PER_LONG`的值为 64 的时候，且多于 64 个有效 CPU 的时候，`__bitmap_weight()`其实是做了个拆分计算，余数部分还是会用到`BITMAP_LAST_WORD_MASK()`得到余数部分的位掩码。
+
+### 实时带宽限流的放开
+* RT throttling 一旦出现什么时候会结束呢？换句话来说，实时调度队列积累的实时任务运行时间`rt_rq->rt_time`什么时候会减小？这是我们接下来要观察的问题。
+* 这里主要依赖的机制是高精度定时器，基本过程如下：
+  * 该定时器在内核初始化时，由`sched_init()`根据不同的条件调用`init_rt_bandwidth()`初始化定时器，回调函数为`sched_rt_period_timer()`。
+  * 在有进程进入队列时，如果该队列的任务组的周期性定时器尚未启动，则会在此时启动。
+  * 当定时器到期时调用注册的回调函数`sched_rt_period_timer()`进行检查。
+
+![pic/sched_rt_period_timer.png](pic/sched_rt_period_timer.png)
+
+* kernel/sched/core.c
+```c
+void __init sched_init(void)
+{
+...
+        init_rt_bandwidth(&def_rt_bandwidth,
+                        global_rt_period(), global_rt_runtime());
+...
+#ifdef CONFIG_RT_GROUP_SCHED
+        init_rt_bandwidth(&root_task_group.rt_bandwidth,
+                        global_rt_period(), global_rt_runtime());
+#endif /*CONFIG_RT_GROUP_SCHED*/
+...
+}
+```
+
+* kernel/sched/rt.c
+```c
+void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
+{
+        rt_b->rt_period = ns_to_ktime(period);
+        rt_b->rt_runtime = runtime;
+
+        raw_spin_lock_init(&rt_b->rt_runtime_lock);
+
+        hrtimer_init(&rt_b->rt_period_timer,
+                        CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+        rt_b->rt_period_timer.function = sched_rt_period_timer;
+}
+
+static void start_rt_bandwidth(struct rt_bandwidth *rt_b)
+{
+        if (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF)
+                return;
+
+        raw_spin_lock(&rt_b->rt_runtime_lock);
+        if (!rt_b->rt_period_active) {
+                rt_b->rt_period_active = 1;
+                /*
+                 * SCHED_DEADLINE updates the bandwidth, as a run away
+                 * RT task with a DL task could hog a CPU. But DL does
+                 * not reset the period. If a deadline task was running
+                 * without an RT task running, it can cause RT tasks to
+                 * throttle when they start up. Kick the timer right away
+                 * to update the period.
+                 */
+                hrtimer_forward_now(&rt_b->rt_period_timer, ns_to_ktime(0));
+                hrtimer_start_expires(&rt_b->rt_period_timer, HRTIMER_MODE_ABS_PINNED);
+        }
+        raw_spin_unlock(&rt_b->rt_runtime_lock);
+}
+...
+#ifdef CONFIG_RT_GROUP_SCHED
+
+static void
+inc_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
+{
+        if (rt_se_boosted(rt_se))
+                rt_rq->rt_nr_boosted++;
+
+        if (rt_rq->tg)
+                start_rt_bandwidth(&rt_rq->tg->rt_bandwidth);
+}
+...
+#else /* CONFIG_RT_GROUP_SCHED */
+
+static void
+inc_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
+{
+        start_rt_bandwidth(&def_rt_bandwidth);
+}
+...
+#endif /* CONFIG_RT_GROUP_SCHED */
+...
+```
+* `rt_b->rt_period_active`是 *该队列的任务组的周期性定时器* 有没有激活的标志，它会在后面要提到的回调函数中根据情况关闭。
+* 重点观察的是，回调函数`sched_rt_period_timer()`以及其调用的`do_sched_rt_period_timer()`的实现。
+
+* kernel/sched/rt.c
+```c
+static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
+{
+        struct rt_bandwidth *rt_b =
+                container_of(timer, struct rt_bandwidth, rt_period_timer);
+        int idle = 0;
+        int overrun;
+
+        raw_spin_lock(&rt_b->rt_runtime_lock);
+        for (;;) {
+                /*将定时器超时推后到当前时刻（now）之后，间隔为一个周期，
+                  overrun 是从旧的到期时间需要几个周期才能到当前时刻（now）之后*/
+                overrun = hrtimer_forward_now(timer, rt_b->rt_period);
+                if (!overrun)
+                        break;
+
+                raw_spin_unlock(&rt_b->rt_runtime_lock);
+                idle = do_sched_rt_period_timer(rt_b, overrun);
+                raw_spin_lock(&rt_b->rt_runtime_lock);
+        }
+        if (idle)
+                rt_b->rt_period_active = 0;
+        raw_spin_unlock(&rt_b->rt_runtime_lock);
+
+        return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
+}
+...
+static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
+{
+        int i, idle = 1, throttled = 0;
+        const struct cpumask *span;
+        /*得到当前 CPU 所属 root domain 的可用 CPU 的范围，掩码形式*/
+        span = sched_rt_period_mask();
+#ifdef CONFIG_RT_GROUP_SCHED
+        /*
+         * FIXME: isolated CPUs should really leave the root task group,
+         * whether they are isolcpus or were isolated via cpusets, lest
+         * the timer run on a CPU which does not service all runqueues,
+         * potentially leaving other CPUs indefinitely throttled.  If
+         * isolation is really required, the user will turn the throttle
+         * off to kill the perturbations it causes anyway.  Meanwhile,
+         * this maintains functionality for boot and/or troubleshooting.
+         */
+        if (rt_b == &root_task_group.rt_bandwidth)
+                span = cpu_online_mask;
+#endif
+        /*以下 for 循环就是遍历该 root domain 上的每个 CPU*/
+        for_each_cpu(i, span) {
+                int enqueue = 0;
+                 /*rt_rq 指向该 CPU 所在实时调度队列*/
+                struct rt_rq *rt_rq = sched_rt_period_rt_rq(rt_b, i);
+                /*rq 指向运行实时调度队列所在运行队列*/
+                struct rq *rq = rq_of_rt_rq(rt_rq);
+
+                raw_spin_lock(&rq->lock);
+                if (rt_rq->rt_time) {
+                        /*如果当前队列的实时任务累计运行时间不为零，这应该是常见的情况*/
+                        u64 runtime;
+
+                        raw_spin_lock(&rt_rq->rt_runtime_lock);
+                        /*如果当前队列已限流，尝试从其他队列借取一些时间*/
+                        if (rt_rq->rt_throttled)
+                                balance_runtime(rt_rq);
+                        runtime = rt_rq->rt_runtime; /*这是均衡过后的时间*/
+                        /*这里是唯一减少实时队列累计的运行时间的地方（清零的情况除外）。
+                          通过之前 balance_runtime() 的分析我们可以知道，即时是借时间，
+                          rt_rq->rt_runtime最多也不会超过rt_rq->rt_period。可以想象
+                          两种场景：
+                          1. 队列没有被限流，每个定时器运行周期，min()的结果是 rt_rq->rt_time，
+                             相当于累计运行时间重新计算，无碍实时任务的继续运行。
+                          2. 队列上的实时任务因为某种原因累计了很长的运行时间导致被限流了，
+                             特别是那种超过了一个定时器周期的情况，当然不能一次清零，否则
+                             太不公平了，也无法达到按比例分配带宽的设计初衷。所以此时 min()
+                             的结果为后者，对该实时调度队列进行惩罚，每次减少的累计运行时
+                             间的量为均衡过的最大运行时间。当然，可能由于定时器被推迟了超过
+                             一个周期，因此这里得用与 overrun 的乘积。
+                             在惩罚期间，也就是限流期间，我们之前也看到被限流的队列是无法
+                             再运行实时任务的（CFS的倒是可以），直至累计运行时间降下来。*/
+                        rt_rq->rt_time -= min(rt_rq->rt_time, overrun*runtime);
+                        if (rt_rq->rt_throttled && rt_rq->rt_time < runtime) {
+                                /*如果被惩罚了一段时间，累计运行时间降下来了会进入这个分支*/
+                                /*惩罚结束，将限流关闭。
+                                  对应到sched_rt_runtime_exceeded()将限流打开。*/
+                                rt_rq->rt_throttled = 0;
+                                enqueue = 1; /*这个标志后面会用到，该队列可以重新入列了*/
+
+                                /*
+                                 * When we're idle and a woken (rt) task is
+                                 * throttled check_preempt_curr() will set
+                                 * skip_update and the time between the wakeup
+                                 * and this unthrottle will get accounted as
+                                 * 'runtime'.
+                                 */
+                                /*如果当前队列正在运行的任务是 idle 任务，一个醒来的
+                                  （实时）任务被限流，在check_preempt_curr()会设置
+                                  skip_update标志，从醒来到解除限流的这段时间要被记账
+                                  为‘运行时间’。*/
+                                if (rt_rq->rt_nr_running && rq->curr == rq->idle)
+                                        rq_clock_skip_update(rq, false);
+                        }
+                        /*如果没被限流，rt_time 在上面清零，但实时任务还在跑着；
+                          或者正在被惩罚且时间还没降下来，定时器还需要继续发挥作用不能闲着，
+                          看调用它的 sched_rt_period_timer() 可以知道 idle = 0 会让
+                          定时器重启。*/
+                        if (rt_rq->rt_time || rt_rq->rt_nr_running)
+                                idle = 0;
+                        raw_spin_unlock(&rt_rq->rt_runtime_lock);
+                } else if (rt_rq->rt_nr_running) {
+                        /*队列的实时任务累计运行时间为 0，但有实时任务在队列上。比如说，有
+                          进程刚加入到队列但还没来得及得到机会运行。此时当然是需要定时器的，
+                          将 idle 设成 0。
+                          也就是说，调度组里有任一实时任务在队列上，即使还没开始运行，定时
+                          器也需要激活。
+                        */
+                        idle = 0;
+                        /*如果该队列没有限流，设置入列标志*/
+                        if (!rt_rq_throttled(rt_rq))
+                                enqueue = 1;
+                }
+                /*调度组里有任一实时任务在限流，定时器需要激活。*/
+                if (rt_rq->rt_throttled)
+                        throttled = 1;
+                /*之前的一些情况发生了改变，重新调整让该 CPU 上的实时进程入列*/
+                if (enqueue)
+                        sched_rt_rq_enqueue(rt_rq);
+                raw_spin_unlock(&rq->lock);
+        }
+        /*如果之前的检查发现已经不需限流了，且系统实时带宽功能关闭或者该实时调度组不限流，
+          返回 1，查看 sched_rt_period_timer() 可知该定时器不再需要重启。*/
+        if (!throttled && (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF))
+                return 1;
+        /*这里调度组里有任一实时任务在队列上，不管有没有运行，定时器都需要激活。
+          只有当所有范围内的 CPU 的运行队列上都没有实时进程时，定时器才需要关闭。
+          等到有新的实时进程进入队列时，定时器会被再次激活。*/
+        return idle;
+}
+```
+
 
 ## 实时调度的watchdog
 
@@ -1014,6 +1332,8 @@ static void balance_runtime(struct rt_rq *rt_rq)
 * 到达软限制之后，进程会收到一个`SIGXCPU`信号。如果进程捕捉或忽略这个信号并且继续消耗 CPU 时间，那么`SIGXCPU`会每秒产生一次直到到达硬限制，那时进程会收到一个`SIGKILL`信号。
 * 使用这个限制的目的是在一个锁住的系统中停止一个失控的实时进程。
 * 有关进程的`RLIMIT_RTTIME`可以通过`proc`文件系统查看：
+
+
   ```
   >cat /proc/self/limits
   Limit                     Soft Limit           Hard Limit           Units     
@@ -1189,6 +1509,104 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags)
         dequeue_rt_entity(rt_se, flags);
         /*将任务从可推队列中移除*/
         dequeue_pushable_task(rq, p);
+}
+```
+
+# 实时调度负载均衡
+
+## Root Domain
+* 实时调度器需要几个全局的，或者说系统范围的资源作出调度决定，以及 CPU 数量的增加而出现的可伸缩性瓶颈（由于锁保护的这些资源的竞争）。
+* *Root Domain* 引入的目的就是为了减少这样的竞争以改善可伸缩性。
+* cpuset 提供了一个把 CPU 分成子集被一个进程或者或一组进程使用的机制。
+* 几个 cpuset 可以重叠。
+* 一个 cpuset 被称为“*互斥的（exclusive）*”，如果没有其他的 cpuset 包含重叠的 CPU。
+* 每个互斥的 cpuset 定义了一个与其他 cpuset 或 CPU 分离的 **孤岛域（isolated domain，也叫作 **root domain）**。
+* 与每个 root domian 有关的信息存在 `struct root_domain`结构（对象）中：
+* kernel/sched/sched.h
+```c
+#ifdef CONFIG_SMP
+
+/*
+ * We add the notion of a root-domain which will be used to define per-domain
+ * variables. Each exclusive cpuset essentially defines an island domain by
+ * fully partitioning the member cpus from any other cpuset. Whenever a new
+ * exclusive cpuset is created, we also create and attach a new root-domain
+ * object.
+ *
+ */
+struct root_domain {
+        atomic_t refcount;
+        atomic_t rto_count;
+        struct rcu_head rcu;
+        cpumask_var_t span;
+        cpumask_var_t online;
+
+        /* Indicate more than one runnable task for any CPU */
+        bool overload;
+
+        /*
+         * The bit corresponding to a CPU gets set here if such CPU has more
+         * than one runnable -deadline task (as it is below for RT tasks).
+         */
+        cpumask_var_t dlo_mask;
+        atomic_t dlo_count;
+        struct dl_bw dl_bw;
+        struct cpudl cpudl;
+
+        /*
+         * The "RT overload" flag: it gets set if a CPU has more than
+         * one runnable RT task.
+         */
+        cpumask_var_t rto_mask;
+        struct cpupri cpupri;
+
+        unsigned long max_cpu_capacity;
+};
+
+extern struct root_domain def_root_domain;
+
+#endif /* CONFIG_SMP */
+```
+* `refcount` root domain 的引用计数，当 root domain 被运行队列引用时加一，反之减一。
+* `span` *属于该 root domain 的运行队列* 的 *可用 CPU* 的范围，`cpumask_var_t`掩码。
+* `overload` 表明该 root domain 有任一 CPU 有多于一个的可运行任务。
+* `rto_mask` 某 CPU 有多于一个的可运行实时任务，对应的位被设置，`cpumask_var_t`掩码。
+* `rto_count` 过载的（overload）的 CPU 的数目。
+* `cpupri` 包含在 root domain 中的 *CPU 优先级管理* 结构成员，详见下文。
+* 这些 root domain 被用于减小 per-domain 变量的全局变量的范围。
+* 无论何时一个互斥 cpuset 被创建，一个新 root domain 对象也会被创建，信息来自 CPU 成员。
+* 缺省情况下，一个单独高层的 root domain 被创建，并把所有 CPU 所为成员。
+* 所有的实时调度决定只在一个 root domain 的范围内作出决定。
+
+## CPU优先级管理
+* CPU优先级管理（CPU Priority Management）跟踪系统中每个 CPU 的优先级，为了让进程迁移的决定更有效率。
+* CPU 优先级有 102 个:
+
+cpupri | prio
+---|---
+CPUPRI_INVALID (-1) | -1
+CPUPRI_IDLE (0) | MAX_PRIO (140)
+CPUPRI_NORMAL (1) | MAX_RT_PRIO ~ MAX_PRIO-1 (100~139)
+2~101 | 99~0
+
+* `prio`转`cpupri`的函数如下：
+  * kernel/sched/cpupri.c
+```c
+/* Convert between a 140 based task->prio, and our 102 based cpupri */
+static int convert_prio(int prio)
+{
+        int cpupri;
+
+        if (prio == CPUPRI_INVALID)
+                cpupri = CPUPRI_INVALID;
+        else if (prio == MAX_PRIO)
+                cpupri = CPUPRI_IDLE;
+        else if (prio >= MAX_RT_PRIO)
+                cpupri = CPUPRI_NORMAL;
+        else
+                cpupri = MAX_RT_PRIO - prio + 1;
+
+        return cpupri;
 }
 ```
 
