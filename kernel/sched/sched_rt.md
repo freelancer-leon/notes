@@ -14,12 +14,29 @@
        - [单核视角](#单核视角)
 - [创建进程](#创建进程)
   - [新进程进入队列](#新进程进入队列)
+    - [自顶向下将实时任务出列](#自顶向下将实时任务出列)
+    - [实时任务加入队列](#实时任务加入队列)
+    - [处理实时任务入列对运行队列rq的影响](#处理实时任务入列对运行队列rq的影响)
   - [新进程能否抢占当前进程](#新进程能否抢占当前进程)
 - [Real Time Scheduler Throttling](#Real-Time-Scheduler-Throttling)
 - [周期性调度](#周期性调度)
+  - [实时调度的update_curr_rt](#实时调度的update_curr_rt)
+    - [运行队列rq的rt_avg](#运行队列rq的rt_avg)
+      - [sched_time_avg_ms](#sched_time_avg_ms)
+      - [sched_rt_avg_update()](#sched_rt_avg_update())
+    - [实时带宽限流的检测](#实时带宽限流的检测)
+      - [均衡最大运行时间balance_runtime()](#均衡最大运行时间balance_runtime())
+    - [实时带宽限流的放开](#实时带宽限流的放开)
+  - [实时调度的watchdog](#实时调度的watchdog)
+    - [RLIMIT_RTTIME](#RLIMIT_RTTIME)
+    - [实时调度的watchdog的实现](#实时调度的watchdog的实现)
 - [进程唤醒](#进程唤醒)
 - [选择下一个进程](#选择下一个进程)
 - [进程退出](#进程退出)
+- [实时调度负载均衡](#实时调度负载均衡)
+  - [Root Domain](#Root-Domain)
+  - [CPU优先级管理](#CPU优先级管理)
+  - [balance_callback()调用回调函数](#balance_callback()调用回调函数)
 - [相关API和命令](#相关API和命令)
 - [参考资料](#参考资料)
 
@@ -143,7 +160,10 @@ struct sched_rt_entity {
 * `on_list` 调度实体在实时调度优先级队列的数组列表上的标志。
 * `time_slice` 实时调度任务的时间片。
 * `watchdog_stamp` watchdog的时间戳，每次时钟中断会更新为`jiffies`的值，仅在`RLIMIT_RTTIME`软限制启用时更新。
-* `timeout` 记录该调度实体的运行次数，每次时钟中断加 1，仅在`RLIMIT_RTTIME`软限制启用时更新。。
+* `timeout` 记录该调度实体的运行次数，每次时钟中断加 1，仅在`RLIMIT_RTTIME`软限制启用时更新。
+* `parent` 指向调度实体的父实体。
+* `rt_rq` 指向调度实体所在的实时运行队列，即调度实体属于谁。
+* `my_q` 指向调度实体所拥有的实时运行队列，即谁属于调度实体。
 
 ## 实时调度器类 rt_sched_class
 * kernel/sched/rt.c
@@ -246,7 +266,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
                 rt_se->timeout = 0;
         /*完成入列的实际工作*/
         enqueue_rt_entity(rt_se, flags);
-        /*入列之后，如果入列任务不是当前任务，且允许运行该任务的CPU多余一个，将该任务加入rq
+        /*入列之后，如果入列任务不是当前任务，且允许运行该任务的 CPU 多于一个，将该任务加入rq
           队列的rt队列的可推任务链表，可被用于实时进程的负载均衡*/
         if (!task_current(rq, p) && tsk_nr_cpus_allowed(p) > 1)
                 enqueue_pushable_task(rq, p);
@@ -1176,9 +1196,9 @@ inc_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 #endif /* CONFIG_RT_GROUP_SCHED */
 ...
 ```
+
 * `rt_b->rt_period_active`是 *该队列的任务组的周期性定时器* 有没有激活的标志，它会在后面要提到的回调函数中根据情况关闭。
 * 重点观察的是，回调函数`sched_rt_period_timer()`以及其调用的`do_sched_rt_period_timer()`的实现。
-
 * kernel/sched/rt.c
 ```c
 static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
@@ -1189,6 +1209,20 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
         int overrun;
 
         raw_spin_lock(&rt_b->rt_runtime_lock);
+        /*这里采用 for 死循环是为了保证定时器不会被跳过。主要是两个 cases：
+        假设这里周期 P 为 8，
+        a) 某时刻 T1 为 12，此时旧定时器时刻 timer1 为 6，那么调用 hrtimer_forward_now()，
+           新定时器时刻 timer2 为 6 + 8 = 14，overrun = 1。
+           do_sched_rt_period_timer() 返回时，时刻 T2 为 13，T2 在 timer2 之前，
+           hrtimer_forward_now() 返回 overrun = 0，循环结束。
+        b) 某时刻 T1 为 12，此时旧定时器时刻 timer1 为 6，那么调用 hrtimer_forward_now()，
+           新定时器时刻 timer2 为 6 + 8 = 14，overrun = 1。
+           由于某种原因 do_sched_rt_period_timer() 得到运行的时间过长（注意，它处于
+           rt_b->rt_runtime_lock 保护的临界区），返回时时刻 T2 为 16，
+           T2 在 timer2 之后，新定时器时间已经错过了，这种情况也需要处理。再次调用
+           hrtimer_forward_now()，将更新定时器 14 + 8 = 22，返回 overrun = 1，需要下
+           次循环。且此期间的时间还要调用 do_sched_rt_period_timer() 再次处理。
+           直至 do_sched_rt_period_timer() 返回时间在新定时器之前，也即是 case a）。*/
         for (;;) {
                 /*将定时器超时推后到当前时刻（now）之后，间隔为一个周期，
                   overrun 是从旧的到期时间需要几个周期才能到当前时刻（now）之后*/
@@ -1281,7 +1315,7 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
                                         rq_clock_skip_update(rq, false);
                         }
                         /*如果没被限流，rt_time 在上面清零，但实时任务还在跑着；
-                          或者正在被惩罚且时间还没降下来，定时器还需要继续发挥作用不能闲着，
+                          或者正在被惩罚且时间还没降下来，定时器还需要继续发挥作用不能闲着；
                           看调用它的 sched_rt_period_timer() 可以知道 idle = 0 会让
                           定时器重启。*/
                         if (rt_rq->rt_time || rt_rq->rt_nr_running)
@@ -1292,14 +1326,13 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
                           进程刚加入到队列但还没来得及得到机会运行。此时当然是需要定时器的，
                           将 idle 设成 0。
                           也就是说，调度组里有任一实时任务在队列上，即使还没开始运行，定时
-                          器也需要激活。
-                        */
+                          器也需要激活。*/
                         idle = 0;
                         /*如果该队列没有限流，设置入列标志*/
                         if (!rt_rq_throttled(rt_rq))
                                 enqueue = 1;
                 }
-                /*调度组里有任一实时任务在限流，定时器需要激活。*/
+                /*调度组里有任一实时任务在限流，定时器需要激活*/
                 if (rt_rq->rt_throttled)
                         throttled = 1;
                 /*之前的一些情况发生了改变，重新调整让该 CPU 上的实时进程入列*/
@@ -1311,13 +1344,13 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
           返回 1，查看 sched_rt_period_timer() 可知该定时器不再需要重启。*/
         if (!throttled && (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF))
                 return 1;
-        /*这里调度组里有任一实时任务在队列上，不管有没有运行，定时器都需要激活。
+        /*只要调度组里有任一实时任务在队列上，不管有没有运行，定时器都需要激活。
           只有当所有范围内的 CPU 的运行队列上都没有实时进程时，定时器才需要关闭。
           等到有新的实时进程进入队列时，定时器会被再次激活。*/
         return idle;
 }
+...`_
 ```
-
 
 ## 实时调度的watchdog
 
@@ -1449,15 +1482,188 @@ static void check_thread_timers(struct task_struct *tsk,
 ```
 
 # 进程唤醒
+* 进程唤醒时，实时调度器要做的事情和进程入列时的类似，主要是`enqueue_task_rt()`和`check_preempt_curr_rt(）`完成核心调度器交给的`enqueue_task`和`check_preempt_curr`等工作，这两个函数在分析新进程入列时已经展示过了。
+* 不同之处在于，核心调度器在调用`ttwu_do_wakeup()`时，除了调用`check_preempt_curr()`，还会调用`p->sched_class->task_woken`方法。
+* CFS 并未实现`task_woken`方法，但实时调度器实现了该方法。对于实时进程，在这里要做的事情是：如果 *被唤醒* 的实时任务不是正在运行的任务，并且也不会很快被调度，这种情况要把它推到别的队列上。
+* kernel/sched/rt.c
+```c
+/*
+ * If we are not running and we are not going to reschedule soon, we should
+ * try to push tasks away now
+ */
+static void task_woken_rt(struct rq *rq, struct task_struct *p)
+{
+        if (!task_running(rq, p) &&
+            !test_tsk_need_resched(rq->curr) &&
+            tsk_nr_cpus_allowed(p) > 1 &&
+            (dl_task(rq->curr) || rt_task(rq->curr)) &&
+            (tsk_nr_cpus_allowed(rq->curr) < 2 ||
+             rq->curr->prio <= p->prio))
+                push_rt_tasks(rq);
+}
+```
+
+* kernel/sched/sched.h
+```c
+static inline int task_current(struct rq *rq, struct task_struct *p)
+{
+        return rq->curr == p;
+}
+
+static inline int task_running(struct rq *rq, struct task_struct *p)
+{
+#ifdef CONFIG_SMP
+        return p->on_cpu;
+#else
+        return task_current(rq, p);
+#endif
+}
+```
+* 任务需要被 *推走* 的五个判断条件缺一不可：
+  * 被唤醒的任务不是正在运行的任务，如何判断见`task_current()`
+  * 当前队列上正在运行的任务重新调度的标志位`TIF_NEED_RESCHED`没有被设置
+  * 被唤醒的任务可在多于一个的 CPU 上运行
+  * 当前队列上正在运行的任务的有效优先级是实时优先级（deadline或者RT）
+  * 当前队列上正在运行的任务 **只能在一个 CPU 上运行** 或者 **优先级高于被唤醒的任务**
 
 
 # 选择下一个进程
+* `pick_next_task_rt()`需要完成核心调度器委托的 *选出下一个需要调度的进程* 的任务，先从这个函数开始看起。
+* kernel/sched/rt.c
+```c
+static inline bool need_pull_rt_task(struct rq *rq, struct task_struct *prev)
+{
+        /* Try to pull RT tasks here if we lower this rq's prio */
+        /*当前实时队列上的最高优先级的任务还没有当前正在运行的任务优先级高，把其他实时任务拉到这*/
+        return rq->rt.highest_prio.curr > prev->prio;
+}
+...
+static inline struct rt_rq *group_rt_rq(struct sched_rt_entity *rt_se)
+{       /*返回调度实体拥有的实时运行队列*/
+        return rt_se->my_q;
+}
+...
+static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
+                                                   struct rt_rq *rt_rq)
+{
+        struct rt_prio_array *array = &rt_rq->active;
+        struct sched_rt_entity *next = NULL;
+        struct list_head *queue;
+        int idx;
+        /*找到队列位映射中第一个被置位的索引*/
+        idx = sched_find_first_bit(array->bitmap);
+        BUG_ON(idx >= MAX_RT_PRIO);
+        /*根据索引找到所在列表*/
+        queue = array->queue + idx;
+        next = list_entry(queue->next, struct sched_rt_entity, run_list);
+        /*列表的第一个调度实体即为选中的进程，如不考虑迁移等复杂情况，列表上的任务逐个顺序被调度*/
+        return next;
+}
 
+static struct task_struct *_pick_next_task_rt(struct rq *rq)
+{
+        struct sched_rt_entity *rt_se;
+        struct task_struct *p;
+        struct rt_rq *rt_rq  = &rq->rt;
+
+        do {    /*从队列的优先级列表中找到调度实体*/
+                rt_se = pick_next_rt_entity(rq, rt_rq);
+                BUG_ON(!rt_se);
+                /*得到调度实体所拥有的实时调度队列*/
+                rt_rq = group_rt_rq(rt_se);
+                /*该函数要找的调度实体是具体的任务而不是调度组的一个调度队列，因此这个循环会
+                  一直递归到调度实体所拥有的调度队列为空为止，这样的调度实体是一个任务而不会
+                  再是调度组的一个成员了。*/
+        } while (rt_rq);
+
+        p = rt_task_of(rt_se); /*由调度实体结构得到指向 task_struct 结构的指针*/
+        p->se.exec_start = rq_clock_task(rq); /*任务开始执行的时间最初从这里开始了*/
+
+        return p;
+}
+
+static struct task_struct *
+pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct pin_cookie cookie)
+{
+        struct task_struct *p;
+        struct rt_rq *rt_rq = &rq->rt;
+        /*当前实时队列上的最高优先级的任务还没有当前正在运行的任务优先级高，把其他实时任务拉到这*/
+        if (need_pull_rt_task(rq, prev)) {
+                /*
+                 * This is OK, because current is on_cpu, which avoids it being
+                 * picked for load-balance and preemption/IRQs are still
+                 * disabled avoiding further scheduler activity on it and we're
+                 * being very careful to re-start the picking loop.
+                 */
+                /*这是可以的，因为 current 是 on_cpu 的，这就避免了它因为负载均衡而被选中，
+                  并且由于抢占/中断仍然被禁止，避免了调度器在它上面的进一步活动，且我们已经非
+                  常小心地重启选取循环了。*/
+                lockdep_unpin_lock(&rq->lock, cookie);
+                pull_rt_task(rq); /*这是一个负载均衡实时任务的时机*/
+                lockdep_repin_lock(&rq->lock, cookie);
+                /*
+                 * pull_rt_task() can drop (and re-acquire) rq->lock; this
+                 * means a dl or stop task can slip in, in which case we need
+                 * to re-start task selection.
+                 */
+                /*pull_rt_task() 会丢掉（和重新获取）rq->lock；这意味着 deadline 或
+                  stop 任务会利用这间隙插入，这种情况我们需要重启任务选取*/
+                if (unlikely((rq->stop && task_on_rq_queued(rq->stop)) ||
+                             rq->dl.dl_nr_running))
+                        return RETRY_TASK;
+        }
+
+        /*      
+         * We may dequeue prev's rt_rq in put_prev_task().
+         * So, we update time before rt_nr_running check.
+         */
+        if (prev->sched_class == &rt_sched_class)
+                update_curr_rt(rq);
+        /*实时任务队列上没有进程在排队了，返回 NULL*/
+        if (!rt_rq->rt_queued)
+                return NULL;
+        /*注意，prev不一定是实时进程，因此调的是回调函数把 prev 放回它所属的队列
+          prev->sched_class->put_prev_task(rq, prev)*/
+        put_prev_task(rq, prev);
+        /*真正地到实时队列里去选*/
+        p = _pick_next_task_rt(rq);
+        /*此时，选出的进程没资格再被推走了，需从可推链表里删除*/
+        /* The running task is never eligible for pushing */
+        dequeue_pushable_task(rq, p);
+        /*该函数目前的作用是调用 queue_balance_callback()，把 push_rt_tasks() 作为
+          per CPU 的 rt_push_head 的回调，这样一来，当任何调用 balance_callback() 的
+          时候，实时调度的负载均衡函数 push_rt_tasks() 都会被调用。*/
+        queue_push_tasks(rq);
+
+        return p;
+}
+
+static void put_prev_task_rt(struct rq *rq, struct task_struct *p)
+{
+        update_curr_rt(rq);
+
+        /*
+         * The previous task needs to be made eligible for pushing
+         * if it is still active
+         */
+        /*如果前一个任务仍然是活跃的，并且能在多于一个 CPU 上运行，那么它依然有资格被推走，
+          把它放入可推任务链表*/
+        if (on_rt_rq(&p->rt) && tsk_nr_cpus_allowed(p) > 1)
+                enqueue_pushable_task(rq, p);
+}
+```
+
+* 判断一个实时调度实体是不是任务，而不是组调度的一个成员也是根据`my_q`是否为空来判断的。
+* 调度实体是任务时，`my_q`成员会一直保持初始化时的空值，不会被设置。
+```c
+#define rt_entity_is_task(rt_se) (!(rt_se)->my_q)
+```
 
 # 进程退出
+* 实时任务的退出队列时从`dequeue_task_rt()`开始看起。
 ```c
 static void dequeue_pushable_task(struct rq *rq, struct task_struct *p)
-{
+{       /*任务从当前队列的实时队列的可推任务列表中先删除*/
         plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
 
         /* Update the new highest prio pushable task */
@@ -1469,48 +1675,35 @@ static void dequeue_pushable_task(struct rq *rq, struct task_struct *p)
                 rq->rt.highest_prio.next = MAX_RT_PRIO;
 }
 ...
-static void dequeue_rt_stack(struct sched_rt_entity *rt_se, unsigned int flags)
-{
-        struct sched_rt_entity *back = NULL;
-
-        for_each_sched_rt_entity(rt_se) {
-                rt_se->back = back;
-                back = rt_se;
-        }
-
-        dequeue_top_rt_rq(rt_rq_of_se(back));
-
-        for (rt_se = back; rt_se; rt_se = rt_se->back) {
-                if (on_rt_rq(rt_se))
-                        __dequeue_rt_entity(rt_se, flags);
-        }
-}
-...
 static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 {
         struct rq *rq = rq_of_rt_se(rt_se);
-
+        /*在介绍进程入列时已经讲过了，该函数自顶向下将在队列上的实时调度实体移出队列*/
         dequeue_rt_stack(rt_se, flags);
 
-        for_each_sched_rt_entity(rt_se) {
-                struct rt_rq *rt_rq = group_rt_rq(rt_se);
-
+        for_each_sched_rt_entity(rt_se) { /*根据 parent 指针自底向上遍历*/
+                struct rt_rq *rt_rq = group_rt_rq(rt_se); /*取得调度实体拥有的调度队列*/
+                 /*在组调度场景，如果调度实体还拥有调度队列，该调度实体不能贸然删除，还须把
+                   它加回到实时调度队列，否则它所拥有的调度队列上的任务就无法再被调度了。
+                   如果它没有调度队列，则它不会被放回去，这是真的从调度队列中删除。
+                   但它的父调度实体还是需要被放回父调度实体所在的调度队列的。*/
                 if (rt_rq && rt_rq->rt_nr_running)
                         __enqueue_rt_entity(rt_se, flags);
         }
-        enqueue_top_rt_rq(&rq->rt);
+        enqueue_top_rt_rq(&rq->rt); /*处理实时任务入列对运行队列rq的影响*/
 }
 ...
 static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 {
         struct sched_rt_entity *rt_se = &p->rt;
-
+        /*移出队列前先更新一下时间*/
         update_curr_rt(rq);
-        dequeue_rt_entity(rt_se, flags);
+        dequeue_rt_entity(rt_se, flags); /*完成出列的实际工作*/
         /*将任务从可推队列中移除*/
         dequeue_pushable_task(rq, p);
 }
 ```
+* 大部分函数在分析进程入列的时候都说过，尤其需要注意的是`dequeue_rt_entity()`中提到的细节，这是进程入列时很不一样的一个地方。
 
 # 实时调度负载均衡
 
@@ -1608,6 +1801,85 @@ static int convert_prio(int prio)
 
         return cpupri;
 }
+```
+
+## balance_callback()调用回调函数
+* `queue_push_tasks()`和`queue_pull_task()`可以将实时调度负载均衡函数`push_rt_tasks()`和`pull_rt_task()`放入`rq->balance_callback`链表。
+* 负载均衡函数会等到调用`balance_callback()`时执行均衡负载。
+* kernel/sched/rt.c
+```c
+static inline int has_pushable_tasks(struct rq *rq)
+{
+        return !plist_head_empty(&rq->rt.pushable_tasks);
+}
+
+static DEFINE_PER_CPU(struct callback_head, rt_push_head);
+static DEFINE_PER_CPU(struct callback_head, rt_pull_head);
+
+static void push_rt_tasks(struct rq *);
+static void pull_rt_task(struct rq *);
+
+static inline void queue_push_tasks(struct rq *rq)
+{
+        if (!has_pushable_tasks(rq))
+                return;
+
+        queue_balance_callback(rq, &per_cpu(rt_push_head, rq->cpu), push_rt_tasks);
+}
+
+static inline void queue_pull_task(struct rq *rq)
+{
+        queue_balance_callback(rq, &per_cpu(rt_pull_head, rq->cpu), pull_rt_task);
+}
+```
+
+* kernel/sched/sched.h
+```c
+static inline void
+queue_balance_callback(struct rq *rq,
+                       struct callback_head *head,
+                       void (*func)(struct rq *rq))
+{
+        lockdep_assert_held(&rq->lock);
+
+        if (unlikely(head->next))
+                return;
+
+        head->func = (void (*)(struct callback_head *))func;
+        head->next = rq->balance_callback;
+        rq->balance_callback = head;
+}
+```
+
+* kernel/sched/core.c
+```c
+/* rq->lock is NOT held, but preemption is disabled */
+static void __balance_callback(struct rq *rq)
+{
+        struct callback_head *head, *next;
+        void (*func)(struct rq *rq);
+        unsigned long flags;
+
+        raw_spin_lock_irqsave(&rq->lock, flags);
+        head = rq->balance_callback;
+        rq->balance_callback = NULL;
+        while (head) {
+                func = (void (*)(struct rq *))head->func;
+                next = head->next;
+                head->next = NULL; /*这个操作很重要，能确保链表元素指向自身时不会出现死循环*/
+                head = next;
+
+                func(rq);
+        }
+        raw_spin_unlock_irqrestore(&rq->lock, flags);
+}
+
+static inline void balance_callback(struct rq *rq)
+{       /*先判断一下 rq->balance_callback 指针是不是空*/
+        if (unlikely(rq->balance_callback))
+                __balance_callback(rq);
+}
+...
 ```
 
 # 相关API和命令
