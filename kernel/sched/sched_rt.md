@@ -33,10 +33,6 @@
 - [进程唤醒](#进程唤醒)
 - [选择下一个进程](#选择下一个进程)
 - [进程退出](#进程退出)
-- [实时调度负载均衡](#实时调度负载均衡)
-  - [Root Domain](#Root-Domain)
-  - [CPU优先级管理](#CPU优先级管理)
-  - [balance_callback()调用回调函数](#balance_callback()调用回调函数)
 - [相关API和命令](#相关API和命令)
 - [参考资料](#参考资料)
 
@@ -163,7 +159,8 @@ struct sched_rt_entity {
 * `timeout` 记录该调度实体的运行次数，每次时钟中断加 1，仅在`RLIMIT_RTTIME`软限制启用时更新。
 * `parent` 指向调度实体的父实体。
 * `rt_rq` 指向调度实体所在的实时运行队列，即调度实体属于谁。
-* `my_q` 指向调度实体所拥有的实时运行队列，即谁属于调度实体。
+* `my_q` 指向调度实体所拥有的实时运行队列，即谁属于调度实体。如果调度单元是`task_group`，`my_q`才会有值；如果当前调度单元是task，那么`my_q`自然为`NULL`。
+
 
 ## 实时调度器类 rt_sched_class
 * kernel/sched/rt.c
@@ -273,13 +270,15 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 }
 ...
 ```
+* 在组调度中，调度单元的优先级则是组内优先级最高的调度单元的优先级值，也就是说调度单元的优先级受子调度单元影响，如果一个进程进入了调度单元，那么它所有的父调度单元的调度队列都要重排。
+* 实际上我们看到的结果是，调度器总是选择优先级最高的实时进程调度。
 * `plist_`前缀函数为 **递减优先级排序双链表(Descending-priority-sorted double-linked list)** 函数，实现见`include/linux/plist.h`和`lib/plist.c`。
 * 相关的原理可见这里：[Skip_list](https://en.wikipedia.org/wiki/Skip_list)
 
 ### 自顶向下将实时任务出列
 ![pic/sched_dequeue_rt_stack.png](pic/sched_dequeue_rt_stack.png)
 
-* 因为一个上层的条目的优先级依赖于底层的条目，所以出列时必须自顶向下移除
+* 因为一个上层的条目的优先级依赖于底层的条目，所以出列时必须自顶向下移除。
 * kernel/sched/rt.c
 ```c
 ...
@@ -1619,7 +1618,7 @@ pick_next_task_rt(struct rq *rq, struct task_struct *prev, struct pin_cookie coo
          */
         if (prev->sched_class == &rt_sched_class)
                 update_curr_rt(rq);
-        /*实时任务队列上没有进程在排队了，返回 NULL*/
+        /*实时任务队列没有在 rq 队列上，返回 NULL*/
         if (!rt_rq->rt_queued)
                 return NULL;
         /*注意，prev不一定是实时进程，因此调的是回调函数把 prev 放回它所属的队列
@@ -1705,188 +1704,11 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 ```
 * 大部分函数在分析进程入列的时候都说过，尤其需要注意的是`dequeue_rt_entity()`中提到的细节，这是进程入列时很不一样的一个地方。
 
-# 实时调度负载均衡
-
-## Root Domain
-* 实时调度器需要几个全局的，或者说系统范围的资源作出调度决定，以及 CPU 数量的增加而出现的可伸缩性瓶颈（由于锁保护的这些资源的竞争）。
-* *Root Domain* 引入的目的就是为了减少这样的竞争以改善可伸缩性。
-* cpuset 提供了一个把 CPU 分成子集被一个进程或者或一组进程使用的机制。
-* 几个 cpuset 可以重叠。
-* 一个 cpuset 被称为“*互斥的（exclusive）*”，如果没有其他的 cpuset 包含重叠的 CPU。
-* 每个互斥的 cpuset 定义了一个与其他 cpuset 或 CPU 分离的 **孤岛域（isolated domain，也叫作 **root domain）**。
-* 与每个 root domian 有关的信息存在 `struct root_domain`结构（对象）中：
-* kernel/sched/sched.h
-```c
-#ifdef CONFIG_SMP
-
-/*
- * We add the notion of a root-domain which will be used to define per-domain
- * variables. Each exclusive cpuset essentially defines an island domain by
- * fully partitioning the member cpus from any other cpuset. Whenever a new
- * exclusive cpuset is created, we also create and attach a new root-domain
- * object.
- *
- */
-struct root_domain {
-        atomic_t refcount;
-        atomic_t rto_count;
-        struct rcu_head rcu;
-        cpumask_var_t span;
-        cpumask_var_t online;
-
-        /* Indicate more than one runnable task for any CPU */
-        bool overload;
-
-        /*
-         * The bit corresponding to a CPU gets set here if such CPU has more
-         * than one runnable -deadline task (as it is below for RT tasks).
-         */
-        cpumask_var_t dlo_mask;
-        atomic_t dlo_count;
-        struct dl_bw dl_bw;
-        struct cpudl cpudl;
-
-        /*
-         * The "RT overload" flag: it gets set if a CPU has more than
-         * one runnable RT task.
-         */
-        cpumask_var_t rto_mask;
-        struct cpupri cpupri;
-
-        unsigned long max_cpu_capacity;
-};
-
-extern struct root_domain def_root_domain;
-
-#endif /* CONFIG_SMP */
-```
-* `refcount` root domain 的引用计数，当 root domain 被运行队列引用时加一，反之减一。
-* `span` *属于该 root domain 的运行队列* 的 *可用 CPU* 的范围，`cpumask_var_t`掩码。
-* `overload` 表明该 root domain 有任一 CPU 有多于一个的可运行任务。
-* `rto_mask` 某 CPU 有多于一个的可运行实时任务，对应的位被设置，`cpumask_var_t`掩码。
-* `rto_count` 过载的（overload）的 CPU 的数目。
-* `cpupri` 包含在 root domain 中的 *CPU 优先级管理* 结构成员，详见下文。
-* 这些 root domain 被用于减小 per-domain 变量的全局变量的范围。
-* 无论何时一个互斥 cpuset 被创建，一个新 root domain 对象也会被创建，信息来自 CPU 成员。
-* 缺省情况下，一个单独高层的 root domain 被创建，并把所有 CPU 所为成员。
-* 所有的实时调度决定只在一个 root domain 的范围内作出决定。
-
-## CPU优先级管理
-* CPU优先级管理（CPU Priority Management）跟踪系统中每个 CPU 的优先级，为了让进程迁移的决定更有效率。
-* CPU 优先级有 102 个:
-
-cpupri | prio
----|---
-CPUPRI_INVALID (-1) | -1
-CPUPRI_IDLE (0) | MAX_PRIO (140)
-CPUPRI_NORMAL (1) | MAX_RT_PRIO ~ MAX_PRIO-1 (100~139)
-2~101 | 99~0
-
-* `prio`转`cpupri`的函数如下：
-  * kernel/sched/cpupri.c
-```c
-/* Convert between a 140 based task->prio, and our 102 based cpupri */
-static int convert_prio(int prio)
-{
-        int cpupri;
-
-        if (prio == CPUPRI_INVALID)
-                cpupri = CPUPRI_INVALID;
-        else if (prio == MAX_PRIO)
-                cpupri = CPUPRI_IDLE;
-        else if (prio >= MAX_RT_PRIO)
-                cpupri = CPUPRI_NORMAL;
-        else
-                cpupri = MAX_RT_PRIO - prio + 1;
-
-        return cpupri;
-}
-```
-
-## balance_callback()调用回调函数
-* `queue_push_tasks()`和`queue_pull_task()`可以将实时调度负载均衡函数`push_rt_tasks()`和`pull_rt_task()`放入`rq->balance_callback`链表。
-* 负载均衡函数会等到调用`balance_callback()`时执行均衡负载。
-* kernel/sched/rt.c
-```c
-static inline int has_pushable_tasks(struct rq *rq)
-{
-        return !plist_head_empty(&rq->rt.pushable_tasks);
-}
-
-static DEFINE_PER_CPU(struct callback_head, rt_push_head);
-static DEFINE_PER_CPU(struct callback_head, rt_pull_head);
-
-static void push_rt_tasks(struct rq *);
-static void pull_rt_task(struct rq *);
-
-static inline void queue_push_tasks(struct rq *rq)
-{
-        if (!has_pushable_tasks(rq))
-                return;
-
-        queue_balance_callback(rq, &per_cpu(rt_push_head, rq->cpu), push_rt_tasks);
-}
-
-static inline void queue_pull_task(struct rq *rq)
-{
-        queue_balance_callback(rq, &per_cpu(rt_pull_head, rq->cpu), pull_rt_task);
-}
-```
-
-* kernel/sched/sched.h
-```c
-static inline void
-queue_balance_callback(struct rq *rq,
-                       struct callback_head *head,
-                       void (*func)(struct rq *rq))
-{
-        lockdep_assert_held(&rq->lock);
-
-        if (unlikely(head->next))
-                return;
-
-        head->func = (void (*)(struct callback_head *))func;
-        head->next = rq->balance_callback;
-        rq->balance_callback = head;
-}
-```
-
-* kernel/sched/core.c
-```c
-/* rq->lock is NOT held, but preemption is disabled */
-static void __balance_callback(struct rq *rq)
-{
-        struct callback_head *head, *next;
-        void (*func)(struct rq *rq);
-        unsigned long flags;
-
-        raw_spin_lock_irqsave(&rq->lock, flags);
-        head = rq->balance_callback;
-        rq->balance_callback = NULL;
-        while (head) {
-                func = (void (*)(struct rq *))head->func;
-                next = head->next;
-                head->next = NULL; /*这个操作很重要，能确保链表元素指向自身时不会出现死循环*/
-                head = next;
-
-                func(rq);
-        }
-        raw_spin_unlock_irqrestore(&rq->lock, flags);
-}
-
-static inline void balance_callback(struct rq *rq)
-{       /*先判断一下 rq->balance_callback 指针是不是空*/
-        if (unlikely(rq->balance_callback))
-                __balance_callback(rq);
-}
-...
-```
-
 # 相关API和命令
-
 
 # 参考资料
 - [Real-Time Linux Kernel Scheduler](http://www.linuxjournal.com/magazine/real-time-linux-kernel-scheduler)
 - [linux进程调度](http://lib.csdn.net/article/linux/39622)
 - [Linux Kernel 排程機制介紹](http://blog.csdn.net/hlchou/article/details/7425416)
 - [RT throttling分析](http://tiandiyao.com/it109/004657MYM019571/)
+- [Linux进程组调度机制分析](http://www.oenhan.com/task-group-sched)
