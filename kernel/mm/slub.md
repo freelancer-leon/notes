@@ -27,7 +27,7 @@
   }
   SLAB_ATTR(reclaim_account);
   ```
-* 由此可见，该标志位可以通过后期写文件的方式修改：
+* 由此可见，该标志位可以通过 *启动后* 写`sysfs`文件的方式修改：
 
   ```
   # echo 1 > /sys/kernel/slab/kmalloc-4096/reclaim_account
@@ -121,7 +121,7 @@ echo 1 > /sys/kernel/slab/<slab name>/trace
       return length;
   }   
   SLAB_ATTR(trace);
-  /* ... */
+  /*...*/__
   ```
 
 ##### 如何检查`s->refcount`?
@@ -363,14 +363,14 @@ unsigned long kmem_cache_flags(unsigned long object_size,
         unsigned long flags, const char *name,
         void (*ctor)(void *))
 {
-/*
- * Enable debugging if selected on the kernel commandline.
- */
-if (slub_debug && (!slub_debug_slabs || (name &&
-        !strncmp(slub_debug_slabs, name, strlen(slub_debug_slabs)))))
-        flags |= slub_debug;
+		/*
+		 * Enable debugging if selected on the kernel commandline.
+		 */
+		if (slub_debug && (!slub_debug_slabs || (name &&
+		        !strncmp(slub_debug_slabs, name, strlen(slub_debug_slabs)))))
+		        flags |= slub_debug;
 
-return flags;
+		return flags;
 }
 ```
 * 之前的`request_sock_TCP` slub的可合并状态就是在这个过程中被改变的。
@@ -414,7 +414,7 @@ start_kernel()
                         }
 ```
 
-* 这种情况下，只能通过一些hack的方式才能使特定的`kmalloc-*`独立出来：
+* 这种情况下，只能通过一些 *hack* 的方式才能使特定的`kmalloc-*`独立出来：
 ```c
 diff --git a/mm/slab_common.c b/mm/slab_common.c
 @@ -58,6 +58,16 @@ __setup_param("slub_nomerge", slub_nomerge, setup_slab_nomerge, 0);

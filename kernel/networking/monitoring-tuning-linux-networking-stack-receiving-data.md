@@ -65,6 +65,14 @@
   5. 其他一些事情
 
 ##### 准备从网络接受数据
+* 如今绝大部分网卡都采用 DMA 将数据写到内存中，操作系统从该处获取数据做进一步处理。大部分网卡把用于这个目的的数据结构构建成一个 ring buffer。
+* 为了达到这个目的，设备驱动必须和操作系统配合工作，保留一块网卡硬件也能使用的内存。
+* 一旦该区域被保留好，硬件会被告知该区域的位置，进来的数据会被写到该块内存，随后由网络子系统去接受和做进一步的处理。
+* 如果收到的包很多，一个 CPU 处理不过来所有进来的包，由于 ring buffer 是一个块固定长度区域的内存，所以一些进来数据可能会被丢弃。
+* [Receive Side Scaling (RSS)](https://en.wikipedia.org/wiki/Network_interface_controller#RSS) 或者 *多队列* 在这种情况下可能会有所帮助。
+	* 有的设备有将收到的包同时写到几个不同内存区域的能力；
+	* 每个区域是一个分离的队列；
+	* 这可以让操作系统从硬件级别上开始，用多个 CPU 并行地处理收到的包。
 * RX队列的大小的数值可以通过`ethtool`工具调整，调整这些值会显著地影响处理帧数和丢帧数。
 * NIC使用一个哈希函数利用包头域（如源、目的、端口）计算的结果来决定数据应该被导向哪个队列。
 * 一些NIC可以让你调整RX队列的权重，从而让你可以发送更多的通信量到特定的队列。
@@ -125,6 +133,55 @@ request_done:
 * `ethtool -S eth0`
 * `cat /sys/class/net/eth0/statistics/xxx`
 * `cat /proc/net/dev`
+
+* `/sys/class/net/eth0/statistics/xxx`的实现见`net/core/net-sysfs.c::netstat_show()`
+* `/proc/net/dev`的实现见`net/core/net-procfs.c::dev_seq_show()`
+* net/core/net-procfs.c
+```c
+dev_proc_net_init()
+ -> proc_create("dev", S_IRUGO, net->proc_net, &dev_seq_fops)
+  -> dev_seq_fops.open = dev_seq_open
+	 -> seq_open_net(inode, file, &dev_seq_ops, sizeof(struct seq_net_private))
+	  -> dev_seq_ops.show = dev_seq_show
+		 -> dev_seq_printf_stats()
+		  -> net/core/dev.c::dev_get_stats()
+			 -> drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
+			   ::ixgbe_netdev_ops.ndo_get_stats64 = ixgbe_get_stats64
+				 -> ixgbe_get_stats64()
+```
+
+* net/core/dev.c
+```c
+/**
+ *      dev_get_stats   - get network device statistics
+ *      @dev: device to get statistics from
+ *      @storage: place to store stats
+ *
+ *      Get network statistics from device. Return @storage.
+ *      The device driver may provide its own method by setting
+ *      dev->netdev_ops->get_stats64 or dev->netdev_ops->get_stats;
+ *      otherwise the internal statistics structure is used.
+ */
+struct rtnl_link_stats64 *dev_get_stats(struct net_device *dev,
+                                        struct rtnl_link_stats64 *storage)
+{
+        const struct net_device_ops *ops = dev->netdev_ops;
+
+        if (ops->ndo_get_stats64) {
+                memset(storage, 0, sizeof(*storage));
+                ops->ndo_get_stats64(dev, storage);
+        } else if (ops->ndo_get_stats) {
+                netdev_stats_to_stats64(storage, ops->ndo_get_stats(dev));
+        } else {
+                netdev_stats_to_stats64(storage, &dev->stats);
+        }
+        storage->rx_dropped += atomic_long_read(&dev->rx_dropped);
+        storage->tx_dropped += atomic_long_read(&dev->tx_dropped);
+        return storage;
+}
+EXPORT_SYMBOL(dev_get_stats);
+/**/```
+```
 
 ### 调节网络设备
 
@@ -352,9 +409,9 @@ $ sudo sysctl -w net.core.netdev_budget=600
 ### Generic Receive Offloading (GRO)
 
 * Generic Receive Offloading （GRO）是一个被称为Large Receive Offloading （LRO）的硬件优化的软件实现。
-* 两种方法背后的主要思想：通过将“足够相似”的包合并在一起以减少传给网络栈的包的数目，从而减少CPU的使用。
-* 如果你曾经用`tcpdump`看到过不切实际的进来的大包，很可能就是因为你的系统开启了GRO。
-* 包捕捉的时机在更深一层的栈，在GRO已经发生之后。
+* 两种方法背后的主要思想：通过将“足够相似”的包合并在一起以减少传给网络栈的包的数目，从而减少 CPU 的使用。
+* 如果你曾经用`tcpdump`看到过不切实际的进来的大包，很可能就是因为你的系统开启了 GRO。
+* 包捕捉的时机在更深一层的栈，在 GRO 已经发生之后。
 
 #### 调整：用`ethtool`调节GRO设置
 
@@ -382,10 +439,10 @@ $ sudo ethtool -K eth0 gro on
     * 该feature被称为Receive Side Scaling (RSS)
 * [Receive Packet Steering](https://lwn.net/Articles/362339/)是RSS的一个软件实现。
   * 软件实现也意味着它可以被用于任何网卡，即便网卡仅有一个RX队列。
-  * 但也意味着，RPS进入流程只能发生在一个包被从DMA内存收取上来之后。
-  * 这意味着，你不会注意到花在IRQ处理或NAPI poll 循环上的CPU时间的减少，而是你可以分散包收取之后处理的负载和传上网络栈减少的CPU时间。
-* RPS通过给每个进来的数据计算一个hash值，来决定那个CPU应该处理数据。接着数据被排入per-CPU的接收网络backlog等待被处理。
-* 一个[Inter-processor Interrupt (IPI)](https://en.wikipedia.org/wiki/Inter-processor_interrupt)会被递交给CPU拥有的backlog。
+  * 但也意味着，RPS 进入流程只能发生在一个包被从 DMA 内存收取上来之后。
+  * 这意味着，你不会注意到花在 IRQ 处理或 NAPI poll 循环上的 CPU 时间的减少，而是你可以分散包收取之后处理的负载和传上网络栈减少的 CPU 时间。
+* RPS 通过给每个进来的数据计算一个 hash 值，来决定那个 CPU 应该处理数据。接着数据被排入 per-CPU 的接收网络 backlog 等待被处理。
+* 一个[Inter-processor Interrupt (IPI)](https://en.wikipedia.org/wiki/Inter-processor_interrupt)会被递交给 CPU 拥有的 backlog。
 
 ### 调节：开启RPS
 * RPS能工作起来需要：
@@ -418,13 +475,13 @@ $ sudo bash -c 'echo 2048 > /sys/class/net/eth0/queues/rx-0/rps_flow_cnt'
 
 ## 由`netif_receive_skb`上移至网络栈
 * `netif_receive_skb`在多处调用，两个最常见的地方：
-  * `napi_skb_finish` 如果包不会被merge到一个已存在的GRO流，或者
-  * `napi_gro_complete` 如果协议层指明是时候flush流。
+  * `napi_skb_finish` 如果包不会被 merge 到一个已存在的 GRO 流，或者
+  * `napi_gro_complete` 如果协议层指明是时候 flush 流。
 
 > *提醒*： `netif_receive_skb`和它的后续操作是在一个softirq处理循环的上下文中，你会看到这的时间开销被计入如`top`工具的`sitime`或`si`项。
 
 ### 调节：RX包时间戳
-* 你可以通过调整一个叫`net.core.netdev_tstamp_prequeue`的sysctl项来调节什么时候包被打上时间戳。
+* 你可以通过调整一个名为`net.core.netdev_tstamp_prequeue`的sysctl项来调节什么时候包被打上时间戳。
 ```
 # Disable timestamping for RX packets by adjusting a sysctl
 $ sudo sysctl -w net.core.netdev_tstamp_prequeue=0
@@ -522,7 +579,6 @@ $ sudo sysctl -w net.core.flow_limit_table_len=8192
 
 ### Packet tap delivery
 * net/core/dev.c
-*
 ```c
 static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 {
@@ -710,6 +766,8 @@ IpExt: 0 0 0 0 277959 0 14568040307695 32991309088496 0 0 58649349 0 0 0 0 0
 * `InDiscards`: Total number of IP packets discarded due to memory allocation failure or checksum failure when packets are trimmed.
 * `InDelivers`: Total number of IP packets successfully delivered to higher protocol layers. Keep in mind that those protocol layers may drop data even if the IP layer does not.
 * `InCsumErrors`: Total number of IP Packets with checksum errors.
+
+* `/proc/net/netstat`的实现见`net/ipv4/proc.c::netstat_seq_show()`
 
 ### 高层协议注册
 * net/ipv4/af_inet.c

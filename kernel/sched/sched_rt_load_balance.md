@@ -4,6 +4,8 @@
 
 - [Root Domain](#Root-Domain)
 - [CPU优先级管理](#CPU优先级管理)
+- [推调度算法](#推调度算法)
+- [拉调度算法](#拉调度算法)
 - [balance_callback()调用回调函数](#balance_callback()调用回调函数)
 - [参考资料](#参考资料)
 
@@ -226,7 +228,7 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
 # 推调度算法
 * **推任务** 搜索一个运行队列，转移它的一个任务到另一个运行队列的操作。
 * `push_rt_task()` 算法着眼于运行队列上优先级最高的不在运行的可运行实时任务，考虑所有运行队列，找到一个它能运行的 CPU。
-* 它搜索一个优先级更低的队列，就是那个当前正在运行的任务可以被正在被推送的任务抢占的队列。
+* 它搜索一个优先级更低的队列，就是当前正在运行的任务可以被 *正被推送的任务* 抢占的队列。
 * 如前所述，CPU 优先级管理基础结构就是被用于找到一个有最低优先级运行队列的 CPU 掩码。从所有的候选者中选择唯一的最佳 CPU 很重要。
   * 该算法最先考虑的是把任务给最后在上面执行的 CPU，由于它的 cache 很可能还是热的。
   * 如果不行，考虑调度域映射，找到一个逻辑上接近上次运行 CPU 的那一个。
@@ -238,9 +240,13 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
 * 当扫描最低优先级运行队列的时候是不加锁的。
   * 当目标运行队列被找到时，只锁定那个队列，之后做一个检查来验证它是否仍旧是一个推任务的候选（由于目标队列可能被一个在其他 CPU 上并行的调度操作修改）。
   * 如果不再合适被推送，重复搜索最多三次，之后搜索被中断。
+* `push_rt_task()`函数会在以下时间点被调用：
+  1. 非正在运行的普通进程变成实时进程时（比如通过`sched_setscheduler`系统调用）；
+  2. 发生调度之后（这时候可能有一个实时进程被更高优先级的实时进程抢占了）；
+  3. 实时进程被唤醒之后，如果不能马上在当前 CPU 上运行（它不是当前 CPU 上优先级最高的进程）；
 
 ## 推任务的实现
-* 先看`push_rt_tasks()`的实现。
+* 先从`push_rt_tasks()`的实现看起。
 * kernel/sched/rt.c
 ```c
 /* Only try algorithms three times */
@@ -287,7 +293,7 @@ static int find_lowest_rq(struct task_struct *task)
         if (!cpumask_test_cpu(this_cpu, lowest_mask))
                 this_cpu = -1; /* Skip this_cpu opt if not among lowest */
         /*如果当前 CPU 不在掩码给出的 CPU 里，标记成 -1 跳过它。*/
-        rcu_read_lock(); /*domain tree 有 RCU 的 quiescent state transition的保护*/
+        rcu_read_lock(); /*domain tree 有 RCU quiescent state transition 的保护*/
         for_each_domain(cpu, sd) { /*由下至上遍历调度域，优先选择邻近的*/
                 if (sd->flags & SD_WAKE_AFFINE) {
                         int best_cpu;
@@ -296,7 +302,7 @@ static int find_lowest_rq(struct task_struct *task)
                          * "this_cpu" is cheaper to preempt than a
                          * remote processor.
                          */
-                        /*抢占 "this_cpu" 比抢占一个远程的处理器更廉价。
+                        /*抢占 "this_cpu" 比抢占一个远程的处理器开销更低。
                           当前 CPU 如果在之前的最低优先级掩码里，且在同一调度域的分支上，
                           则有可能被选中，原因如上所述*/
                         if (this_cpu != -1 &&
@@ -304,8 +310,8 @@ static int find_lowest_rq(struct task_struct *task)
                                 rcu_read_unlock();
                                 return this_cpu;
                         }
-                        /*如果当前 CPU 不再同一调度域的分支上，在 *最低优先级掩码* 与
-                          *调度域的 CPU span* 的交集中选第一个 CPU 作为最佳 CPU*/
+                        /*如果当前 CPU 不再同一调度域的分支上，在 "最低优先级掩码" 与
+                          "调度域的 CPU span" 的交集中选第一个 CPU 作为最佳 CPU*/
                         best_cpu = cpumask_first_and(lowest_mask,
                                                      sched_domain_span(sd));
                         if (best_cpu < nr_cpu_ids) {
@@ -322,7 +328,7 @@ static int find_lowest_rq(struct task_struct *task)
          * locations.
          */
         /*最后，如果在调度域里没有匹配 lowest_mask 的 CPU，那么就把这个在 lowest_mask
-          掩码里，但不在同一调度域树枝上的当前 CPU 返回。
+          掩码里，但不在同一调度域分支上的当前 CPU 返回。
           这意味此时当前 CPU （就调度域划分而言）是远程的。*/
         if (this_cpu != -1)
                 return this_cpu;
@@ -398,7 +404,7 @@ static struct rq *find_lock_lowest_rq(struct task_struct *task, struct rq *rq)
                 /* If this rq is still suitable use it. */
                 /*如果能锁定成功且能通过以上一系列检查，这时才认为该运行队列是合适被推给任务
                   的，可以跳出循环了，此时返回值 lowest_rq 具备有效值。
-                  解除double_unlock_balance(rq, lowest_rq)的地方在push_rt_task()，
+                  解除 double_unlock_balance(rq, lowest_rq) 的地方在 push_rt_task()，
                   因为在这期间要一直锁定着两个队列。*/
                 if (lowest_rq->rt.highest_prio.curr > task->prio)
                         break;
@@ -418,7 +424,7 @@ static struct task_struct *pick_next_pushable_task(struct rq *rq)
 
         if (!has_pushable_tasks(rq))
                 return NULL;
-
+        /*plist是按照优先级由高到底进行排序的，所以 first entry 是链表里优先级最高的*/
         p = plist_first_entry(&rq->rt.pushable_tasks,
                               struct task_struct, pushable_tasks);
         /*返回前检查一些不该存在的错误*/
@@ -478,7 +484,7 @@ retry:
         /*在比选出来的任务优先级低的队列中，找到优先级最低的队列。
           如果找到的话，当前队列 rq 和最低优先级队列 lowest_rq 都会处于锁定状态*/
         lowest_rq = find_lock_lowest_rq(next_task, rq);
-        if (!lowest_rq) {
+        if (!lowest_rq) { /*如果没找到优先级最低的队列*/
                 struct task_struct *task;
                 /*
                  * find_lock_lowest_rq releases rq->lock
@@ -488,6 +494,8 @@ retry:
                  * run-queue and is also still the next task eligible for
                  * pushing.
                  */
+                /*因为 find_lock_lowest_rq() 会释放 rq->lock 锁，所以之前选中的
+                  next_task 有已经被迁移的可能。*/
                 task = pick_next_pushable_task(rq);
                 if (task_cpu(next_task) == rq->cpu && task == next_task) {
                         /*
@@ -496,32 +504,41 @@ retry:
                          * to push it to.  Do not retry in this case, since
                          * other cpus will pull from us when ready.
                          */
+                        /*next_task 的 CPU 仍然是当前队列的 CPU，还没有被迁移，且仍然是
+                         下一个具备被迁移资格的任务，但我们找不到一个合适的运行队列来接纳它。
+                         这种情况不需要重试，直到其他 CPU 在合适的时候拉走它。*/
                         goto out;
                 }
 
                 if (!task)
                         /* No more tasks, just exit */
+                        /*找不到优先级最低的队列，也没有其他任务可以推，直接退出*/
                         goto out;
 
                 /*
                  * Something has shifted, try again.
                  */
-                put_task_struct(next_task);
+                /*找不到优先级最低的队列，且之前选中的 next_task 已经被迁移走了，那么把刚
+                  选出的 task 作为新的 next_task 进行下一次重试*/
+                put_task_struct(next_task); /*对应到之前的 get_task_struct()*/
                 next_task = task;
                 goto retry;
         }
-
+        /*如果找到优先级最低的队列，开始迁移 next_task*/
+        /*选中的任务从当前队列 rq 中出列*/
         deactivate_task(rq, next_task, 0);
+        /*选中的任务 cpu 设置为将要迁移至的最低优先级队列的 cpu*/
         set_task_cpu(next_task, lowest_rq->cpu);
+        /*选中的任务进入最低优先级队列*/
         activate_task(lowest_rq, next_task, 0);
-        ret = 1;
-
+        ret = 1; /*返回值设置为 1 表示成功*/
+        /*把最低优先级队列的当前任务设置为“需要被立即重新调度”*/
         resched_curr(lowest_rq);
-
+        /*同时解锁当前队列 rq 和最低优先级队列 lowest_rq*/
         double_unlock_balance(rq, lowest_rq);
 
 out:
-        put_task_struct(next_task);
+        put_task_struct(next_task); /*对应到之前的 get_task_struct()*/
 
         return ret;
 }
@@ -529,7 +546,7 @@ out:
 static void push_rt_tasks(struct rq *rq)
 {
         /* push_rt_task will return true if it moved an RT */
-        /*push_rt_task()如果移动了一个实时任务将会返回 true。
+        /*push_rt_task()如果移动了一个实时任务将会返回 1。
           这个循环会一直执行到给定队列没有任务可以推走*/
         while (push_rt_task(rq))
                 ;
@@ -544,6 +561,103 @@ static void push_rt_tasks(struct rq *rq)
 * 如果算法在第一遍的时候只选择一个要被拉的候选任务，那么在第二遍的时候才实际的去拉，有一种可能是，被选择的最高优先级任务不再是候选（由于在其他 CPU 上的并行调度操作）。
 * 为了避免这种在 *查找最高优先级队列* 和 *当实际去执行拉操作时最高优先级任务仍然在运行队列上* 的竞争，拉操作会继续去拉任务。
 * 最坏的情况是，这可能导致许多被拉到目标运行队列的任务之后有可能被推到其他 CPU，导致任务弹跳。任务弹跳被任务是一种稀有事件。
+
+## 拉任务的实现
+* 先从`pull_rt_task()`的实现看起。
+* kernel/sched/rt.c
+```c
+static void pull_rt_task(struct rq *this_rq)
+{
+	int this_cpu = this_rq->cpu, cpu;
+	bool resched = false;
+	struct task_struct *p;
+	struct rq *src_rq;
+
+	if (likely(!rt_overloaded(this_rq)))
+		return;
+
+	/*
+	 * Match the barrier from rt_set_overloaded; this guarantees that if we
+	 * see overloaded we must also see the rto_mask bit.
+	 */
+	smp_rmb();
+
+#ifdef HAVE_RT_PUSH_IPI
+	if (sched_feat(RT_PUSH_IPI)) {
+		tell_cpu_to_push(this_rq);
+		return;
+	}
+#endif
+
+	for_each_cpu(cpu, this_rq->rd->rto_mask) {
+		if (this_cpu == cpu)
+			continue;
+
+		src_rq = cpu_rq(cpu);
+
+		/*
+		 * Don't bother taking the src_rq->lock if the next highest
+		 * task is known to be lower-priority than our current task.
+		 * This may look racy, but if this value is about to go
+		 * logically higher, the src_rq will push this task away.
+		 * And if its going logically lower, we do not care
+		 */
+		if (src_rq->rt.highest_prio.next >=
+		    this_rq->rt.highest_prio.curr)
+			continue;
+
+		/*
+		 * We can potentially drop this_rq's lock in
+		 * double_lock_balance, and another CPU could
+		 * alter this_rq
+		 */
+		double_lock_balance(this_rq, src_rq);
+
+		/*
+		 * We can pull only a task, which is pushable
+		 * on its rq, and no others.
+		 */
+		p = pick_highest_pushable_task(src_rq, this_cpu);
+
+		/*
+		 * Do we have an RT task that preempts
+		 * the to-be-scheduled task?
+		 */
+		if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
+			WARN_ON(p == src_rq->curr);
+			WARN_ON(!task_on_rq_queued(p));
+
+			/*
+			 * There's a chance that p is higher in priority
+			 * than what's currently running on its cpu.
+			 * This is just that p is wakeing up and hasn't
+			 * had a chance to schedule. We only pull
+			 * p if it is lower in priority than the
+			 * current task on the run queue
+			 */
+			if (p->prio < src_rq->curr->prio)
+				goto skip;
+
+			resched = true;
+
+			deactivate_task(src_rq, p, 0);
+			set_task_cpu(p, this_cpu);
+			activate_task(this_rq, p, 0);
+			/*
+			 * We continue with the search, just in
+			 * case there's an even higher prio task
+			 * in another runqueue. (low likelihood
+			 * but possible)
+			 */
+		}
+skip:
+		double_unlock_balance(this_rq, src_rq);
+	}
+
+	if (resched)
+		resched_curr(this_rq);
+}
+```
 
 # balance_callback()调用回调函数
 * `queue_push_tasks()`和`queue_pull_task()`可以将实时调度负载均衡函数`push_rt_tasks()`和`pull_rt_task()`放入`rq->balance_callback`链表。
