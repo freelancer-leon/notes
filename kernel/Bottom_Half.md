@@ -171,6 +171,7 @@ asmlinkage __visible void do_softirq(void)
 
     local_irq_restore(flags);
 }
+...__```
 ```
 * arch/x86/kernel/irq_32.c
 ```c
@@ -351,6 +352,7 @@ void __tasklet_schedule(struct tasklet_struct *t)
     local_irq_restore(flags);
 }
 EXPORT_SYMBOL(__tasklet_schedule);
+...__```
 ```
 
 ## 处理tasklet
@@ -379,6 +381,7 @@ static inline void tasklet_unlock_wait(struct tasklet_struct *t)
 #define tasklet_unlock_wait(t) do { } while (0)
 #define tasklet_unlock(t) do { } while (0)
 #endif
+...*```
 ```
   * kernel/softirq.c
 ```c
@@ -420,6 +423,7 @@ static void tasklet_action(struct softirq_action *a)
         local_irq_enable();
     }
 }
+...__```
 ```
 
 ## 使用tasklet
@@ -447,6 +451,7 @@ void tasklet_init(struct tasklet_struct *t,
     t->data = data;
 }
 EXPORT_SYMBOL(tasklet_init);
+...*```
 ```
 
 ### tasklet处理函数
@@ -601,7 +606,7 @@ struct work_struct {
     struct lockdep_map lockdep_map;
 #endif
 };
-
+...*```
 ```
 
 ## 使用工作队列
@@ -735,7 +740,7 @@ void flush_workqueue(struct workqueue_struct *wq);
 
 /* We use the MSB mostly because its available */
 #define PREEMPT_NEED_RESCHED    0x80000000
-
+...__```
 ```
 * 以下标志位共用`preempt_count`是因为前几种情形都不允许发生进程抢占：
   * 抢占计数
@@ -806,7 +811,7 @@ void flush_workqueue(struct workqueue_struct *wq);
       unsigned int        sig_on_uaccess_error:1;
       unsigned int        uaccess_err:1;  /* uaccess failed */
   };
-
+	...*```
   ```
 
 * `PREEMPT_NEED_RESCHED`目前只有x86在用。
@@ -833,6 +838,7 @@ static inline void local_bh_enable_ip(unsigned long ip)
 {
     __local_bh_enable_ip(ip, SOFTIRQ_DISABLE_OFFSET);
 }
+...__```
 ```
 * 开启下半部的细节
   * kernel/softirq.c

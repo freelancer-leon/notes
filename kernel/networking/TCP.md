@@ -11,7 +11,7 @@
 		* 未完成的连接请求队列，长度由`/proc/sys/net/ipv4/tcp_max_syn_backlog`指定，系统级的设定。
 	* `backlog`能支持的最大队列长度受`/proc/sys/net/core/somaxconn`的限制，超过限制会被默然截断。
 
-#### 当 *接受队列* 满了，还有连接收到对端的 `ACK` 而需从 *未完成队列* 移入时的行为
+### 当 *接受队列* 满了，还有连接收到对端的 `ACK` 而需从 *未完成队列* 移入时的行为
 * 比如说，服务器端没有及时调用`accept()`消耗掉 *接收队列* 里的连接，又有新的连接连入并回复`ACK`时。
 * `net/ipv4/tcp_ipv4.c:tcp_v4_syn_recv_sock()`会增加`/proc/net/netstat`中的`ListenOverflows`和`ListenDrops`计数；
 * `net/ipv4/tcp_minisocks.c:tcp_check_req()`会看`/proc/sys/net/ipv4/tcp_abort_on_overflow`的设置：
@@ -22,12 +22,12 @@
 		* 到达重发次数限制后，发送`RST`重置连接。
 * 从客户端的角度来看，当收到服务器端的第一个`SYN/ACK`后，状态就变为`ESTABLISHED`，此时如果开始发送数据，会造成数据的重传。[TCP slow-start](http://en.wikipedia.org/wiki/Slow-start) 会限制此期间发送的 segments 的数目。
 
-#### 当 *接受队列* 满了，还有连接收到对端的 `SYN` 时的行为
+### 当 *接受队列* 满了，还有连接收到对端的 `SYN` 时的行为
 * 见`net/ipv4/tcp_ipv4.c:tcp_v4_conn_request()`的处理。
 * 增加`/proc/net/netstat`中的`ListenOverflows`和`ListenDrops`计数。
 * 如果收到太多的`SYN`包，会丢掉它们中的一些。
 
-#### 如果在慢速网络连接中，客户端和服务器端的round-trip时间很长，但服务器端有足够的能力accept连接，此时可做什么样的优化调整？
+### 如果在慢速网络连接中，客户端和服务器端的round-trip时间很长，但服务器端有足够的能力accept连接，此时可做什么样的优化调整？
 * 增加应用程序的 backlog 是可以的，相当于给足够的时间让报文完成传输。
 * 这种情况下更优的方案是调整`/proc/sys/net/ipv4/tcp_max_syn_backlog`，让系统保持更多的未完成连接。
 

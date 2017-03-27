@@ -25,6 +25,7 @@
 - [CFS - 1](https://github.com/freelancer-leon/notes/blob/master/kernel/sched/sched_cfs-1.md)
 - [实时调度](https://github.com/freelancer-leon/notes/blob/master/kernel/sched/sched_rt.md)
 - [实时调度负载均衡](https://github.com/freelancer-leon/notes/blob/master/kernel/sched/sched_rt_load_balance.md)
+- [内核抢占](https://github.com/freelancer-leon/notes/blob/master/kernel/sched/sched_kernel_preempt.md)
 
 ## 内存管理
 - [内存管理](https://github.com/freelancer-leon/notes/blob/master/kernel/mm/mm.md)
@@ -33,11 +34,14 @@
 
 ## 网络
 - [Monitoring and Tuning the Linux Networking Stack: Receiving Data](https://github.com/freelancer-leon/notes/blob/master/kernel/networking/monitoring-tuning-linux-networking-stack-receiving-data.md)
-- [TCP](https://github.com/freelancer-leon/notes/blob/master/kernel/networking/TCP.md))
+- [TCP](https://github.com/freelancer-leon/notes/blob/master/kernel/networking/TCP.md)
 
 ## 性能诊断
 - [Perf](https://github.com/freelancer-leon/notes/blob/master/kernel/profiling/perf.md)
+
+## 跟踪
 - [Ftrace](https://github.com/freelancer-leon/notes/blob/master/kernel/profiling/ftrace.md)
+- [Ftrace设计](https://github.com/freelancer-leon/notes/blob/master/kernel/profiling/ftrace-design.md)
 
 ## 调试
 - [Debug](https://github.com/freelancer-leon/notes/blob/master/kernel/debug/debug.md)

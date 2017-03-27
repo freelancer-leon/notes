@@ -322,8 +322,7 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
     /* ensure we never gain time by being placed backwards. */
     /*此处表明, 对于新进程而言, 新进程的vruntime值是大于等于父进程vruntime值的。
       所以后面如果没有设置子进程先运行, 则只要父进程本次调度运行的实际时间没有超过
-      调度周期分配的实际时间值, 父进程就会先运行, 否则, 父子进程的先后执行顺序不确定
-     */
+      调度周期分配的实际时间值, 父进程就会先运行, 否则, 父子进程的先后执行顺序不确定*/
     se->vruntime = max_vruntime(se->vruntime, vruntime);
 }
 ```
