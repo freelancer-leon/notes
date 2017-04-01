@@ -136,28 +136,28 @@ END(function_hook)
 ```c
 foo()
   |
-	+-> mcount()
+  +-> mcount()
   |     |
-	|     +-> ftrace_trace_function()
+  |     +-> ftrace_trace_function()
   |     |
-	|		  +-> if (ftrace_graph_return != ftrace_stub || ftrace_graph_entry != ftrace_graph_entry_stub)
+  |     +-> if (ftrace_graph_return != ftrace_stub || ftrace_graph_entry != ftrace_graph_entry_stub)
   |             |
-	|             +-> ftrace_graph_caller()
-	|						       |  /*Save address of the return address of traced function*/
-	|									 +-> prepare_ftrace_return()
-	|                        |
-	|                        +-> ftrace_graph_entry()
-	|                        +-> ftrace_push_return_trace()
+  |             +-> ftrace_graph_caller()
+  |                   |  /*Save address of the return address of traced function*/
+  |                   +-> prepare_ftrace_return()
+  |                        |
+  |                        +-> ftrace_graph_entry()
+  |                        +-> ftrace_push_return_trace()
   +-> bar()
-	|     |
-	|     +-> return_to_handler()
-	|		       |
-	|					 +-> ftrace_return_to_handler()
-	|          |     +-> ftrace_pop_return_trace()
-	|          |     +-> ftrace_graph_return()
-	|          |<----+
+  |     |
+  |     +-> return_to_handler()
+  |           |
+  |           +-> ftrace_return_to_handler()
+  |           |     +-> ftrace_pop_return_trace()
+  |           |     +-> ftrace_graph_return()
+  |           |<----+
   |<---------+
-	;
+  ;
 ```
 * function_graph 跟踪器要复杂一些，在 function 跟踪器调用完 `ftrace_trace_function` 指向的函数后执行，即`jmp fgraph_trace`
 * 这里会比较`ftrace_graph_return`和`ftrace_stub`，`ftrace_graph_entry`和`ftrace_graph_entry_stub`
@@ -248,9 +248,9 @@ preempt_disable()
  */
 static inline void preempt_latency_start(int val)
 {
-				/*仅在抢占计数与要改变的递增值相等时才调用函数去动态改变插桩，不相等时是不需要去改变
-					插桩的。我们需要记录的是抢占关闭到抢占开启期间的 trace，在此期间增加禁止抢占的深度
-					并不改变不能被抢占的状况。*/
+        /*仅在抢占计数与要改变的递增值相等时才调用函数去动态改变插桩，不相等时是不需要去改变
+          插桩的。我们需要记录的是抢占关闭到抢占开启期间的 trace，在此期间增加禁止抢占的深度
+          并不改变不能被抢占的状况。*/
         if (preempt_count() == val) {
                 unsigned long ip = get_lock_parent_ip();
 ...
@@ -274,9 +274,9 @@ NOKPROBE_SYMBOL(preempt_count_add);
  */
 static inline void preempt_latency_stop(int val)
 {
-				/*仅在抢占计数与要改变的递减值相等时才调用函数去动态改变插桩，不相等时是不需要去改变
-				  插桩的。我们需要记录的是抢占关闭到抢占开启期间的 trace，在此期间减少禁止抢占的深度
-					并不改变不能被抢占的状况。*/
+        /*仅在抢占计数与要改变的递减值相等时才调用函数去动态改变插桩，不相等时是不需要去改变
+          插桩的。我们需要记录的是抢占关闭到抢占开启期间的 trace，在此期间减少禁止抢占的深度
+          并不改变不能被抢占的状况。*/
         if (preempt_count() == val)
                 trace_preempt_on(CALLER_ADDR0, get_lock_parent_ip());
 }
@@ -297,7 +297,7 @@ static DEFINE_PER_CPU(int, tracing_cpu);
 ...
 static inline int
 preempt_trace(void)
-{				/*preemptoff跟踪器开启且抢占计数不为 0*/
+{       /*preemptoff跟踪器开启且抢占计数不为 0*/
         return ((trace_type & TRACER_PREEMPT_OFF) && preempt_count());
 }
 ...
@@ -315,33 +315,33 @@ start_critical_timing(unsigned long ip, unsigned long parent_ip)
         struct trace_array *tr = irqsoff_trace;
         struct trace_array_cpu *data;
         unsigned long flags;
-				/*如果当前跟踪器未使能或跟踪功能没开启，直接返回*/
+        /*如果当前跟踪器未使能或跟踪功能没开启，直接返回*/
         if (!tracer_enabled || !tracing_is_enabled())
                 return;
 
         cpu = raw_smp_processor_id();
-				/*tracing_cpu是个 Per-CPU 变量，它仅在该函数下面置 1，也就是说该函数下面的部分
-				  只在开启跟踪的时候运行一次。*/
+        /*tracing_cpu是个 Per-CPU 变量，它仅在该函数下面置 1，也就是说该函数下面的部分
+          只在开启跟踪的时候运行一次。*/
         if (per_cpu(tracing_cpu, cpu))
                 return;
 
         data = per_cpu_ptr(tr->trace_buffer.data, cpu);
-				/*data->disabled 控制是否同时 trace_function*/
+        /*data->disabled 控制是否同时 trace_function*/
         if (unlikely(!data) || atomic_read(&data->disabled))
                 return;
-				/*不允许伪并发的 trace_function，注意，这是 Per-CPU 的*/
+        /*不允许伪并发的 trace_function，注意，这是 Per-CPU 的*/
         atomic_inc(&data->disabled);
 
         data->critical_sequence = max_sequence;
         data->preempt_timestamp = ftrace_now(cpu);
         data->critical_start = parent_ip ? : ip;
-				/*将 flags 寄存器的信息取出来*/
+        /*将 flags 寄存器的信息取出来*/
         local_save_flags(flags);
-				/*写当前跟踪信息*/
+        /*写当前跟踪信息*/
         __trace_function(tr, ip, parent_ip, flags, preempt_count());
-				/*此处将 tracing_cpu 置 1，不会因为伪并发而被运行两次start*/
+        /*此处将 tracing_cpu 置 1，不会因为伪并发而被运行两次start*/
         per_cpu(tracing_cpu, cpu) = 1;
-				/*写完信息了，放开保护允许继续 trace*/
+        /*写完信息了，放开保护允许继续 trace*/
         atomic_dec(&data->disabled);
 }
 ...

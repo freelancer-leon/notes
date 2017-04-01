@@ -56,7 +56,7 @@
 
 ![pic/IA32_PERFEVTSELx.png](pic/IA32_PERFEVTSELx.png)
 * **Event select field (bits 0 through 7)**
-	* 选择要探测性能监测事件的逻辑单元。
+	* 选择要探测性能监测事件的逻辑单元
 	* 填充到该域的值取决于体系架构
 * **Unit mask (UMASK) fields (bits 8-15)**
 	* 被 Event Select field 选中的逻辑单元可能会有监测多个事件的能力。因此该 UMASK 域可以用于从这些事件中选择其中一个让逻辑单元来监控。
@@ -106,30 +106,32 @@
 	- atomic64 类型（以及相关的 helper functions）的支持
 
 ### 配置内核代码的符号表
-	```
-	# kernel symbols:
-	CONFIG_KALLSYMS=y
-	CONFIG_KALLSYMS_ALL=y
-	CONFIG_KALLSYMS_EXTRA_PASS=y
-	```
+```
+# kernel symbols:
+CONFIG_KALLSYMS=y
+CONFIG_KALLSYMS_ALL=y
+CONFIG_KALLSYMS_EXTRA_PASS=y
+```
 ### `perf lock`命令依赖的选项
-	```
-	# kernel lock tracing:
-	CONFIG_LOCKDEP=y
-	# kernel lock statistic:
-	CONFIG_LOCK_STAT=y
-	```
-### `perf probe`命令依赖的选项
-	```
-	# kernel-level dynamic tracing:
-	CONFIG_KPROBES=y
-	CONFIG_KPROBE_EVENTS=y
-	# user-level dynamic tracing:
-	CONFIG_UPROBES=y
-	CONFIG_UPROBE_EVENTS=y
-	```
+```
+# kernel lock tracing:
+CONFIG_LOCKDEP=y
+# kernel lock statistic:
+CONFIG_LOCK_STAT=y
+```
 
-# Reference
+### `perf probe`命令依赖的选项
+```
+# kernel-level dynamic tracing:
+CONFIG_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+# user-level dynamic tracing:
+CONFIG_UPROBES=y
+CONFIG_UPROBE_EVENTS=y
+```
+
+# References
+
 * [Intel® 64 and IA-32 Architectures
 Software Developer’s Manual
 Combined Volumes:

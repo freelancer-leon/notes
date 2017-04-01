@@ -40,8 +40,8 @@
 - [Perf](https://github.com/freelancer-leon/notes/blob/master/kernel/profiling/perf.md)
 
 ## 跟踪
-- [Ftrace](https://github.com/freelancer-leon/notes/blob/master/kernel/profiling/ftrace.md)
-- [Ftrace设计](https://github.com/freelancer-leon/notes/blob/master/kernel/profiling/ftrace-design.md)
+- [Ftrace](https://github.com/freelancer-leon/notes/blob/master/kernel/trace/ftrace.md)
+- [Ftrace设计](https://github.com/freelancer-leon/notes/blob/master/kernel/trace/ftrace-design.md)
 
 ## 调试
 - [Debug](https://github.com/freelancer-leon/notes/blob/master/kernel/debug/debug.md)

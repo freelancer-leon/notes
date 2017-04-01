@@ -505,8 +505,8 @@ resume_kernel:
 	        enum ctx_state prev_state;
 
 	        /* Catch callers which need to be fixed */
-					/*抢占计数不为 0，或者中断开启，直接 crash。因为该函数仅在中断返回的最后调用，此时仍
-					  属于中断上下文，如果不满足这两个条件系统肯定出问题了。*/
+	        /*抢占计数不为 0，或者中断开启，直接 crash。因为该函数仅在中断返回的最后调用，此时仍
+	          属于中断上下文，如果不满足这两个条件系统肯定出问题了。*/
 	        BUG_ON(preempt_count() || !irqs_disabled());
 
 	        prev_state = exception_enter();
