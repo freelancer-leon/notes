@@ -1,6 +1,62 @@
 
 # Perf
 
+## Perf的功能
+
+* 评估程序对硬件资源的使用情况
+	* 各级 cache 访问次数
+	* 各级 cache 丢失次数
+	* 流水线停顿周期
+	* 前端总线访问次数
+	* 更多
+* 评估程序对操作系统资源的使用情况
+	* 系统调用次数
+	* Page Fault 次数
+	* 上下文切换次数
+	* 任务迁移次数
+	* 更多
+* 评估内核性能
+	* Benchmarks
+	* 调度器性能分析
+	* 系统行为记录与重演
+	* 动态添加探测点
+	* 更多
+
+* `perf` 命令以子命令结合的方式提供相应的功能
+```
+# perf help
+
+ usage: perf [--version] [--help] [OPTIONS] COMMAND [ARGS]
+
+ The most commonly used perf commands are:
+   annotate        Read perf.data (created by perf record) and display annotated code
+   archive         Create archive with object files with build-ids found in perf.data file
+   bench           General framework for benchmark suites
+   buildid-cache   Manage build-id cache.
+   buildid-list    List the buildids in a perf.data file
+   data            Data file related processing
+   diff            Read perf.data files and display the differential profile
+   evlist          List the event names in a perf.data file
+   inject          Filter to augment the events stream with additional information
+   kmem            Tool to trace/measure kernel memory properties
+   kvm             Tool to trace/measure kvm guest os
+   list            List all symbolic event types
+   lock            Analyze lock events
+   mem             Profile memory accesses
+   record          Run a command and record its profile into perf.data
+   report          Read perf.data (created by perf record) and display the profile
+   sched           Tool to trace/measure scheduler properties (latencies)
+   script          Read perf.data (created by perf record) and display trace output
+   stat            Run a command and gather performance counter statistics
+   test            Runs sanity tests.
+   timechart       Tool to visualize total system behavior during a workload
+   top             System profiling tool.
+   trace           strace inspired tool
+   probe           Define new dynamic tracepoints
+
+ See 'perf help COMMAND' for more information on a specific command.
+```
+
 ## 概念
 
 ### CPU cache
@@ -82,16 +138,150 @@
 >
 > They can be used for *tracing* and *performance accounting*.
 
-* Tracepoint is "**off**"
-	* Tiny **time penalty** (checking a condition for a branch)
-	* Tiny **space penalty** (adding a few bytes for the function call at the end of the instrumented function and adds a data structure in a separate section).
-* Tracepoint is "**on**"
-  * The function you provide is called each time the tracepoint is executed, in the execution context of the caller.
-  * When the function provided ends its execution, it returns to the caller (continuing from the tracepoint site).
+* Tracepoint 关闭
+	* 极小的 **时间惩罚** （检查一个分支的条件）
+	* 极小的 **空间惩罚** （在被 instrumented 函数的末尾添加一些代码以调用函数，并且在一个独立的 section 中添加一些数据结构）。
+* Tracepoint 开启
+  * 在调用者的执行上下文中，每次 tracepoint 被执行的时候，提供的函数都会被调用到。
+  * 当提供的函数运行结束后，会返回到它的调用者（从 tracepoint 被调用的地方继续执行）。
 
+## Perf原理
+
+```
+# cat /proc/interrupts
+           CPU0       CPU1       
+  0:        173          0   IO-APIC-edge      timer
+  1:          3          0   IO-APIC-edge      i8042
+  4:       3276          0   IO-APIC-edge      serial
+  8:          0          0   IO-APIC-edge      rtc0
+  9:          0          0   IO-APIC-fasteoi   acpi
+ 12:          5          0   IO-APIC-edge      i8042
+ 17:        517          0   IO-APIC  17-fasteoi   snd_hda_intel
+ 20:        347          0   IO-APIC  20-fasteoi   PCIe PME, pciehp, pata_via, uhci_hcd:usb2
+ 21:        279          0   IO-APIC  21-fasteoi   0000:00:0f.0, uhci_hcd:usb4
+ 22:      18614          0   IO-APIC  22-fasteoi   PCIe PME, pciehp, ehci_hcd:usb1, uhci_hcd:usb3
+ 23:          0          0   IO-APIC  23-fasteoi   uhci_hcd:usb5
+ 24:          0          0   IO-APIC   3-fasteoi   PCIe PME, pciehp
+ 25:          0          0   IO-APIC   7-fasteoi   PCIe PME, pciehp
+ 26:       2941          0   IO-APIC   4-fasteoi   eth0
+NMI:       1450        111   Non-maskable interrupts
+LOC:      20930      12254   Local timer interrupts
+SPU:          0          0   Spurious interrupts
+PMI:       1450        111   Performance monitoring interrupts
+IWI:          2          0   IRQ work interrupts
+RTR:          0          0   APIC ICR read retries
+RES:       1556       2236   Rescheduling interrupts
+CAL:         32          9   Function call interrupts
+TLB:        106        137   TLB shootdowns
+TRM:          0          0   Thermal event interrupts
+THR:          0          0   Threshold APIC interrupts
+MCE:          0          0   Machine check exceptions
+MCP:          1          1   Machine check polls
+ERR:          0
+MIS:          0
+```
+
+## Perf Event
+
+* **性能事件 （Perf Event）** 是指在处理器或操作系统中发生的，可能影响到程序性能的硬件事件或软件事件。
+	* 比如 cache 丢失，流水线停顿，页面交换等。
+	* 这些事件会对程序的执行时间造成较大的负面影响。在优化代码时,应尽可能减少此类事件发生。
+
+* 查看 Perf Event
+```
+# perf-list
+
+List of pre-defined events (to be used in -e):
+
+  branch-instructions OR branches                    [Hardware event]
+  branch-misses                                      [Hardware event]
+  bus-cycles                                         [Hardware event]
+  cache-misses                                       [Hardware event]
+  cache-references                                   [Hardware event]
+  cpu-cycles OR cycles                               [Hardware event]
+  instructions                                       [Hardware event]
+  ref-cycles                                         [Hardware event]
+
+  alignment-faults                                   [Software event]
+  context-switches OR cs                             [Software event]
+  cpu-clock                                          [Software event]
+  cpu-migrations OR migrations                       [Software event]
+  dummy                                              [Software event]
+  emulation-faults                                   [Software event]
+  major-faults                                       [Software event]
+  minor-faults                                       [Software event]
+  page-faults OR faults                              [Software event]
+  task-clock                                         [Software event]
+
+  L1-dcache-load-misses                              [Hardware cache event]
+  L1-dcache-loads                                    [Hardware cache event]
+  L1-dcache-prefetches                               [Hardware cache event]
+  L1-dcache-store-misses                             [Hardware cache event]
+  L1-dcache-stores                                   [Hardware cache event]
+  L1-icache-load-misses                              [Hardware cache event]
+  L1-icache-loads                                    [Hardware cache event]
+  LLC-load-misses                                    [Hardware cache event]
+  LLC-loads                                          [Hardware cache event]
+  LLC-store-misses                                   [Hardware cache event]
+  LLC-stores                                         [Hardware cache event]
+  branch-load-misses                                 [Hardware cache event]
+  branch-loads                                       [Hardware cache event]
+  dTLB-load-misses                                   [Hardware cache event]
+  dTLB-loads                                         [Hardware cache event]
+  dTLB-store-misses                                  [Hardware cache event]
+  dTLB-stores                                        [Hardware cache event]
+  iTLB-load-misses                                   [Hardware cache event]
+  iTLB-loads                                         [Hardware cache event]
+
+	branch-instructions OR cpu/branch-instructions/    [Kernel PMU event]
+  branch-misses OR cpu/branch-misses/                [Kernel PMU event]
+  bus-cycles OR cpu/bus-cycles/                      [Kernel PMU event]
+  cache-misses OR cpu/cache-misses/                  [Kernel PMU event]
+  cache-references OR cpu/cache-references/          [Kernel PMU event]
+  cpu-cycles OR cpu/cpu-cycles/                      [Kernel PMU event]
+  instructions OR cpu/instructions/                  [Kernel PMU event]
+  intel_bts//                                        [Kernel PMU event]
+  msr/aperf/                                         [Kernel PMU event]
+  msr/mperf/                                         [Kernel PMU event]
+  msr/tsc/                                           [Kernel PMU event]
+
+  rNNN                                               [Raw hardware event descriptor]
+  cpu/t1=v1[,t2=v2,t3 ...]/modifier                  [Raw hardware event descriptor]
+   (see 'man perf-list' on how to encode it)
+
+  mem:<addr>[/len][:access]                          [Hardware breakpoint]
+
+  block:block_bio_backmerge                          [Tracepoint event]
+  block:block_bio_bounce                             [Tracepoint event]
+  block:block_bio_complete                           [Tracepoint event]
+  block:block_bio_frontmerge                         [Tracepoint event]
+...
+```
+
+## Perf Event的分类
+
+## software events
+* The tool and underlying kernel interface can measure events coming from different sources. For instance, some event are pure kernel counters, in this case they are called software events. Examples include: context-switches, minor-faults.
+* 不同版本的内核提供的软件性能事件不尽相同
+
+## hardware events
+* Another source of events is the processor itself and its Performance Monitoring Unit (PMU). It provides a list of events to measure micro-architectural events such as the number of cycles, instructions retired, L1 cache misses and so on. Those events are called PMU hardware events or hardware events for short.
+* 不同型号的 CPU 支持的硬件性能事件不尽相同
+
+## hardware cache events
+* The perf_events interface also provides a small set of common hardware events monikers. On each processor, those events get mapped onto an actual events provided by the CPU, if they exists, otherwise the event cannot be used. Somewhat confusingly, these are also called hardware events and hardware cache events.
+* 不同型号的 CPU 支持的硬件性能事件不尽相同
+
+### tracepoint events
+* 基于`ftrace`的框架实现
+* 不同版本的内核提供的 Tracepoint events 不尽相同
+* 现在不再通过`perf list`命令列出所有 tracepoint，可以通过 ftrace 的接口文件查看：
+  ```
+  /sys/kernel/debug/tracing/available_events
+  ```
 
 ## 内核选项
-### 配置 perf
+### 配置perf
 * perf_events 开关
 	```
 	CONFIG_PERF_EVENTS=y
