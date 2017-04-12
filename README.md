@@ -45,3 +45,4 @@
 
 ## 调试
 - [Debug](https://github.com/freelancer-leon/notes/blob/master/kernel/debug/debug.md)
+- [kprobes](https://github.com/freelancer-leon/notes/blob/master/kernel/debug/kprobes.md)

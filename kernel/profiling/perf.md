@@ -1,4 +1,3 @@
-
 # Perf
 
 ## Perf的功能
@@ -260,21 +259,33 @@ List of pre-defined events (to be used in -e):
 
 ## Perf Event的分类
 
-## software events
-* The tool and underlying kernel interface can measure events coming from different sources. For instance, some event are pure kernel counters, in this case they are called software events. Examples include: context-switches, minor-faults.
+* perf 工具和内核的 perf_events 接口可以接受和度量来自不同来源的 perf events。
+
+### Software Events
+* 来源自纯内核的计数器，例如：
+	* context-switches
+	* page-faults
+	* cpu-migrations
 * 不同版本的内核提供的软件性能事件不尽相同
 
-## hardware events
-* Another source of events is the processor itself and its Performance Monitoring Unit (PMU). It provides a list of events to measure micro-architectural events such as the number of cycles, instructions retired, L1 cache misses and so on. Those events are called PMU hardware events or hardware events for short.
+### Hardware Events
+* 来源自处理器自身和它的 PMU
+* 提供了一系列用来度量微体系结构的事件，例如：
+	* number of cycles
+	* instructions retired
+	* branch-misses
+	* cache-misses
 * 不同型号的 CPU 支持的硬件性能事件不尽相同
 
-## hardware cache events
-* The perf_events interface also provides a small set of common hardware events monikers. On each processor, those events get mapped onto an actual events provided by the CPU, if they exists, otherwise the event cannot be used. Somewhat confusingly, these are also called hardware events and hardware cache events.
-* 不同型号的 CPU 支持的硬件性能事件不尽相同
+### Hardware Cache Events
+* perf_events 接口也提供了一个小的通用 hardware events 的集合
+	* 在每个处理器上，如果这些事件存在的话，就映射到一个 CPU 提供的事件
+	* 否则事件无法使用
 
-### tracepoint events
+### Tracepoint Events
 * 基于`ftrace`的框架实现
-* 不同版本的内核提供的 Tracepoint events 不尽相同
+* 内核中所有的 tracepoint ,都可以作为 perf 的性能事件
+* 不同版本的内核提供的 tracepoint events 不尽相同
 * 现在不再通过`perf list`命令列出所有 tracepoint，可以通过 ftrace 的接口文件查看：
   ```
   /sys/kernel/debug/tracing/available_events
@@ -320,7 +331,7 @@ CONFIG_UPROBES=y
 CONFIG_UPROBE_EVENTS=y
 ```
 
-# References
+## References
 
 * [Intel® 64 and IA-32 Architectures
 Software Developer’s Manual
@@ -351,7 +362,7 @@ Combined Volumes:
 * [PMU性能分析系列1 - 相关概念](http://blog.csdn.net/gengshenghong/article/details/7383438)
 * [PMU性能分析系列1 - 相关事件的理解 - Basic Performance Tuning Events](http://blog.csdn.net/gengshenghong/article/details/7384862)
 
-## wikipedia
+### wikipedia
 * [CPU cache](https://en.wikipedia.org/wiki/CPU_cache)
 * [Cache memory](https://en.wikipedia.org/wiki/Cache_memory)
 * [Instruction pipelining](https://en.wikipedia.org/wiki/Instruction_pipelining)
