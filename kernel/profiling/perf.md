@@ -1,5 +1,41 @@
 # Perf
 
+- [Perf的功能](#perf的功能)
+- [概念](#概念)
+	- [CPU cache](#cpu-cache)
+	- [Instruction pipelining](#instruction-pipelining)
+	- [Superscalar processor](#superscalar-processor)
+	- [Out-of-order execution](#out-of-order-execution)
+	- [Branch predication](#branch-predication)
+	- [Performance Monitor Unit](#performance-monitor-unit)
+		- [Hardware performance counter](#hardware-performance-counter)
+		- [Model-Specific Registers](#model-specific-registers)
+		- [Intel IA32_PERFEVTSELx MSRs](#intel-ia32perfevtselx-msrs)
+		- [其他硬件提供的特性](#其他硬件提供的特性)
+	- [Tracepoints](#tracepoints)
+		- [编译器插桩选项](#编译器插桩选项)
+- [Perf Event](#perf-event)
+	- [Perf Event的分类](#perf-event的分类)
+		- [Software Events](#software-events)
+		- [Hardware Events](#hardware-events)
+		- [Hardware Cache Events](#hardware-cache-events)
+		- [Tracepoint Events](#tracepoint-events)
+- [Perf原理](#perf原理)
+	- [以cycles事件为例观察采样原理](#以cycles事件为例观察采样原理)
+	- [采样模式的问题](#采样模式的问题)
+	- [基于时间的性能分析受 CPU idle 的限制](#基于时间的性能分析受-CPU-idle-的限制)
+	- [依赖中断的性能分析的限制](#依赖中断的性能分析的限制)
+	- [Performance Monitoring Interrupts (PMI)](#Performance-Monitoring-Interrupts-(PMI))
+	- [Intel处理器的PEBS机制](#Intel处理器的PEBS机制)
+		- [性能事件的精度级别](#性能事件的精度级别)
+- [内核选项](#内核选项)
+	- [配置perf](#配置perf)
+	- [配置内核代码的符号表](#配置内核代码的符号表)
+- [References](#references)
+	- [Knowledge](#knowledge)
+	- [Examples](#examples)
+	- [wikipedia](#wikipedia)
+
 ## Perf的功能
 
 * 评估程序对硬件资源的使用情况
@@ -144,41 +180,17 @@
   * 在调用者的执行上下文中，每次 tracepoint 被执行的时候，提供的函数都会被调用到。
   * 当提供的函数运行结束后，会返回到它的调用者（从 tracepoint 被调用的地方继续执行）。
 
-## Perf原理
+#### 编译器插桩选项
+* `-pg`
+> Generate extra code to write profile information suitable for the analysis program gprof. You must use this option when compiling the source files you want data about, and you must also use it when linking.
 
-```
-# cat /proc/interrupts
-           CPU0       CPU1       
-  0:        173          0   IO-APIC-edge      timer
-  1:          3          0   IO-APIC-edge      i8042
-  4:       3276          0   IO-APIC-edge      serial
-  8:          0          0   IO-APIC-edge      rtc0
-  9:          0          0   IO-APIC-fasteoi   acpi
- 12:          5          0   IO-APIC-edge      i8042
- 17:        517          0   IO-APIC  17-fasteoi   snd_hda_intel
- 20:        347          0   IO-APIC  20-fasteoi   PCIe PME, pciehp, pata_via, uhci_hcd:usb2
- 21:        279          0   IO-APIC  21-fasteoi   0000:00:0f.0, uhci_hcd:usb4
- 22:      18614          0   IO-APIC  22-fasteoi   PCIe PME, pciehp, ehci_hcd:usb1, uhci_hcd:usb3
- 23:          0          0   IO-APIC  23-fasteoi   uhci_hcd:usb5
- 24:          0          0   IO-APIC   3-fasteoi   PCIe PME, pciehp
- 25:          0          0   IO-APIC   7-fasteoi   PCIe PME, pciehp
- 26:       2941          0   IO-APIC   4-fasteoi   eth0
-NMI:       1450        111   Non-maskable interrupts
-LOC:      20930      12254   Local timer interrupts
-SPU:          0          0   Spurious interrupts
-PMI:       1450        111   Performance monitoring interrupts
-IWI:          2          0   IRQ work interrupts
-RTR:          0          0   APIC ICR read retries
-RES:       1556       2236   Rescheduling interrupts
-CAL:         32          9   Function call interrupts
-TLB:        106        137   TLB shootdowns
-TRM:          0          0   Thermal event interrupts
-THR:          0          0   Threshold APIC interrupts
-MCE:          0          0   Machine check exceptions
-MCP:          1          1   Machine check polls
-ERR:          0
-MIS:          0
-```
+* `-finstrument-functions`
+> Generate instrumentation calls for entry and exit to functions. Just after function entry and just before function exit, the following profiling functions are called with the address of the current function and its call site.
+
+![pic/gcc_instrument_sample.png](pic/gcc_instrument_sample.png)
+
+* https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html
+
 
 ## Perf Event
 
@@ -257,19 +269,20 @@ List of pre-defined events (to be used in -e):
 ...
 ```
 
-## Perf Event的分类
+### Perf Event的分类
 
 * perf 工具和内核的 perf_events 接口可以接受和度量来自不同来源的 perf events。
+![http://www.brendangregg.com/perf_events/perf_events_map.png](pic/perf_events_map.png)
 
-### Software Events
+#### Software Events
 * 来源自纯内核的计数器，例如：
 	* context-switches
 	* page-faults
 	* cpu-migrations
 * 不同版本的内核提供的软件性能事件不尽相同
 
-### Hardware Events
-* 来源自处理器自身和它的 PMU
+#### Hardware Events
+* 来源自处理器自身的一些事件和它的 PMU
 * 提供了一系列用来度量微体系结构的事件，例如：
 	* number of cycles
 	* instructions retired
@@ -277,19 +290,132 @@ List of pre-defined events (to be used in -e):
 	* cache-misses
 * 不同型号的 CPU 支持的硬件性能事件不尽相同
 
-### Hardware Cache Events
+#### Hardware Cache Events
 * perf_events 接口也提供了一个小的通用 hardware events 的集合
 	* 在每个处理器上，如果这些事件存在的话，就映射到一个 CPU 提供的事件
 	* 否则事件无法使用
 
-### Tracepoint Events
+#### Tracepoint Events
+* 静态内核级的 instrumentation points
+* hardcoded 在内核各出值得关注的地方
 * 基于`ftrace`的框架实现
-* 内核中所有的 tracepoint ,都可以作为 perf 的性能事件
+* 内核中所有的 tracepoint，都可以作为 perf 的性能事件
 * 不同版本的内核提供的 tracepoint events 不尽相同
 * 现在不再通过`perf list`命令列出所有 tracepoint，可以通过 ftrace 的接口文件查看：
   ```
   /sys/kernel/debug/tracing/available_events
   ```
+
+
+## Perf原理
+
+### 以cycles事件为例观察采样原理
+* perf 会通过系统调用`sys_perf_event_open`在内核中注册一个监测 “cycles” 事件的性能计数器
+* 内核根据 perf 提供的信息在 PMU 上初始化一个 *硬件性能计数器（Hardware performance counter）*
+* 硬件性能计数器随着 CPU 周期的增加而自动累加
+* 在硬件性能计数器溢出时，PMU 触发一个 PMI（Performance Monitoring Interrupt）中断
+* 内核在 PMI 中断的处理函数中保存以下信息，这些信息统称为一个 **采样（sample）**
+	* 硬件性能计数器的计数值
+	* 触发中断时的指令地址（Register IP:Instruction Pointer）
+	* 当前时间戳
+	* 当前进程的 PID,TID,comm 等信息
+* 内核会将收集到的 sample 放入用于跟用户空间通信的 ring buffer
+* 用户空间里的 perf 分析程序采用 mmap 机制从 ring buffer 中读入采样,并对其解析
+* perf 根据 pid,comm 等信息可以找到对应的进程
+* perf 根据 IP 与 ELF 文件中的符号表可以查到触发 PMI 中断的指令所在的函数
+	* 为了能够使 perf 读到函数名，我们的目标程序必须具备符号表
+	* perf 的分析结果中只看到一串地址，而没有对应的函数名时，通常是由于用 `strip` 删除了 ELF 文件中的符号表
+* tools/perf/perf-sys.h::`sys_perf_event_open()`
+* kernel/events/core.c::`perf_event_open()`
+
+### 采样模式的问题
+* 运行时间越 **多** 的函数，被中断击中的机会越 **大**，从而推测，那个函数（或者`pid`等）的CPU占用率就越 **高**
+* 如果某个进程/函数运气特别好，它每次都刚好躲过你发起探测的位置，你的统计结果可能就完全是错的。这是所有采样统计都有可能遇到的问题。
+* 如何可以获得更精确的采样结果
+	* 延长采样的事件以获得更多的样本
+	* 提高采样的频率，然而对系统而言也会有额外的开销
+
+### 基于时间的性能分析受 CPU idle 的限制
+* 现代 CPU 基本上已经不用 *忙等待* 的方式进入等待了
+	* 如果 CPU 在 idle 状态（也就是没有任务调度），击中任务也会停止
+	* 因此，在 idle 期间是没有样本的（你看到 idle 函数本身的点并非 CPU idle的点，而是准备进入 idle 前后花的时间）
+* 结论：perf 的统计不能用来分析 CPU 占用率
+
+### 依赖中断的性能分析的限制
+* perf 很多事件都依赖中断
+* 内核是可以关中断的，关中断以后，就无法击中关中断期间的点
+* 性能事件产生的中断会被延迟到开中断的时候，所以，在这样的平台上，会看到很多开中断之后的函数被密集击中
+* 如果在关中断的时候，发生了多个事件，由于中断控制器会合并相同的中断，会失去多次事件，让统计发生错误
+* 现代的 Intel 平台，基本上已经把 PMU 中断都切换为 NMI 中断了（不可屏蔽），所以前面这个问题不存在
+* 但在大部分 ARM/ARM64 平台上，这个问题都没有解决，所以看这种平台的报告，都要特别小心，特别是看到`_raw_spin_unlock()`一类的函数击中极高，就要怀疑一下测试结果了
+
+### Performance Monitoring Interrupts (PMI)
+```
+# cat /proc/interrupts
+           CPU0       CPU1       
+  0:        173          0   IO-APIC-edge      timer
+  1:          3          0   IO-APIC-edge      i8042
+  4:       3276          0   IO-APIC-edge      serial
+  8:          0          0   IO-APIC-edge      rtc0
+  9:          0          0   IO-APIC-fasteoi   acpi
+ 12:          5          0   IO-APIC-edge      i8042
+ 17:        517          0   IO-APIC  17-fasteoi   snd_hda_intel
+ 20:        347          0   IO-APIC  20-fasteoi   PCIe PME, pciehp, pata_via, uhci_hcd:usb2
+ 21:        279          0   IO-APIC  21-fasteoi   0000:00:0f.0, uhci_hcd:usb4
+ 22:      18614          0   IO-APIC  22-fasteoi   PCIe PME, pciehp, ehci_hcd:usb1, uhci_hcd:usb3
+ 23:          0          0   IO-APIC  23-fasteoi   uhci_hcd:usb5
+ 24:          0          0   IO-APIC   3-fasteoi   PCIe PME, pciehp
+ 25:          0          0   IO-APIC   7-fasteoi   PCIe PME, pciehp
+ 26:       2941          0   IO-APIC   4-fasteoi   eth0
+NMI:       1450        111   Non-maskable interrupts
+LOC:      20930      12254   Local timer interrupts
+SPU:          0          0   Spurious interrupts
+PMI:       1450        111   Performance monitoring interrupts
+IWI:          2          0   IRQ work interrupts
+RTR:          0          0   APIC ICR read retries
+RES:       1556       2236   Rescheduling interrupts
+CAL:         32          9   Function call interrupts
+TLB:        106        137   TLB shootdowns
+TRM:          0          0   Thermal event interrupts
+THR:          0          0   Threshold APIC interrupts
+MCE:          0          0   Machine check exceptions
+MCP:          1          1   Machine check polls
+ERR:          0
+MIS:          0
+```
+* 与 PMU 无关的事件并不会导致 PMI 中断计数的增加
+```
+# cat /proc/interrupts | grep -i pmi
+PMI:       6642      10581   Performance monitoring interrupts
+# perf top -e page-faults
+# cat /proc/interrupts | grep -i pmi
+PMI:       6642      10581   Performance monitoring interrupts
+# perf top
+# cat /proc/interrupts | grep -i pmi
+PMI:       6859      11637   Performance monitoring interrupts
+```
+
+### Intel处理器的PEBS机制
+* 由于现代处理器的主频非常高，再加上深度流水线机制，从 **性能事件被触发** 到 **处理器响应 PMI 中断**，流水线上可能已处理过数百条指令
+* 那么 PMI 中断采到的指令地址就不再是触发性能事件的那条指令的地址了，而且可能具有非常严重的偏差
+* 为了解决这个问题，Intel 处理器通过 **PEBS 机制** 实现了高精度事件采样
+* PEBS 通过硬件在 **计数器溢出时** 将处理器现场直接保存到内存，而 **不是在响应中断时** 才保存寄存器现场，从而使得 perf 能够采到真正触发性能事件的那条指令的地址，提高了采样精度
+* 在默认条件下，perf 不使用 PEBS 机制。用户如果想要使用高精度采样,需要在指定性能事件时，在事件名后添加后缀 **:p** 或 **:pp**
+	```
+	perf top ‐e cycles:pp
+	```
+* perf 在采样精度上定义了 4 个级别
+
+#### 性能事件的精度级别
+
+精度级别 | 描述
+---|---
+0 | 无精度保证
+1 | 采样指令与触发性能事件的指令之间的偏差为常数（`:p`）
+2 | 需要尽量保证采样指令与触发性能事件的指令之间的偏差为 0（`:pp`）
+3 | 保证采样指令与触发性能事件的指令之间的偏差必须为 0（`:ppp`）
+
+* 目前的 X86 处理器,包括 Intel 处理器与 AMD 处理器均仅能实现前 3 个精度级别
 
 ## 内核选项
 ### 配置perf
@@ -333,6 +459,7 @@ CONFIG_UPROBE_EVENTS=y
 
 ## References
 
+### Knowledge
 * [Intel® 64 and IA-32 Architectures
 Software Developer’s Manual
 Combined Volumes:
@@ -341,14 +468,12 @@ Combined Volumes:
 * [Perf -- Linux下的系统性能调优工具，第 1 部分](https://www.ibm.com/developerworks/cn/linux/l-cn-perf1/)
 * [Perf -- Linux下的系统性能调优工具，第 2 部分](https://www.ibm.com/developerworks/cn/linux/l-cn-perf2/)
 * [源码分析：动态分析 Linux 内核函数调用关系](http://tinylab.org/source-code-analysis-dynamic-analysis-of-linux-kernel-function-calls/)
-* [perf Examples](http://www.brendangregg.com/perf.html)
 * [Kernel Line Tracing: Linux perf Rides the Rocket](http://www.brendangregg.com/blog/2014-09-11/perf-kernel-line-tracing.html)
 * [man PERF-KMEM(1)](http://man7.org/linux/man-pages/man1/perf-kmem.1.html)
 * [man PERF-RECORD(1)](http://man7.org/linux/man-pages/man1/perf-record.1.html)
 * [man PERF-REPORT(1)](http://man7.org/linux/man-pages/man1/perf-report.1.html)
 * [perf kmem: Implement page allocation analysis (v8)](https://lwn.net/Articles/641187/)
 * [Tracing and Profiling](https://wiki.yoctoproject.org/wiki/Tracing_and_Profiling)
-* [perf.wiki: Perf examples](https://perf.wiki.kernel.org/index.php/Perf_examples)
 * [perf.wiki: Perf Main Page](https://perf.wiki.kernel.org/index.php/Main_Page)
 * [perf.wiki: Tutorial](https://perf.wiki.kernel.org/index.php/Tutorial)
 * [LWN: 'perf sched': Utility to capture, measure and analyze scheduler latencies and behavior](https://lwn.net/Articles/353295/?cm_mc_uid=02964680288914742721405&cm_mc_sid_50200000=1490766881)
@@ -356,11 +481,19 @@ Combined Volumes:
 * [在Linux下做性能分析3：perf](https://zhuanlan.zhihu.com/p/22194920)
 * [Linux下做性能分析4：怎么开始](https://zhuanlan.zhihu.com/p/22202885)
 * [perf 性能分析实例——使用perf优化cache利用率](http://blog.csdn.net/trochiluses/article/details/17346803)
-* [Linux 性能诊断 perf使用指南](https://yq.aliyun.com/articles/65255)
 * [Using the Linux Kernel Tracepoints](https://www.kernel.org/doc/Documentation/trace/tracepoints.txt)
 * [Notes on Analysing Behaviour Using Events and Tracepoints](https://www.kernel.org/doc/Documentation/trace/tracepoint-analysis.txt)
 * [PMU性能分析系列1 - 相关概念](http://blog.csdn.net/gengshenghong/article/details/7383438)
 * [PMU性能分析系列1 - 相关事件的理解 - Basic Performance Tuning Events](http://blog.csdn.net/gengshenghong/article/details/7384862)
+* [Program Instrumentation Options](https://gcc.gnu.org/onlinedocs/gcc/Instrumentation-Options.html)
+* [NO_HZ: Reducing Scheduling-Clock Ticks](https://www.kernel.org/doc/Documentation/timers/NO_HZ.txt)
+* [linux内核的nohz与hres](http://blog.csdn.net/dog250/article/details/5303240)
+* [Linux时间管理](http://www.programgo.com/article/46562533148/)
+
+### Examples
+* [perf Examples](http://www.brendangregg.com/perf.html)
+* [perf.wiki: Perf examples](https://perf.wiki.kernel.org/index.php/Perf_examples)
+* [Linux 性能诊断 perf使用指南](https://yq.aliyun.com/articles/65255)
 
 ### wikipedia
 * [CPU cache](https://en.wikipedia.org/wiki/CPU_cache)
