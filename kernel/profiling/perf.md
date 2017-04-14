@@ -22,15 +22,20 @@
 		- [Tracepoint Events](#tracepoint-events)
 - [Perf原理](#perf原理)
 	- [以cycles事件为例观察采样原理](#以cycles事件为例观察采样原理)
-	- [采样模式的问题](#采样模式的问题)
+	- [性能分析的计数模式](#性能分析的计数模式)
+	- [基于事件采样的采样周期](#基于事件采样的采样周期)
 	- [基于时间的性能分析受 CPU idle 的限制](#基于时间的性能分析受-CPU-idle-的限制)
-	- [依赖中断的性能分析的限制](#依赖中断的性能分析的限制)
+	- [依赖可屏蔽中断的性能分析的限制](#依赖可屏蔽中断的性能分析的限制)
 	- [Performance Monitoring Interrupts (PMI)](#Performance-Monitoring-Interrupts-(PMI))
 	- [Intel处理器的PEBS机制](#Intel处理器的PEBS机制)
 		- [性能事件的精度级别](#性能事件的精度级别)
 - [内核选项](#内核选项)
 	- [配置perf](#配置perf)
 	- [配置内核代码的符号表](#配置内核代码的符号表)
+	- [栈跟踪功能相关的选项](#栈跟踪功能相关的选项)
+	- [perf lock命令依赖的选项](#perf-lock命令依赖的选项)
+	- [perf probe命令依赖的选项](#perf-probe命令依赖的选项)
+- [用例](#用例)
 - [References](#references)
 	- [Knowledge](#knowledge)
 	- [Examples](#examples)
@@ -158,12 +163,12 @@
 		* 否则计数器的值不增加。
 
 #### 其他硬件提供的特性
-##### Fixed function performance counter register and associated control register
-* 还有一些计数器只能度量某一特定的事件，而不像那些可以配置成 *度量不同的事件的* 通用目的的计数器。
+* Fixed function performance counter register and associated control register
+	* 还有一些计数器只能度量某一特定的事件，而不像那些可以配置成 *度量不同的事件的* 通用目的的计数器。
 
-##### Global Control Registers
- * 一些架构还提供了可以被用于控制所有的或者一组 *控制寄存器或者计数器* 的 *全局控制寄存器*。
- * 减少修改控制寄存器需要的指令数，因此易于编程。
+* Global Control Registers
+	* 一些架构还提供了可以被用于控制所有的或者一组 *控制寄存器或者计数器* 的 *全局控制寄存器*。
+	* 减少修改控制寄存器需要的指令数，因此易于编程。
 
 ### Tracepoints
 
@@ -310,6 +315,9 @@ List of pre-defined events (to be used in -e):
 ## Perf原理
 
 ### 以cycles事件为例观察采样原理
+
+![http://www.loongnix.org/images/0/08/Perf%E5%8E%9F%E7%90%86.png](pic/perf_basic_flow.png)
+
 * perf 会通过系统调用`sys_perf_event_open`在内核中注册一个监测 “cycles” 事件的性能计数器
 * 内核根据 perf 提供的信息在 PMU 上初始化一个 *硬件性能计数器（Hardware performance counter）*
 * 硬件性能计数器随着 CPU 周期的增加而自动累加
@@ -323,14 +331,47 @@ List of pre-defined events (to be used in -e):
 * 用户空间里的 perf 分析程序采用 mmap 机制从 ring buffer 中读入采样,并对其解析
 * perf 根据 pid,comm 等信息可以找到对应的进程
 * perf 根据 IP 与 ELF 文件中的符号表可以查到触发 PMI 中断的指令所在的函数
-	* 为了能够使 perf 读到函数名，我们的目标程序必须具备符号表
+	* 为了能够使 perf 读到函数名，我们的目标程序必须具备 **符号表**
 	* perf 的分析结果中只看到一串地址，而没有对应的函数名时，通常是由于用 `strip` 删除了 ELF 文件中的符号表
 * tools/perf/perf-sys.h::`sys_perf_event_open()`
 * kernel/events/core.c::`perf_event_open()`
 
-### 采样模式的问题
+### 性能分析的计数模式
+* 基于计数
+	* 给定时间内的事件发生的次数会被记录下来
+	* 随后通过`read()`将当前计数器中的值读出来
+	* 特征：`struct perf_event_attr`的`irq_period = 0`
+	* `perf stat`
+* 基于事件采样
+	* 设置事件每发生 N 次产生一次中断，中断处理函数记录相关信息
+	* 随后 perf 采用 `mmap()` 的方式读取采样信息并解析
+	* 特征：`struct perf_event_attr`的`irq_period = N`
+	* `perf top`
+	* `perf record`
+* 在没有硬件性能度量的体系结构上，仍然可以基于 **hrtimers** 的通用软件计数器来进行采样
+
+### 基于事件采样的采样周期
+* perf_events 接口允许使用两种模式来表示 **采样周期**：
+	* 事件发生的次数 （周期）
+		* 采样周期由用户指定
+		* 样本之间的采样周期固定
+		```
+		# Sample CPU stack traces, once every 10,000 Level 1 data cache misses, for 5 seconds:
+		perf record -e L1-dcache-load-misses -c 10000 -ag -- sleep 5
+		```
+	* 每秒采样的平均速率（频率）
+		* perf 的缺省方式
+		* 缺省为 `1000Hz`，即 *1000次采样/秒*
+		* 内核动态调整采样周期以达到目标平均速率
+		```
+		# Sample on-CPU functions for the specified command, at 99 Hertz:
+		perf record -F 99 command
+		```
+* 目前尚不支持采样周期随机化
+
+### 基于事件采样模式的问题
 * 运行时间越 **多** 的函数，被中断击中的机会越 **大**，从而推测，那个函数（或者`pid`等）的CPU占用率就越 **高**
-* 如果某个进程/函数运气特别好，它每次都刚好躲过你发起探测的位置，你的统计结果可能就完全是错的。这是所有采样统计都有可能遇到的问题。
+* 如果某个进程/函数运气特别好，它每次都刚好躲过你发起探测的位置，则统计结果可能就完全是错的。这是所有采样统计都有可能遇到的问题。
 * 如何可以获得更精确的采样结果
 	* 延长采样的事件以获得更多的样本
 	* 提高采样的频率，然而对系统而言也会有额外的开销
@@ -341,11 +382,10 @@ List of pre-defined events (to be used in -e):
 	* 因此，在 idle 期间是没有样本的（你看到 idle 函数本身的点并非 CPU idle的点，而是准备进入 idle 前后花的时间）
 * 结论：perf 的统计不能用来分析 CPU 占用率
 
-### 依赖中断的性能分析的限制
-* perf 很多事件都依赖中断
-* 内核是可以关中断的，关中断以后，就无法击中关中断期间的点
-* 性能事件产生的中断会被延迟到开中断的时候，所以，在这样的平台上，会看到很多开中断之后的函数被密集击中
-* 如果在关中断的时候，发生了多个事件，由于中断控制器会合并相同的中断，会失去多次事件，让统计发生错误
+### 依赖可屏蔽中断的性能分析的限制
+* 如果 perf 事件依赖的是可屏蔽中断，关中断以后，就无法击中关中断期间的点
+	* 性能事件产生的中断会被延迟到开中断的时候，所以，在这样的平台上，会看到很多开中断之后的函数被密集击中
+	* 如果在关中断的时候，发生了多个事件，由于中断控制器会合并相同的中断，会失去多次事件，让统计发生错误
 * 现代的 Intel 平台，基本上已经把 PMU 中断都切换为 NMI 中断了（不可屏蔽），所以前面这个问题不存在
 * 但在大部分 ARM/ARM64 平台上，这个问题都没有解决，所以看这种平台的报告，都要特别小心，特别是看到`_raw_spin_unlock()`一类的函数击中极高，就要怀疑一下测试结果了
 
@@ -424,22 +464,37 @@ PMI:       6859      11637   Performance monitoring interrupts
 	CONFIG_PERF_EVENTS=y
 	```
 * 在没有硬件性能度量的体系结构上，仍然可以基于 **hrtimers** 的通用软件计数器来进行采样。
-* 在这种情况下需要开启以下选项：
+	* 在这种情况下需要开启以下选项：
+		```
+		CONFIG_HAVE_PERF_EVENTS=y
+		```
+	* 并且至少需要以下实现：
+		- asm/perf_event.h - 首先需要满足的基本的 stub
+		- atomic64 类型（以及相关的 helper functions）的支持
+* 有 d-cache aliassing 问题的体系结构，如 Sparc 和 ARM 需要开启以下选项以避免 perf `mmap()`
 	```
-	CONFIG_HAVE_PERF_EVENTS=y
+	CONFIG_PERF_USE_VMALLOC=y
 	```
-* 并且至少需要以下实现：
-	- asm/perf_event.h - 首先需要满足的基本的 stub
-	- atomic64 类型（以及相关的 helper functions）的支持
 
 ### 配置内核代码的符号表
+* 使用跟踪功能需要开启以下选项以显示符号，否则只能显示地址
 ```
 # kernel symbols:
 CONFIG_KALLSYMS=y
 CONFIG_KALLSYMS_ALL=y
 CONFIG_KALLSYMS_EXTRA_PASS=y
 ```
-### `perf lock`命令依赖的选项
+
+### 栈跟踪功能相关的选项
+* 想愉快地使用栈跟踪功能需要开启以下选项，否则栈回溯不完整
+```
+CONFIG_FRAME_POINTER=y
+```
+* 对于用户空间的程序而言，需要在编译时加入`-fno-omit-frame-pointer`选项
+* 从 kernel 3.9 开始，perf_events 支持一种 workaround 可以处理在用户级别栈中的丢失的栈指针：**libunwind**
+	* 编译 perf 时包含`libunwind`和`-g dwarf`
+
+### perf lock命令依赖的选项
 ```
 # kernel lock tracing:
 CONFIG_LOCKDEP=y
@@ -447,15 +502,287 @@ CONFIG_LOCKDEP=y
 CONFIG_LOCK_STAT=y
 ```
 
-### `perf probe`命令依赖的选项
-```
-# kernel-level dynamic tracing:
-CONFIG_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-# user-level dynamic tracing:
-CONFIG_UPROBES=y
-CONFIG_UPROBE_EVENTS=y
-```
+### perf probe命令依赖的选项
+* 动态跟踪
+	```
+	# kernel-level dynamic tracing:
+	CONFIG_KPROBES=y
+	CONFIG_KPROBE_EVENTS=y
+	# user-level dynamic tracing:
+	CONFIG_UPROBES=y
+	CONFIG_UPROBE_EVENTS=y
+	```
+* 动态tracepoint变量依赖的选项
+	```
+	# full kernel debug info:
+	CONFIG_DEBUG_INFO=y
+	```
+
+## 用例
+
+### Perf event修饰符
+
+Modifiers | Description
+---|---
+u | 仅统计用户空间程序触发的性能事件。
+k | 仅统计内核触发的性能事件。
+h | 仅统计 Hypervisor 触发的性能事件。
+G | 在 KVM 虚拟机中,仅统计 Guest 系统触发的性能事件。
+H | 仅统计 Host 系统触发的性能事件。
+p | 精度级别
+
+* 采样用户空间的 CPU cycles 5 秒，并且采用 PEBS 机制指定精度
+	```
+	perf record -e cycles:up -a -- sleep 5
+	```
+
+### 使用原始的 PMC 性能事件
+* 没有预定义字符描述的性能事件，也可以通过特殊方式使用
+* 这时,就需要根据 CPU 的手册,通过性能事件的标号配置 PMU 的性能计数器
+	```
+	perf top ‐e r[Umask:EventSelect]
+	```
+* 查阅 Intel 的手册可知处理器不在 halt 状态的 cycles 计数掩码和事件选择位
+	![pic/intel_table_19-1.png](pic/intel_table_19-1.png)
+* 通过如下方式使用该事件：
+	```
+	# perf stat -e r003c -a sleep 5
+
+	Performance counter stats for 'system wide':
+
+		 26,086,011,863 r003c                                                       
+
+				5.001757790 seconds time elapsed
+	```
+
+### FlameGraph
+* 利用 FlameGraph 分析`kmem`事件
+1. 对某目标机器发起 TCP SYN flood 攻击
+	```
+	hyenae -I 1 -a tcp -f s -s %-%@%%%% -d 00:1A:64:3C:01:26-128.224.158.167@%%%% -e 1 -E 10
+	```
+2. 在目标机器上收集`kmem`的性能事件
+	```
+	perf record -e kmem:* -ag
+	```
+	如果目标机器上此时负载比较严重，可以考虑加`-F 99`参数降低采样频率
+3. 在目标机器上可以用以下命令查看收集到的信息
+	```
+	# perf report
+	Available samples
+	2K kmem:kmalloc
+	18K kmem:kmem_cache_alloc
+	4K kmem:kmalloc_node
+	4K kmem:kmem_cache_alloc_node
+	11K kmem:kfree
+	22K kmem:kmem_cache_free
+	5K kmem:mm_page_free
+	4K kmem:mm_page_free_batched
+	10K kmem:mm_page_alloc
+	5K kmem:mm_page_alloc_zone_locked
+	1 kmem:mm_page_pcpu_drain
+	0 kmem:mm_page_alloc_extfrag
+
+	ESC: exit, ENTER|->: Browse histograms
+	```
+	在对应的项目上按回车键可以查看详细信息：
+	```
+	Samples: 4K of event 'kmem:kmem_cache_alloc_node', Event count (approx.): 4275
+	  Children      Self  Command          Shared Object          Symbol
+	+   90.69%     0.00%  swapper          [kernel.kallsyms]      [k] cpu_startup_entry
+	+   90.69%     0.00%  swapper          [kernel.kallsyms]      [k] arch_cpu_idle
+	+   90.69%     0.00%  swapper          [kernel.kallsyms]      [k] irq_exit
+	+   90.69%     0.00%  swapper          [kernel.kallsyms]      [k] __do_softirq
+	+   90.69%     0.00%  swapper          [kernel.kallsyms]      [k] __alloc_skb
+	-   90.69%    90.69%  swapper          [kernel.kallsyms]      [k] kmem_cache_alloc_node
+	     kmem_cache_alloc_node
+	   - __alloc_skb
+	      - 98.48% sock_wmalloc
+	         - __ip_append_data.isra.2
+	           ip_append_data.part.3
+	           ip_send_unicast_reply
+	           tcp_v4_send_reset
+	           tcp_v4_rcv
+	           ip_local_deliver_finish
+	           ip_local_deliver
+	           ip_rcv_finish
+	           ip_rcv
+	           __netif_receive_skb_core
+	           __netif_receive_skb
+	           netif_receive_skb_internal
+	           napi_gro_receive
+	           tg3_poll_work
+	           tg3_poll
+	           net_rx_action
+	           __do_softirq
+	           irq_exit
+	           do_IRQ
+	           ret_from_intr
+	           arch_cpu_idle
+	           cpu_startup_entry
+	           rest_init
+	           start_kernel
+	           x86_64_start_reservations
+	           x86_64_start_kernel
+	      + 0.88% inet6_rt_notify
+	      + 0.57% __neigh_notify
+	+   89.89%     0.00%  swapper          [kernel.kallsyms]      [k] x86_64_start_kernel
+	+   89.89%     0.00%  swapper          [kernel.kallsyms]      [k] x86_64_start_reservations
+	+   89.89%     0.00%  swapper          [kernel.kallsyms]      [k] start_kernel
+	+   89.89%     0.00%  swapper          [kernel.kallsyms]      [k] rest_init
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] ret_from_intr
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] do_IRQ
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] net_rx_action
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] tg3_poll
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] tg3_poll_work
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] napi_gro_receive
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] netif_receive_skb_internal
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] __netif_receive_skb
+	+   89.78%     0.00%  swapper          [kernel.kallsyms]      [k] __netif_receive_skb_core
+	+   89.31%     0.00%  swapper          [kernel.kallsyms]      [k] sock_wmalloc
+	+   89.26%     0.00%  swapper          [kernel.kallsyms]      [k] ip_rcv
+	+   89.26%     0.00%  swapper          [kernel.kallsyms]      [k] ip_rcv_finish
+	+   89.26%     0.00%  swapper          [kernel.kallsyms]      [k] ip_local_deliver
+	+   89.26%     0.00%  swapper          [kernel.kallsyms]      [k] ip_local_deliver_finish
+	+   89.26%     0.00%  swapper          [kernel.kallsyms]      [k] tcp_v4_rcv
+	+   89.19%     0.00%  swapper          [kernel.kallsyms]      [k] tcp_v4_send_reset
+	+   89.19%     0.00%  swapper          [kernel.kallsyms]      [k] ip_send_unicast_reply
+	+   89.19%     0.00%  swapper          [kernel.kallsyms]      [k] ip_append_data.part.3
+	+   89.19%     0.00%  swapper          [kernel.kallsyms]      [k] __ip_append_data.isra.2
+	+    4.33%     0.00%  ls               [kernel.kallsyms]      [k] sock_wmalloc
+	+    4.33%     0.00%  ls               [kernel.kallsyms]      [k] __alloc_skb
+	+    4.33%     4.33%  ls               [kernel.kallsyms]      [k] kmem_cache_alloc_node
+	[...]
+	Press '?' for help on key bindings
+	```
+
+4. 将`perf.data`转成`perf script`输出，方便离线分析。
+	```
+	perf script > perf.data.script
+	```
+5. 将输出文件拷贝到主机上，转成 FlameGraph
+	```
+	git clone https://github.com/brendangregg/FlameGraph
+	cat perf.data.script | FlameGraph/stackcollapse-perf.pl > perf.data.sc
+	FlameGraph/flamegraph.pl perf.data.sc > perf.data.fmg.svg
+	```
+	![pic/perf.data.fmg.svg](pic/perf.data.fmg.svg)
+
+### 事件过滤
+* 只跟踪事件`kmem:kmalloc`分配内存得到 64 字节内存的事件
+1. 首先，查看支持的`kmem:*` tracepoints 事件
+
+	```
+	# perf list | grep -i kmem
+	  kmem:kfree                                         [Tracepoint event]
+	  kmem:kmalloc                                       [Tracepoint event]
+	  kmem:kmalloc_node                                  [Tracepoint event]
+	  kmem:kmem_cache_alloc                              [Tracepoint event]
+	  kmem:kmem_cache_alloc_node                         [Tracepoint event]
+	  kmem:kmem_cache_free                               [Tracepoint event]
+	  kmem:mm_page_alloc                                 [Tracepoint event]
+	  kmem:mm_page_alloc_extfrag                         [Tracepoint event]
+	  kmem:mm_page_alloc_zone_locked                     [Tracepoint event]
+	  kmem:mm_page_free                                  [Tracepoint event]
+	  kmem:mm_page_free_batched                          [Tracepoint event]
+	  kmem:mm_page_pcpu_drain                            [Tracepoint event]
+	```
+
+	或者用命令`perf list kmem:*`
+
+2. 然后在内核源代码内`include/trace/events/[subsys].h`找到想要跟踪的事件声明和定义，这里 subsys 为 kmem
+	include/trace/events/kmem.h
+	```c
+	DECLARE_EVENT_CLASS(kmem_alloc,
+
+        TP_PROTO(unsigned long call_site,
+                 const void *ptr,
+                 size_t bytes_req,
+                 size_t bytes_alloc,
+                 gfp_t gfp_flags),
+
+        TP_ARGS(call_site, ptr, bytes_req, bytes_alloc, gfp_flags),
+
+        TP_STRUCT__entry(
+                __field(        unsigned long,  call_site       )
+                __field(        const void *,   ptr             )
+                __field(        size_t,         bytes_req       )
+                __field(        size_t,         bytes_alloc     )   
+                __field(        gfp_t,          gfp_flags       )
+        ),
+
+        TP_fast_assign(
+                __entry->call_site      = call_site;
+                __entry->ptr            = ptr;
+                __entry->bytes_req      = bytes_req;
+                __entry->bytes_alloc    = bytes_alloc;
+                __entry->gfp_flags      = gfp_flags;
+        ),
+
+        TP_printk("call_site=%lx ptr=%p bytes_req=%zu bytes_alloc=%zu gfp_flags=%s",
+                __entry->call_site,
+                __entry->ptr,
+                __entry->bytes_req,
+                __entry->bytes_alloc,
+                show_gfp_flags(__entry->gfp_flags))
+	);
+
+	DEFINE_EVENT(kmem_alloc, kmalloc,
+
+	        TP_PROTO(unsigned long call_site, const void *ptr,
+	                 size_t bytes_req, size_t bytes_alloc, gfp_t gfp_flags),
+
+	        TP_ARGS(call_site, ptr, bytes_req, bytes_alloc, gfp_flags)
+	);
+	```
+	* 这里声明了一个`kmem_alloc`类，定义了一个`kmalloc` 的 tracepoint 事件
+	* 注意这里的参数名，`bytes_req`是请求的字节数，`bytes_alloc`是实际分配的字节数，参数名是`--filter`参数要用到的
+3. 这样，代码里调到`trace_kmalloc()`的地方都会被 perf 跟踪到
+	* mm/slab.c
+	```c
+	void *
+	kmem_cache_alloc_trace(struct kmem_cache *cachep, gfp_t flags, size_t size)
+	{
+	        void *ret;
+
+	        ret = slab_alloc(cachep, flags, _RET_IP_);
+
+	        kasan_kmalloc(cachep, ret, size, flags);
+	        trace_kmalloc(_RET_IP_, ret,
+	                      size, cachep->size, flags); /*注意：与声明时的参数是对应的*/
+	        return ret;
+	}
+	EXPORT_SYMBOL(kmem_cache_alloc_trace);
+	...
+	void *__kmalloc(size_t size, gfp_t flags)
+	{               
+	        struct kmem_cache *s;
+	        void *ret;
+
+	        if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
+	                return kmalloc_large(size, flags);
+
+	        s = kmalloc_slab(size, flags);
+
+	        if (unlikely(ZERO_OR_NULL_PTR(s)))
+	                return s;
+
+	        ret = slab_alloc(s, flags, _RET_IP_);
+					/*注意：与声明时的参数是对应的*/
+	        trace_kmalloc(_RET_IP_, ret, size, s->size, flags);
+
+	        kasan_kmalloc(s, ret, size, flags);
+
+	        return ret;
+	}
+	...
+	```
+4. 开始跟踪
+	```
+	perf record -e kmem:kmalloc -ag --filter 'bytes_alloc == 64'
+	```
+5. 用上面的步骤得到 FlameGraph
+![pic/perf.data.fmg.2.svg](pic/perf.data.fmg.2.svg)
 
 ## References
 
