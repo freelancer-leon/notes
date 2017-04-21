@@ -540,82 +540,82 @@ p | 精度级别
 
 ### perf stat
 * `perf stat` 采用计数的模式收集性能计数统计
-	```
-	# perf stat -a
-	^C
-	 Performance counter stats for 'system wide':
+```
+# perf stat -a
+^C
+ Performance counter stats for 'system wide':
 
-	      11478.833177      task-clock (msec)         #    2.000 CPUs utilized            (100.00%)
-	               450      context-switches          #    0.039 K/sec                    (100.00%)
-	                52      cpu-migrations            #    0.005 K/sec                    (100.00%)
-	                 7      page-faults               #    0.001 K/sec                  
-	          12977818      cycles                    #    0.001 GHz                      (100.00%)
-	   <not supported>      stalled-cycles-frontend  
-	   <not supported>      stalled-cycles-backend   
-	           7031016      instructions              #    0.54  insns per cycle          (100.00%)
-	           1335042      branches                  #    0.116 M/sec                    (100.00%)
-	             42794      branch-misses             #    3.21% of all branches        
+      11478.833177      task-clock (msec)         #    2.000 CPUs utilized            (100.00%)
+               450      context-switches          #    0.039 K/sec                    (100.00%)
+                52      cpu-migrations            #    0.005 K/sec                    (100.00%)
+                 7      page-faults               #    0.001 K/sec                  
+          12977818      cycles                    #    0.001 GHz                      (100.00%)
+   <not supported>      stalled-cycles-frontend  
+   <not supported>      stalled-cycles-backend   
+           7031016      instructions              #    0.54  insns per cycle          (100.00%)
+           1335042      branches                  #    0.116 M/sec                    (100.00%)
+             42794      branch-misses             #    3.21% of all branches        
 
-	       5.739110466 seconds time elapsed
+       5.739110466 seconds time elapsed
 
-		```
-	* `-e <event>`：指定性能事件（可以是多个，用`,`分隔列表）
-	* `-p <pid>`：指定待分析进程的 `pid`（可以是多个，用`,`分隔列表）
-	* `-t <tid>`：指定待分析线程的 `tid`（可以是多个，用`,`分隔列表）
-	* `-a`：从所有 CPU 收集系统数据
-	* `-d`：打印更详细的信息，可重复 3 次
-		* `-d`：L1 和 LLC data cache
-		* `-d -d`：dTLB 和 iTLB events
-		* `-d -d -d`：增加 prefetch events
-	* `-r <n>`：重复运行命令 n 次，打印平均值。n 设为 0 时无限循环打印
-	* `-c <cpu-list>`：只统计指定 CPU 列表的数据，如：`0,1,3`或`1-2`
-	* `-A`：与`-a`选项联用，不要将 CPU 计数聚合
-	```
-	# perf stat -a -A ls
-	perf.data
+```
 
-	 Performance counter stats for 'system wide':
+* `-e <event>`：指定性能事件（可以是多个，用`,`分隔列表）
+* `-p <pid>`：指定待分析进程的 `pid`（可以是多个，用`,`分隔列表）
+* `-t <tid>`：指定待分析线程的 `tid`（可以是多个，用`,`分隔列表）
+* `-a`：从所有 CPU 收集系统数据
+* `-d`：打印更详细的信息，可重复 3 次
+	* `-d`：L1 和 LLC data cache
+	* `-d -d`：dTLB 和 iTLB events
+	* `-d -d -d`：增加 prefetch events
+* `-r <n>`：重复运行命令 n 次，打印平均值。n 设为 0 时无限循环打印
+* `-c <cpu-list>`：只统计指定 CPU 列表的数据，如：`0,1,3`或`1-2`
+* `-A`：与`-a`选项联用，不要将 CPU 计数聚合
 
-	CPU0              1.870288      task-clock (msec)         #    1.213 CPUs utilized            (99.88%)
-	CPU1              1.874507      task-clock (msec)         #    1.216 CPUs utilized            (99.90%)
-	CPU0                     5      context-switches          #    0.003 M/sec                    (99.95%)
-	CPU1                     5      context-switches          #    0.003 M/sec                    (99.93%)
-	CPU0                     1      cpu-migrations            #    0.535 K/sec                    (99.97%)
-	CPU1                     0      cpu-migrations            #    0.000 K/sec                    (99.97%)
-	CPU0                    13      page-faults               #    0.007 M/sec                  
-	CPU1                    55      page-faults               #    0.029 M/sec                  
-	CPU0                977488      cycles                    #    0.523 GHz                      (99.78%)
-	CPU1               2865718      cycles                    #    1.529 GHz                      (99.78%)
-	CPU0       <not supported>      stalled-cycles-frontend  
-	CPU1       <not supported>      stalled-cycles-frontend  
-	CPU0       <not supported>      stalled-cycles-backend   
-	CPU1       <not supported>      stalled-cycles-backend   
-	CPU0                282451      instructions              #    0.29  insns per cycle          (99.84%)
-	CPU1               1387559      instructions              #    0.48  insns per cycle          (99.84%)
-	CPU0                 55449      branches                  #   29.647 M/sec                    (99.91%)
-	CPU1                285164      branches                  #  152.127 M/sec                    (99.91%)
-	CPU0                  2422      branch-misses             #    4.37% of all branches        
-	CPU1                 13365      branch-misses             #    4.69% of all branches        
+```
+# perf stat -a -A ls
+perf.data
 
-				 0.001541503 seconds time elapsed
+ Performance counter stats for 'system wide':
 
-	```
-	* `-I <N msecs>`：每隔 N 毫秒打印一次计数器的变化，N 最小值为 100 毫秒
-	```
-	# perf stat -I 1000 -e cycles -a sleep 10
-	#           time             counts unit events
-	     1.000142994            5921332      cycles                   
-	     2.000439620            1810534      cycles                   
-	     3.000607543            1629384      cycles                   
-	     4.000749496            1830569      cycles                   
-	     5.000891207            1706591      cycles                   
-	     6.001032630            1757895      cycles                   
-	     7.001174290            1794262      cycles                   
-	     8.001317199            2227926      cycles                   
-	     9.001459143            2174530      cycles                   
-	    10.001345184            2480511      cycles                   
-	#
-	```
+CPU0              1.870288      task-clock (msec)         #    1.213 CPUs utilized            (99.88%)
+CPU1              1.874507      task-clock (msec)         #    1.216 CPUs utilized            (99.90%)
+CPU0                     5      context-switches          #    0.003 M/sec                    (99.95%)
+CPU1                     5      context-switches          #    0.003 M/sec                    (99.93%)
+CPU0                     1      cpu-migrations            #    0.535 K/sec                    (99.97%)
+CPU1                     0      cpu-migrations            #    0.000 K/sec                    (99.97%)
+CPU0                    13      page-faults               #    0.007 M/sec                  
+CPU1                    55      page-faults               #    0.029 M/sec                  
+CPU0                977488      cycles                    #    0.523 GHz                      (99.78%)
+CPU1               2865718      cycles                    #    1.529 GHz                      (99.78%)
+CPU0       <not supported>      stalled-cycles-frontend  
+CPU1       <not supported>      stalled-cycles-frontend  
+CPU0       <not supported>      stalled-cycles-backend   
+CPU1       <not supported>      stalled-cycles-backend   
+CPU0                282451      instructions              #    0.29  insns per cycle          (99.84%)
+CPU1               1387559      instructions              #    0.48  insns per cycle          (99.84%)
+CPU0                 55449      branches                  #   29.647 M/sec                    (99.91%)
+CPU1                285164      branches                  #  152.127 M/sec                    (99.91%)
+CPU0                  2422      branch-misses             #    4.37% of all branches        
+CPU1                 13365      branch-misses             #    4.69% of all branches        
+
+			 0.001541503 seconds time elapsed
+```
+* `-I <N msecs>`：每隔 N 毫秒打印一次计数器的变化，N 最小值为 100 毫秒
+```
+# perf stat -I 1000 -e cycles -a sleep 10
+#           time             counts unit events
+     1.000142994            5921332      cycles                   
+     2.000439620            1810534      cycles                   
+     3.000607543            1629384      cycles                   
+     4.000749496            1830569      cycles                   
+     5.000891207            1706591      cycles                   
+     6.001032630            1757895      cycles                   
+     7.001174290            1794262      cycles                   
+     8.001317199            2227926      cycles                   
+     9.001459143            2174530      cycles                   
+    10.001345184            2480511      cycles
+```
 
 ### perf record
 * `perf record` 收集一段时间内的性能事件到文件 `perf.data`，随后需要用`perf report`命令分析
