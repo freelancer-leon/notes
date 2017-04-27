@@ -124,6 +124,15 @@
 > In computer engineering, **out-of-order execution** (or more formally **dynamic execution**) is a paradigm used in most high-performance microprocessors to make use of instruction cycles that would otherwise be wasted by a certain type of costly delay. In this paradigm, a processor executes instructions in an order governed by the availability of input data, rather than by their original order in a program. In doing so, the processor can avoid being idle while waiting for the preceding instruction to complete to retrieve data for the next instruction in a program, processing instead the next instructions that are able to run immediately and independently.
 
 ![http://renesasrulz.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-00-67/RX_5F00_pipeline_5F00_550.gif](pic/pipeline_out_of_order.gif)
+* 数据相关（data dependency)：下一条指令会用到这一条指令计算出的结果
+* 控制相关（control dependency)：一条指令要确定下一条指令的位置，如在执行跳转、调用或返回指令
+* 流水线冒险
+	* 数据冒险（data hazard）
+	* 控制冒险（control hazard）
+* 用流水线停顿（stalling）来避免冒险
+* 用数据转发（data forwarding），有时也称为旁路（bypass）来避免停顿。
+* 加载/使用冒险（load/use hazard）
+* 加载互锁（load interlock）来处理加载/使用冒险
 
 ### Branch predication
 > In computer science, **predication** is an architectural feature that provides an alternative to conditional branch instructions. Predication works by executing instructions from both paths of the branch and only permitting those instructions from the taken path to modify architectural state. The instructions from the taken path are permitted to modify architectural state because they have been associated (predicated) with a predicate, a Boolean value used by the instruction to control whether the instruction is allowed to modify the architectural state or not.
@@ -333,8 +342,71 @@ List of pre-defined events (to be used in -e):
 * perf 根据 IP 与 ELF 文件中的符号表可以查到触发 PMI 中断的指令所在的函数
 	* 为了能够使 perf 读到函数名，我们的目标程序必须具备 **符号表**
 	* perf 的分析结果中只看到一串地址，而没有对应的函数名时，通常是由于用 `strip` 删除了 ELF 文件中的符号表
+
+### 函数接口
 * tools/perf/perf-sys.h::`sys_perf_event_open()`
 * kernel/events/core.c::`perf_event_open()`
+```c
+static const struct file_operations perf_fops = {
+        .llseek                 = no_llseek,
+        .release                = perf_release,
+        .read                   = perf_read,
+        .poll                   = perf_poll,
+        .unlocked_ioctl         = perf_ioctl,
+        .compat_ioctl           = perf_compat_ioctl,
+        .mmap                   = perf_mmap,
+        .fasync                 = perf_fasync,
+};
+
+static int perf_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	...
+	if (!rb) {
+		rb = rb_alloc(nr_pages,
+			event->attr.watermark ? event->attr.wakeup_watermark : 0,
+			event->cpu, flags);
+
+		if (!rb) {
+			ret = -ENOMEM;
+			goto unlock;
+		}
+
+		atomic_set(&rb->mmap_count, 1);
+		rb->mmap_user = get_current_user();
+		rb->mmap_locked = extra;
+
+		ring_buffer_attach(event, rb);
+
+		perf_event_init_userpage(event);
+		perf_event_update_userpage(event);
+	} else {
+		ret = rb_alloc_aux(rb, event, vma->vm_pgoff, nr_pages,
+			event->attr.aux_watermark, flags);
+		if (!ret)
+			rb->aux_mmap_locked = extra;
+	}
+	...
+}
+
+**
+ * sys_perf_event_open - open a performance event, associate it to a task/cpu
+ *
+ * @attr_uptr:  event_id type attributes for monitoring/sampling
+ * @pid:                target pid
+ * @cpu:                target cpu
+ * @group_fd:           group leader event fd
+ */
+SYSCALL_DEFINE5(perf_event_open,
+                struct perf_event_attr __user *, attr_uptr,
+                pid_t, pid, int, cpu, int, group_fd, unsigned long, flags)
+{
+	...
+	event_file = anon_inode_getfile("[perf_event]", &perf_fops, event,
+																	f_flags);
+	...
+}
+...*```
+```
 
 ### 性能分析的计数模式
 * 基于计数
