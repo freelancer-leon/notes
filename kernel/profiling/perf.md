@@ -137,6 +137,8 @@
 ### Branch predication
 > In computer science, **predication** is an architectural feature that provides an alternative to conditional branch instructions. Predication works by executing instructions from both paths of the branch and only permitting those instructions from the taken path to modify architectural state. The instructions from the taken path are permitted to modify architectural state because they have been associated (predicated) with a predicate, a Boolean value used by the instruction to control whether the instruction is allowed to modify the architectural state or not.
 
+![pic/branch-predication.png](pic/branch-predication.png)
+
 ### Performance Monitor Unit
 
 > **Performance Monitoring Unit**, or the **PMU**, is found in all high end processors these days. The PMU is basically hardware built inside a processor to measure it's performance parameters. We can measure parameters like instruction cycles, cache hits, cache misses, branch misses and many others depending on the support i.e. hardware provide by the processor. And as the measurement is done by the hardware there is very limited overhead.
@@ -325,7 +327,7 @@ List of pre-defined events (to be used in -e):
 
 ### 以cycles事件为例观察采样原理
 
-![http://www.loongnix.org/images/0/08/Perf%E5%8E%9F%E7%90%86.png](pic/perf_basic_flow.png)
+![pic/perf_basic_flow.png](pic/perf_basic_flow.png)
 
 * perf 会通过系统调用`sys_perf_event_open`在内核中注册一个监测 “cycles” 事件的性能计数器
 * 内核根据 perf 提供的信息在 PMU 上初始化一个 *硬件性能计数器（Hardware performance counter）*
@@ -956,11 +958,7 @@ CPU1                 13365      branch-misses             #    4.69% of all bran
 ## References
 
 ### Knowledge
-* [Intel® 64 and IA-32 Architectures
-Software Developer’s Manual
-Combined Volumes:
-1, 2A, 2B, 2C, 3A, 3B, 3C and 3D](64-ia-32-architectures-software-developer-system-programming-manual-325384-vol-3.pdf)
-* [Linux/tools/perf/Documentation/examples.txt](http://lxr.free-electrons.com/source/tools/perf/Documentation/examples.txt)
+* [Intel® 64 and IA-32 Architectures Software Developer’s Manual Combined Volumes: 1, 2A, 2B, 2C, 3A, 3B, 3C and 3D](64-ia-32-architectures-software-developer-system-programming-manual-325384-vol-3.pdf)
 * [Perf -- Linux下的系统性能调优工具，第 1 部分](https://www.ibm.com/developerworks/cn/linux/l-cn-perf1/)
 * [Perf -- Linux下的系统性能调优工具，第 2 部分](https://www.ibm.com/developerworks/cn/linux/l-cn-perf2/)
 * [源码分析：动态分析 Linux 内核函数调用关系](http://tinylab.org/source-code-analysis-dynamic-analysis-of-linux-kernel-function-calls/)
@@ -988,6 +986,7 @@ Combined Volumes:
 
 ### Examples
 * [perf Examples](http://www.brendangregg.com/perf.html)
+* [Linux/tools/perf/Documentation/examples.txt](http://lxr.free-electrons.com/source/tools/perf/Documentation/examples.txt)
 * [perf.wiki: Perf examples](https://perf.wiki.kernel.org/index.php/Perf_examples)
 * [Linux 性能诊断 perf使用指南](https://yq.aliyun.com/articles/65255)
 
