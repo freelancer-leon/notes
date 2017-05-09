@@ -731,12 +731,12 @@ void flush_workqueue(struct workqueue_struct *wq);
 #define HARDIRQ_MASK    (__IRQ_MASK(HARDIRQ_BITS) << HARDIRQ_SHIFT)
 #define NMI_MASK    (__IRQ_MASK(NMI_BITS)     << NMI_SHIFT)
 
-#define PREEMPT_OFFSET  (1UL << PREEMPT_SHIFT)
-#define SOFTIRQ_OFFSET  (1UL << SOFTIRQ_SHIFT)        /*1<<8 = 256*/
-#define HARDIRQ_OFFSET  (1UL << HARDIRQ_SHIFT)
-#define NMI_OFFSET  (1UL << NMI_SHIFT)
+#define PREEMPT_OFFSET  (1UL << PREEMPT_SHIFT)	/*抢占计数偏移*/
+#define SOFTIRQ_OFFSET  (1UL << SOFTIRQ_SHIFT)	/*软中断偏移*/
+#define HARDIRQ_OFFSET  (1UL << HARDIRQ_SHIFT)	/*硬中断偏移*/
+#define NMI_OFFSET  (1UL << NMI_SHIFT)					/*NMI中断偏移*/
 
-#define SOFTIRQ_DISABLE_OFFSET  (2 * SOFTIRQ_OFFSET)  /*1<<9 = 512*/
+#define SOFTIRQ_DISABLE_OFFSET  (2 * SOFTIRQ_OFFSET)  /*禁止下半部偏移，为了与处理软中断区别开*/
 
 /* We use the MSB mostly because its available */
 #define PREEMPT_NEED_RESCHED    0x80000000
@@ -876,3 +876,5 @@ void __local_bh_enable_ip(unsigned long ip, unsigned int cnt)
 }
 EXPORT_SYMBOL(__local_bh_enable_ip);
 ```
+
+* 关于`SOFTIRQ_DISABLE_OFFSET`，`in_serving_softirq()`更多信息见该 commit `75e1056f5c57050415b64cb761a3acc35d91f013`: sched: Fix softirq time accounting

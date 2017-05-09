@@ -983,6 +983,7 @@ CPU1                 13365      branch-misses             #    4.69% of all bran
 * [NO_HZ: Reducing Scheduling-Clock Ticks](https://www.kernel.org/doc/Documentation/timers/NO_HZ.txt)
 * [linux内核的nohz与hres](http://blog.csdn.net/dog250/article/details/5303240)
 * [Linux时间管理](http://www.programgo.com/article/46562533148/)
+* [关于CPU Cache -- 程序猿需要知道的那些事](http://cenalulu.github.io/linux/all-about-cpu-cache/)
 
 ### Examples
 * [perf Examples](http://www.brendangregg.com/perf.html)
