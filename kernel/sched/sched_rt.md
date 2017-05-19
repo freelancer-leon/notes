@@ -95,8 +95,9 @@ struct rt_rq {
 * 关联到 Per-CPU 的`struct rq`调度队列的 *实时调度队列*（当然也是每个CPU只有一个），有对应的`struct rt_rq rt`成员。
 * 当多核环境`CONFIG_SMP`或`CONFIG_RT_GROUP_SCHED`特性开启时，会有`highest_prio`成员
   * 其子成员`curr`指示最高的已排队的实时任务的优先级，但未必就是当前队列上正在执行的任务的优先级。
-  * 在多核环境时会有子成员`next`指示次高优先级。
+  * 在多核环境时会有子成员`next`指示可被负载均衡的任务的最高优先级。
 * `rt_nr_running` 队列上可运行的实时任务的数量。
+* `rt_nr_total` 队列上的实时任务的数量。
 * `rt_nr_migratory` 队列上可以被迁移到其他运行队列的实时任务的数量。
 * `overloaded` 当运行队列上有多于一个实时任务且它们中至少有一个可以被迁移到其他运行队列时设置。
 * `rt_queued` 实时调度队列在运行队列`rq`上的标志。
@@ -198,7 +199,7 @@ const struct sched_class rt_sched_class = {
 };
 ```
 * `struct task_struct`内有一个`const struct sched_class *sched_class;`指针，指向该进程的调度器类。
-* 注意：没有实现`struct sched_class`的`task_fork`，`task_dead`和`switched_from`方法。
+* 注意：没有实现`struct sched_class`的`task_fork`，`task_dead`等方法。
 
 ## 数据结构间的关联
 
@@ -236,7 +237,8 @@ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p)
         plist_add(&p->pushable_tasks, &rq->rt.pushable_tasks);
 
         /* Update the highest prio pushable task */
-        /*prio的值越小优先级越高，所以当任务的优先级小于次高优先级时，需更新次高优先级*/
+        /*prio的值越小优先级越高，所以当任务的优先级高于可推送链表上的优先级时，需更新
+				  可推送任务链表的高优先级记录*/
         if (p->prio < rq->rt.highest_prio.next)
                 rq->rt.highest_prio.next = p->prio;
 }
@@ -622,13 +624,10 @@ static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flag
   > The total bandwidth available to all realtime tasks. The default values is 950,000 μs (0.95 s) or, in other words, 95% of the CPU bandwidth. **Setting the value to -1 means that realtime tasks may use up to 100% of CPU times.** This is only adequate when the realtime tasks are well engineered and have no obvious caveats such as unbounded polling loops.
 
 * Realtime throttling 机制缺省定义为 95% 的 CPU 时间可以被用于实时任务，剩余 5% 会被分给非实时任务。
-
 * 需要特别注意的是，如果某个实时任务占据了 95% 的 CPU 时间，在那个 CPU 上剩下的 **实时任务** 将不会运行，而余下的 5% 的 CPU 时间只被用于 **非实时任务**。
-
 * 该功能的两面性：
   * 有问题的实时任务不会造成系统的锁定，让非实时任务得不到运行
   * 实时任务分配到的 CPU 时间的减少会影响它们的性能
-
 * kernel/sysctl.c
 ```c
 static struct ctl_table kern_table[] = {
@@ -1028,6 +1027,7 @@ static void balance_runtime(struct rt_rq *rt_rq)
 }
 ```
 * 实时进程所在的 CPU 占用超时，可以向其他的 CPU 借用，将其他 CPU 的时间借用过来，这样此实时进程所在的CPU占有率达到100%。这样做的目的是为了避免实时进程由于缺少 CPU 时间而向其他的 CPU 迁移，减少不必要的迁移成本。
+* 即便从别的队列偷取可运行时间，本队列的实时进程的可运行时间`rt_rq->rt_runtime`无法超过初始设定的实时运行周期`rt_rq->tg->rt_bandwidth->rt_period`。
 * 此 CPU 上为绑定核的普通进程可以迁移到其他CPU上，这样就会得到调度。但是如果此 CPU 上有进程绑定核了，那么就会造成饥饿。
 * 注意：时间借用仅限于同一 root domain 的 CPU 之间。
 
@@ -1093,7 +1093,9 @@ static __always_inline int bitmap_weight(const unsigned long *src, unsigned int 
 * 难理解的地方在`BITMAP_LAST_WORD_MASK()`的实现，这个宏的目的是，根据给定的 *位数* 返回 *位掩码*，比如，`nbits`为 8，返回位掩码为 `00000000 00000000 00000000 11111111`，即将`~0UL`右移 24 位得到。这 24 位怎么得来的呢？
   * `-(nbits) & (BITS_PER_LONG - 1))`就是用来算右移的位数的，与`BITS_PER_LONG - nbits`的结果一致。
   * 正整数对应的负整数的二进制表示为：正整数的反码（按位取反）加一（即为补码）。这也是为了保证它们相加的结果为零。
-  * 这也导致这样的一个特性：一个 **正整数对应的负整数的二进制表示** 与 **它所属类型的极限值与它的差加一所得的无符号整数值** 一致，比如下面的序列：
+  * 这也导致这样的一个特性：一个 **正整数对应的负整数的二进制表示** 与 **它所属类型的极限值与它的差加一所得的无符号整数值** 一致
+	* `x + (-x) = 0 = MAX + 1` => `-x = MAX + 1 - x`
+* 比如下面的序列：
 
 short int | bit code | unsigned short int | 5 bit maximum = 31
 ---|---|---|---
@@ -1107,7 +1109,8 @@ short int | bit code | unsigned short int | 5 bit maximum = 31
  -8 | 1111 1111 1111 1000 | 65528 | 24
 
 * 当类型为`unsigned short int`时，16 bit 整数的极限值为`65536 - 1= 65535`。我们没有 65535 这么多个 CPU，也不需要一个最多 65535 个 bit 的位掩码。
-* 依据之前的假设，`BITS_PER_LONG`的值为 32，我们当前的极限值为`BITS_PER_LONG - 1 = 31`，也即二进制`1 1111`，只有 5 个 bit 有效的位掩码，此时`-(nbits)`得到`nbits`所对应的负整数的二进制位码，再与 5 bit 所能表示的整数的极限值`BITS_PER_LONG - 1`做`&`运算去掉高位（因为我们没有这么多 CPU），如前所述，这个二进制的位码与`BITS_PER_LONG - nbits`的结果是一致的。比如说，当`nbits`为 8，那么`1 1000`作为无符号整数的解释结果为 24，也就是上表的第四列。将`~0UL`右移 24 位得到`00000000 00000000 00000000 11111111`的位掩码。
+* 依据之前的假设 32 位平台，`BITS_PER_LONG`的值为 32，如果我们当前支持的最大 CPU 数少于或等于 32 个（`if (small_const_nbits(nbits))`），我们计算时采用一个极限值为`BITS_PER_LONG - 1 = 31`的整数就够了，其二进制为`1 1111`，只有 5 个 bit 有效的位掩码，此时`-(nbits)`得到`nbits`所对应的负整数的二进制位码，再与 5 bit 所能表示的整数的极限值`BITS_PER_LONG - 1`做`&`运算去掉高位（因为我们没有这么多 CPU），如前所述，这个二进制的位码与`(BITS_PER_LONG - 1) + 1 - nbits = BITS_PER_LONG - nbits`的结果是一致的。
+* 比如说，当`nbits`为 8，那么`-(nbits) = -8 = 1 1000`作为无符号整数的解释结果为 24，也就是上表的第四列，5 bit的位宽。将`~0UL`右移 24 位得到`00000000 00000000 00000000 11111111`的位掩码。
 * 这个位掩码和`rd->span`里的 CPU 范围的`&` 运算的结果再交给`hweight_long()`计算里面被置位的数目。
 * 当 64 位平台`BITS_PER_LONG`的值为 64 的时候，且多于 64 个有效 CPU 的时候，`__bitmap_weight()`其实是做了个拆分计算，余数部分还是会用到`BITMAP_LAST_WORD_MASK()`得到余数部分的位掩码。
 
@@ -1278,11 +1281,12 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
                                 balance_runtime(rt_rq);
                         runtime = rt_rq->rt_runtime; /*这是均衡过后的时间*/
                         /*这里是唯一减少实时队列累计的运行时间的地方（清零的情况除外）。
-                          通过之前 balance_runtime() 的分析我们可以知道，即时是借时间，
+                          通过之前 balance_runtime() 的分析我们可以知道，即使是借时间，
                           rt_rq->rt_runtime最多也不会超过rt_rq->rt_period。可以想象
                           两种场景：
-                          1. 队列没有被限流，每个定时器运行周期，min()的结果是 rt_rq->rt_time，
-                             相当于累计运行时间重新计算，无碍实时任务的继续运行。
+                          1. 队列没有被限流，每个定时器运行周期 rt_b->rt_period，min()
+                             的结果是 rt_rq->rt_time，相当于累计运行时间重新计算，无碍
+                             实时任务的继续运行。
                           2. 队列上的实时任务因为某种原因累计了很长的运行时间导致被限流了，
                              特别是那种超过了一个定时器周期的情况，当然不能一次清零，否则
                              太不公平了，也无法达到按比例分配带宽的设计初衷。所以此时 min()
