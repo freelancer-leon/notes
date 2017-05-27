@@ -1527,8 +1527,14 @@ static inline int task_running(struct rq *rq, struct task_struct *p)
   * 当前队列上正在运行的任务重新调度的标志位`TIF_NEED_RESCHED`没有被设置
   * 被唤醒的任务可在多于一个的 CPU 上运行
   * 当前队列上正在运行的任务的有效优先级是实时优先级（deadline或者RT）
-  * 当前队列上正在运行的任务 **只能在一个 CPU 上运行** 或者 **优先级高于被唤醒的任务**
-
+  * 当前队列上正在运行的任务 **只能在一个 CPU 上运行** 或者 **当前任务优先级高于被唤醒的任务**
+* 关于最后一个条件看这里：
+  * [Using KernelShark to analyze the real-time scheduler](https://lwn.net/Articles/425583/)
+  * [sched: Try not to migrate higher priority RT tasks](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=43fa5460fe60dea5c610490a1d263415419c60f6)
+  * 这个 commit 改变了一个实时任务在一个跑着另一个实时任务的 CPU 上唤醒的时，该迁移哪个线程的决策。
+  * 在此 commit 之前，如果有一个可用的 CPU 正运行着一个比这二者优先级都低的任务时，总是会移动正在被唤醒的那个任务。
+  * 在此 commit 之后，如果唤醒的任务比正在运行的任务优先级高时，可以不迁移，因为移到别的队列也会因为同样的原因被推走，造成任务弹跳，特别是，唤醒的进程原来是因为等待锁而放弃的 CPU，此时 cache 对它来说很可能还是热的，再在这个 CPU 上运行没有什么问题。
+  * 结果是，最高优先级迁移的次数减少了，从而提高调度的精确性。
 
 # 选择下一个进程
 * `pick_next_task_rt()`需要完成核心调度器委托的 *选出下一个需要调度的进程* 的任务，先从这个函数开始看起。
@@ -1716,3 +1722,4 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 - [Linux Kernel 排程機制介紹](http://blog.csdn.net/hlchou/article/details/7425416)
 - [RT throttling分析](http://tiandiyao.com/it109/004657MYM019571/)
 - [Linux进程组调度机制分析](http://www.oenhan.com/task-group-sched)
+- [linux组调度浅析](http://blog.csdn.net/ctthuangcheng/article/details/8914825)

@@ -237,6 +237,249 @@ cat /sys/kernel/debug/tracing/trace_pipe | tee /tmp/ftrace.log
  ```
 * 从上例中可以看到内核堆栈最满的情况如下，有 25 层函数调用，堆栈使用大小为 2912 字节。此外还可以在 Location 这列中看到整个的 calling stack 情况。
 
+# 前端工具
+## trace-cmd
+### 资源
+```
+git://git.kernel.org/pub/scm/linux/kernel/git/rostedt/trace-cmd.git
+```
+### 简介
+* [trace-cmd: A front-end for Ftrace](https://lwn.net/Articles/410200/)
+* [trace-cmd(1) - Linux manual page](http://man7.org/linux/man-pages/man1/trace-cmd.1.html)
+### 功能
+```
+$ trace-cmd -h
+
+trace-cmd version 2.3.1
+
+usage:
+  trace-cmd [COMMAND] ...
+
+  commands:
+     record - record a trace into a trace.dat file
+     start - start tracing without recording into a file
+     extract - extract a trace from the kernel
+     stop - stop the kernel from recording trace data
+     show - show the contents of the kernel tracing buffer
+     reset - disable all kernel tracing and clear the trace buffers
+     report - read out the trace stored in a trace.dat file
+     hist - show a historgram of the trace.dat information
+     split - parse a trace.dat file into smaller file(s)
+     options - list the plugin options available for trace-cmd report
+     listen - listen on a network socket for trace clients
+     list - list the available events, plugins or options
+     restore - restore a crashed record
+     snapshot - take snapshot of running trace
+     stack - output, enable or disable kernel stack tracing
+     check-events - parse trace event formats
+```
+```
+$ trace-cmd record -h
+
+trace-cmd version 2.3.1
+
+usage:
+ trace-cmd record [-v][-e event [-f filter]][-p plugin][-F][-d][-D][-o file] \
+           [-s usecs][-O option ][-l func][-g func][-n func] \
+           [-P pid][-N host:port][-t][-r prio][-b size][-B buf][command ...]
+           [-m max]
+          -e run command with event enabled
+          -f filter for previous -e event
+          -p run command with plugin enabled
+          -F filter only on the given process
+          -P trace the given pid like -F for the command
+          -c also trace the childen of -F
+          -T do a stacktrace on all events
+          -l filter function name
+          -g set graph function
+          -n do not trace function
+          -m max size per CPU in kilobytes
+          -M set CPU mask to trace
+          -v will negate all -e after it (disable those events)
+          -d disable function tracer when running
+          -D Full disable of function tracing (for all users)
+          -o data output file [default trace.dat]
+          -O option to enable (or disable)
+          -r real time priority to run the capture threads
+          -s sleep interval between recording (in usecs) [default: 1000]
+          -N host:port to connect to (see listen)
+          -t used with -N, forces use of tcp in live trace
+          -b change kernel buffersize (in kilobytes per CPU)
+          -B create sub buffer and folling events will be enabled here
+          -k do not reset the buffers after tracing.
+          -i do not fail if an event is not found
+          --func-stack perform a stack trace for function tracer
+             (use with caution)
+```
+### 示例
+#### 函数调用
+```
+# trace-cmd record -e sched ls
+trace-cmd record -e sched ls
+/sys/kernel/debug/tracing/events/sched/filter
+/sys/kernel/debug/tracing/events/*/sched/filter
+trace.dat.cpu4  trace.dat trace.dat.cpu5 trace.dat.cpu0  trace.dat.cpu6
+trace.dat.cpu1  trace.dat.cpu7  trace.dat.cpu2 trace.dat.cpu3
+Kernel buffer statistics:
+  Note: "entries" are the entries left in the kernel ring buffer and are not
+        recorded in the trace data. They should all be zero.
+
+CPU: 0
+entries: 0
+overrun: 0
+commit overrun: 0
+bytes: 0
+oldest event ts: 434426.563442
+now ts: 434858.825321
+dropped events: 0
+read events: 0
+
+CPU: 1
+entries: 0
+overrun: 0
+commit overrun: 0
+bytes: 0
+oldest event ts: 434426.867346
+now ts: 434858.825347
+dropped events: 0
+read events: 0
+...
+CPU0 data recorded at offset=0x464000
+    4096 bytes in size
+CPU1 data recorded at offset=0x465000
+    4096 bytes in size
+CPU2 data recorded at offset=0x466000
+    4096 bytes in size
+CPU3 data recorded at offset=0x467000
+    4096 bytes in size
+CPU4 data recorded at offset=0x468000
+    4096 bytes in size
+CPU5 data recorded at offset=0x469000
+    4096 bytes in size
+CPU6 data recorded at offset=0x46a000
+    4096 bytes in size
+CPU7 data recorded at offset=0x46b000
+    4096 bytes in size
+#
+# trace-cmd report
+version = 6
+cpus=8
+              ls-16326 [005] 435246.915558: sched_wakeup:         migration/5:48 [0] success=1 CPU:005
+              ls-16326 [005] 435246.915562: sched_stat_runtime:   comm=trace-cmd pid=16326 runtime=235329 [ns] vruntime=2669564645 [ns]
+              ls-16326 [005] 435246.915564: sched_switch:         trace-cmd:16326 [120] R ==> migration/5:48 [0]
+     migration/5-48    [005] 435246.915569: sched_stat_wait:      comm=trace-cmd pid=16326 delay=11537 [ns]
+     migration/5-48    [005] 435246.915571: sched_migrate_task:   comm=trace-cmd pid=16326 prio=120 orig_cpu=5 dest_cpu=6
+     migration/5-48    [005] 435246.915583: sched_switch:         migration/5:48 [0] S ==> swapper/5:0 [120]
+       trace-cmd-16320 [007] 435246.915607: sched_stat_runtime:   comm=trace-cmd pid=16320 runtime=513676 [ns] vruntime=1873745509 [ns]
+       trace-cmd-16320 [007] 435246.915613: sched_stat_wait:      comm=kworker/7:0 pid=14838 delay=1189644 [ns]
+       trace-cmd-16320 [007] 435246.915616: sched_switch:         trace-cmd:16320 [120] S ==> kworker/7:0:14838 [120]
+     kworker/7:0-14838 [007] 435246.915632: sched_stat_runtime:   comm=kworker/7:0 pid=14838 runtime=26527 [ns] vruntime=28831448457112 [ns]
+     kworker/7:0-14838 [007] 435246.915646: sched_switch:         kworker/7:0:14838 [120] S ==> swapper/7:0 [120]
+       trace-cmd-16325 [003] 435246.915786: sched_stat_runtime:   comm=trace-cmd pid=16325 runtime=477180 [ns] vruntime=533623809 [ns]
+       trace-cmd-16325 [003] 435246.915798: sched_switch:         trace-cmd:16325 [120] S ==> swapper/3:0 [120]
+...
+```
+#### 函数调用栈跟踪
+```
+# trace-cmd record -p function_graph -g ip_rcv
+  plugin 'function_graph'
+Hit Ctrl^C to stop recording
+^CKernel buffer statistics:
+  Note: "entries" are the entries left in the kernel ring buffer and are not
+        recorded in the trace data. They should all be zero.
+
+CPU: 0
+entries: 0
+overrun: 107
+commit overrun: 0
+bytes: 1244
+oldest event ts: 435687.839645
+now ts: 435689.296958
+dropped events: 0
+read events: 127
+
+CPU: 1
+entries: 0
+overrun: 107
+commit overrun: 0
+bytes: 1244
+oldest event ts: 435688.607176
+now ts: 435689.297141
+dropped events: 0
+read events: 127
+...
+
+# trace-cmd report
+version = 6
+CPU 4 is empty
+CPU 5 is empty
+CPU 6 is empty
+cpus=8
+          <idle>-0     [002] 435670.426372: funcgraph_entry:                   |  ip_rcv() {
+          <idle>-0     [002] 435670.426375: funcgraph_entry:                   |    ip_rcv_finish() {
+          <idle>-0     [002] 435670.426377: funcgraph_entry:        0.566 us   |      udp_v4_early_demux();
+          <idle>-0     [002] 435670.426378: funcgraph_entry:                   |      ip_route_input_noref() {
+          <idle>-0     [002] 435670.426380: funcgraph_entry:                   |        fib_table_lookup() {
+          <idle>-0     [002] 435670.426381: funcgraph_entry:        0.867 us   |          check_leaf.isra.6();
+          <idle>-0     [002] 435670.426383: funcgraph_exit:         3.236 us   |        }
+          <idle>-0     [002] 435670.426384: funcgraph_entry:                   |        fib_validate_source() {
+          <idle>-0     [002] 435670.426386: funcgraph_entry:                   |          fib_table_lookup() {
+          <idle>-0     [002] 435670.426386: funcgraph_entry:        0.301 us   |            check_leaf.isra.6();
+          <idle>-0     [002] 435670.426388: funcgraph_exit:         1.798 us   |          }
+          <idle>-0     [002] 435670.426388: funcgraph_entry:                   |          fib_table_lookup() {
+          <idle>-0     [002] 435670.426390: funcgraph_entry:        0.707 us   |            check_leaf.isra.6();
+          <idle>-0     [002] 435670.426391: funcgraph_exit:         2.325 us   |          }
+          <idle>-0     [002] 435670.426392: funcgraph_exit:         6.979 us   |        }
+          <idle>-0     [002] 435670.426393: funcgraph_entry:        0.121 us   |        __skb_dst_set_noref();
+          <idle>-0     [002] 435670.426394: funcgraph_exit:       + 15.431 us  |      }
+          <idle>-0     [002] 435670.426395: funcgraph_entry:                   |      ip_local_deliver() {
+          <idle>-0     [002] 435670.426395: funcgraph_entry:                   |        ip_local_deliver_finish() {
+          <idle>-0     [002] 435670.426396: funcgraph_entry:        0.295 us   |          raw_local_deliver();
+          <idle>-0     [002] 435670.426397: funcgraph_entry:                   |          udp_rcv() {
+          <idle>-0     [002] 435670.426398: funcgraph_entry:                   |            __udp4_lib_rcv() {
+          <idle>-0     [002] 435670.426399: funcgraph_entry:                   |              __udp4_lib_mcast_deliver() {
+          <idle>-0     [002] 435670.426399: funcgraph_entry:        0.090 us   |                _raw_spin_lock();
+          <idle>-0     [002] 435670.426400: funcgraph_entry:        0.090 us   |                _raw_spin_unlock();
+          <idle>-0     [002] 435670.426401: funcgraph_entry:                   |                kfree_skb() {
+          <idle>-0     [002] 435670.426402: funcgraph_entry:                   |                  skb_release_all() {
+          <idle>-0     [002] 435670.426402: funcgraph_entry:        0.230 us   |                    skb_release_head_state();
+          <idle>-0     [002] 435670.426403: funcgraph_entry:                   |                    skb_release_data() {
+          <idle>-0     [002] 435670.426404: funcgraph_entry:                   |                      skb_free_head() {
+          <idle>-0     [002] 435670.426404: funcgraph_entry:                   |                        put_page() {
+          <idle>-0     [002] 435670.426405: funcgraph_entry:        0.150 us   |                          put_compound_page();
+          <idle>-0     [002] 435670.426406: funcgraph_exit:         1.263 us   |                        }
+          <idle>-0     [002] 435670.426407: funcgraph_exit:         2.365 us   |                      }
+          <idle>-0     [002] 435670.426407: funcgraph_exit:         3.311 us   |                    }
+          <idle>-0     [002] 435670.426407: funcgraph_exit:         5.455 us   |                  }
+          <idle>-0     [002] 435670.426408: funcgraph_entry:                   |                  kfree_skbmem() {
+          <idle>-0     [002] 435670.426409: funcgraph_entry:        0.562 us   |                    kmem_cache_free();
+          <idle>-0     [002] 435670.426410: funcgraph_exit:         1.838 us   |                  }
+          <idle>-0     [002] 435670.426410: funcgraph_exit:         8.882 us   |                }
+          <idle>-0     [002] 435670.426411: funcgraph_exit:       + 11.608 us  |              }
+          <idle>-0     [002] 435670.426411: funcgraph_exit:       + 13.001 us  |            }
+          <idle>-0     [002] 435670.426412: funcgraph_exit:       + 13.968 us  |          }
+          <idle>-0     [002] 435670.426412: funcgraph_exit:       + 16.362 us  |        }
+          <idle>-0     [002] 435670.426413: funcgraph_exit:       + 17.298 us  |      }
+          <idle>-0     [002] 435670.426413: funcgraph_exit:       + 37.097 us  |    }
+          <idle>-0     [002] 435670.426413: funcgraph_exit:       + 39.166 us  |  }
+...
+```
+* 对应的 ftrace 操作
+```
+# echo ip_rcv > /sys/kernel/debug/tracing/set_graph_function
+# echo function_graph > /sys/kernel/debug/tracing/current_tracer
+# cat trace_pipe
+# cat tracing_on
+# echo 1 > /sys/kernel/debug/tracing/tracing_on
+# cat /sys/kernel/debug/tracing/trace_pipe
+# echo 0 > /sys/kernel/debug/tracing/tracing_on
+# echo nop > /sys/kernel/debug/tracing/current_tracer
+```
+
+### 图形前端-kernelshark
+* [KernelShark](http://rostedt.homelinux.com/kernelshark/)
+* [Using KernelShark to analyze the real-time scheduler](https://lwn.net/Articles/425583/)
+
 # Reference
 
 * [ftrace 简介](https://www.ibm.com/developerworks/cn/linux/l-cn-ftrace/)

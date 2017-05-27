@@ -626,11 +626,13 @@ MAP_NONBLOCK | Do not block on I/O.
 * 地址转换需要通过查询 **[页表](https://en.wikipedia.org/wiki/Page_table)** 才能完成。
   * 地址转换需要将虚拟地址分段，每段虚拟地址作为一个索引指向页表
   * 页表项指向下一级别的页表或者指向最终的物理页面。
-* Linux用的三级页表完成地址转换。
+![http://45.79.74.171/wp-content/uploads/2013/09/page-1.gif](pic/mm_paging.gif)
+* Linux用的四级页表完成地址转换。
 * 顶级页表——**页全局目录（page global directory，PDG）**
   * 包含一个`pdg_t`类型的数组，多数体系结构中等同于`unsigned long`
   * 表项指向二级页目录中的表项 *PMD*
-* 二级页表——**中间页目录（page middle directory，PMD）**
+* 二级页表——**PUD**
+* 三级页表——**中间页目录（page middle directory，PMD）**
   * `pmd_t`类型数组
   * 表项指向 *PTE* 中的表项
 * 最后一级页表——**页表（page table）**

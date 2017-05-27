@@ -7,6 +7,7 @@
 - [推任务迁移](#推任务迁移)
 - [拉任务迁移](#拉任务迁移)
 - [balance_callback()调用](#balance_callback()调用)
+- [RT_PUSH_IPI](#RT_PUSH_IPI)
 - [参考资料](#参考资料)
 
 # Root Domain
@@ -228,8 +229,10 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
                           这里并没有打算彻底解决竞态，而是通过两次检查减小错误的概率，目
                           的还是为了减小锁争用。
                           再次确保 lowest_mask 非空，
-                          如果 lowest_mask 为空，cpumask_any()返回结果 >= nr_cpu_ids，表示该轮查找不成功，进行下一次循环；
-                          如果 lowest_mask 不为空，表示有合适的 cpu，则通过下面的 return 跳出循环并使函数返回。*/
+                          1) 如果 lowest_mask 为空，cpumask_any()返回结果 >= nr_cpu_ids，
+                              表示该轮查找不成功，进行下一次循环；
+                          2) 如果 lowest_mask 不为空，表示有合适的 cpu，则通过下面的
+                              return 跳出循环并使函数返回。*/
                         if (cpumask_any(lowest_mask) >= nr_cpu_ids)
                                 continue;
                 }
@@ -339,7 +342,7 @@ void cpupri_set(struct cpupri *cp, int cpu, int newpri)
   * 该算法最先考虑的是把任务给最后在上面执行的 CPU，由于它的 cache 很可能还是热的。
   * 如果不行，当前执行推任务的 CPU 如果在找到的最低优先级 CPU 掩码里，且在同一调度域的分支上，则被选中。
   * 否则，这说明当前执行推任务的 CPU 不在同一调度域的分支上，那么在 "最低优先级CPU掩码" 与 "调度域的 CPU span" 的交集中选第一个 CPU 作为最佳 CPU。
-  * 如果在调度域里没有匹配 *最低优先级CPU掩码* 的 CPU，那么就把这个在 *最低优先级CPU掩码* 里，但不在同一调度域分支上的执行推任务的当前 CPU 返回，这意味此时当前 CPU （就调度域划分而言）是远程的。
+  * 如果在调度域里没有匹配 *最低优先级 CPU 掩码* 的 CPU，那么就把这个在 *最低优先级 CPU 掩码* 里，但不在同一调度域分支上的执行推任务的当前 CPU 返回，这意味此时当前 CPU （就调度域划分而言）是远程的。
   * 如果也失败了，从掩码中随机选择一个 CPU。
 * 推操作被执行直至：
   * 一个实时任务迁移失败
@@ -675,7 +678,7 @@ static void push_rt_tasks(struct rq *rq)
 * `pull_rt_task()`算法着眼于一个 root domain 中所有过载的运行队列，检查它们是否有一个实时任务能运行在目标运行队列（就是说，目标 CPU 在 `task->cpus_allowed_mask` 中）且其优先级高于将要被调度的运行队列的任务。
 * 除非该实时任务刚被唤醒且优先级比它所在的队列正在运行的任务优先级高，但还未来得及被调度。
 * 如果符合条件，将任务拉到目标运行队列。
-* 该搜索只在扫描 root domain 中所有过载的运行队列之后中断。因此，拉操作可能拉多于一个任务到目标运行队列。
+* 该搜索会在扫描 root domain 中所有过载的运行队列之后终结。因此，拉操作可能拉多于一个任务到目标运行队列。
 * 如果算法在第一遍的时候只选择一个要被拉的候选任务，但还要进行两次比较才决定是不是真的要拉过来，有一种可能是，被选择的最高优先级任务不再是候选（由于在其他 CPU 上的并行调度操作）。
 * 为了避免这种在 *查找最高优先级队列* 和 *当实际去执行拉操作时最高优先级任务仍然在运行队列上* 的竞争，拉操作会继续去拉任务。
 * 最坏的情况是，这可能导致许多被拉到目标运行队列的任务之后有可能被推到其他 CPU，导致任务弹跳。任务弹跳被任务是一种稀有事件。
@@ -804,10 +807,10 @@ static void pull_rt_task(struct rq *this_rq)
 	 * see overloaded we must also see the rto_mask bit.
 	 */
 	smp_rmb();
-  /*这个 feature 容我们稍后阐述，很多情况下不会开启这个 feature*/
+	/*这个 feature 容我们稍后阐述，很多情况下不会开启这个 feature*/
 #ifdef HAVE_RT_PUSH_IPI
 	if (sched_feat(RT_PUSH_IPI)) {
-		tell_cpu_to_push(this_rq);
+		tell_cpu_to_push(this_rq); /*告诉过载的 CPU 将任务推给我们（this_rq）*/
 		return;
 	}
 #endif
@@ -1214,16 +1217,17 @@ static inline void balance_callback(struct rq *rq)
 
 # RT_PUSH_IPI
 * 简单地说就是，用 **IPI** 的方式触发实时任务的推迁移来代替拉迁移
-* **inter-processor interrupt (IPI) 处理器间中断** 的[说明](#https://en.wikipedia.org/wiki/Inter-processor_interrupt)如下
+* 使用场景，多个 CPU 因为优先级降低都试图向一个 CPU 上的运行队列拉任务，导致大量竞争该队列的锁；反之，如果只触发调度器 IPI 给该 CPU，让该队列自己推一个任务出来，就不会有大量锁争用的问题。
+* **inter-processor interrupt (IPI) 处理器间中断** 的[说明](https://en.wikipedia.org/wiki/Inter-processor_interrupt)如下
 
 > An **inter-processor interrupt (IPI)** is a special type of interrupt by which one processor may interrupt another processor in a multiprocessor system if the interrupting processor requires action from the other processor. Actions that might be requested include:
 > * flushes of memory management unit caches, such as translation lookaside buffers, on other processors when memory mappings are changed by one processor;
 > * stopping when the system is being shut down by one processor.
 
-* Scheduler IPI (调度器处理器间中断) 的过程看[这里](#http://oliveryang.net/2016/03/linux-scheduler-1/#322-调度器处理器间中断)
+* Scheduler IPI (调度器处理器间中断) 的过程看[这里](http://oliveryang.net/2016/03/linux-scheduler-1/#322-调度器处理器间中断)
 * 一些关于 IPI 的讨论：
-  * [Cost of IPI (inter-processor interrupt) ?](#https://software.intel.com/en-us/forums/intel-moderncode-for-parallel-architectures/topic/294289)
-  * [Inter Processor Interrupt usage](#http://stackoverflow.com/questions/15091165/inter-processor-interrupt-usage)
+  * [Cost of IPI (inter-processor interrupt) ?](https://software.intel.com/en-us/forums/intel-moderncode-for-parallel-architectures/topic/294289)
+  * [Inter Processor Interrupt usage](http://stackoverflow.com/questions/15091165/inter-processor-interrupt-usage)
 * `RT_PUSH_IPI` feature
   * kernel/sched/features.h
   ```c
@@ -1245,12 +1249,301 @@ static inline void balance_callback(struct rq *rq)
   SCHED_FEAT(RT_PUSH_IPI, true)
   #endif
   ```
-* `RT_PUSH_IPI` 的引入 [[RFC,v4] sched/rt: Use IPI to trigger RT task push migration instead of pulling](#https://patchwork.kernel.org/patch/5894821/)
+* `RT_PUSH_IPI` 的引入 [[RFC,v4] sched/rt: Use IPI to trigger RT task push migration instead of pulling](https://patchwork.kernel.org/patch/5894821/)
 * 开启或关闭该功能
   ```
   # mount -t debugfs nodev /sys/kernel/debug
   # echo RT_PUSH_IPI > /sys/kernel/debug/sched_features
   # echo NO_RT_PUSH_IPI > /sys/kernel/debug/sched_features
+  ```
+* 如果 IPI 请求发给所有 RT overload list 上的 CPU，我们还会遇到相同的问题，只不过方向相反
+* 所以只把 IPI 发给第一个过载的 CPU，当它把所有能推出去的任务推走后，再找下一个能把任务推给源 CPU 的过载的 CPU
+  * 对此表示怀疑，`try_to_push_tasks()`用的仅仅是`push_rt_task()`，然后就把 IPI 交给下一个 cpu 了，并没有把所有能推的任务都推走
+* 当所有过载 CPU 的可推任务都比源 CPU 的任务优先级低的时候，IPI 停止
+* 如果在这期间源 CPU 再次降低它的优先级，那么设置一个标志位，告诉 IPI 遍历需从源 CPU 之后的第一个 RT 过载 CPU 重新开始
+* 这里的顺序是按 root domain 中 rto_mask 的位置为顺序，和 CPU 优先级没关系
+* `struct rt_rq` 新增 4 个相关的成员
+* kernel/sched/sched.h
+```c
+/* Real-Time classes' related field in a runqueue: */
+struct rt_rq {
+...
+#ifdef HAVE_RT_PUSH_IPI
+        int push_flags;
+        int push_cpu;
+        struct irq_work push_work;
+        raw_spinlock_t push_lock;
+#endif
+...
+};
+```
+* kernel/sched/rt.c
+```c
+/*
+ * The search for the next cpu always starts at rq->cpu and ends
+ * when we reach rq->cpu again. It will never return rq->cpu.
+ * This returns the next cpu to check, or nr_cpu_ids if the loop
+ * is complete.
+ *
+ * rq->rt.push_cpu holds the last cpu returned by this function,
+ * or if this is the first instance, it must hold rq->cpu.
+ */
+/*搜索下一个 cpu 总是从 rq->cpu 开始并且当我们再次搜索 rq->cpu 时结束。它绝不会返回
+  rq->cpu。它返回下一个要检查的 cpu，或者在循环结束时返回 nr_cpu_ids。
+
+  rq->rt.push_cpu 记录最后一个由该函数返回的 cpu，或者作为第一个开始循环的实例，此时它必须
+  是 rq->cpu。*/
+static int rto_next_cpu(struct rq *rq)
+{
+        int prev_cpu = rq->rt.push_cpu; /*前次检查的 cpu 是本次搜索的起点*/
+        int cpu;
+        /*从 rq 的 root domain 的实时过载 CPU 掩码中选出下一个掩码位所代表的 cpu*/
+        cpu = cpumask_next(prev_cpu, rq->rd->rto_mask);
+
+        /*
+         * If the previous cpu is less than the rq's CPU, then it already
+         * passed the end of the mask, and has started from the beginning.
+         * We end if the next CPU is greater or equal to rq's CPU.
+         */
+        /*如果前一个 cpu 小于 rq 的 CPU，那么表明此前已经越过了掩码的结束边界，并且这是一
+          轮从掩码起始开始的搜索。我们在上面得到的 cpu 大于等于 rq 的 CPU 时结束搜索。*/
+        if (prev_cpu < rq->cpu) {
+                if (cpu >= rq->cpu) /*绕了一圈回到自己，结束搜索*/
+                        return nr_cpu_ids; /*搜索结束标志为 nr_cpu_ids*/
+
+        } else if (cpu >= nr_cpu_ids) {
+                /*
+                 * We passed the end of the mask, start at the beginning.
+                 * If the result is greater or equal to the rq's CPU, then
+                 * the loop is finished.
+                 */
+                /*我们到达掩码的边界，回绕到掩码的起始进行搜索。如果结果仍然大于或等于 rq
+                  的 CPU，那么循环结束。*/
+                cpu = cpumask_first(rq->rd->rto_mask); /*回绕到掩码起始*/
+                if (cpu >= rq->cpu)
+                        return nr_cpu_ids; /*示意搜索结束*/
+        }
+        rq->rt.push_cpu = cpu; /*记录下一个要检查推操作的 cpu*/
+
+        /* Return cpu to let the caller know if the loop is finished or not */
+        return cpu;
+}
+
+static int find_next_push_cpu(struct rq *rq)
+{
+        struct rq *next_rq;
+        int cpu;
+
+        while (1) {
+                cpu = rto_next_cpu(rq);/*得到本次要检查的 cpu，该函数能处理回绕的情况*/
+                if (cpu >= nr_cpu_ids) /*搜索结束标志为 nr_cpu_ids*/
+                        break;
+                next_rq = cpu_rq(cpu); /*得到要检查 cpu 所在运行队列*/
+
+                /* Make sure the next rq can push to this rq */
+                /*检查 cpu 所在运行队列的下一个要调度的实时任务优先级是否比当前队列实时
+                  任务优先级最高的任务优先级高，如果优先级更高，则表示找到了，否则进行下一次
+                  迭代找下一个，直到回到回绕到 rq->cpu 为止，此时返回 nr_cpu_ids*/
+                if (next_rq->rt.highest_prio.next < rq->rt.highest_prio.curr)
+                        break;
+        }
+
+        return cpu;
+}
+
+#define RT_PUSH_IPI_EXECUTING           1
+#define RT_PUSH_IPI_RESTART             2
+
+static void tell_cpu_to_push(struct rq *rq)
+{
+        int cpu;
+        /*如果在 IPI 遍历过程中源 CPU 再次降低优先级，会进入以下条件*/
+        if (rq->rt.push_flags & RT_PUSH_IPI_EXECUTING) {
+                raw_spin_lock(&rq->rt.push_lock);
+                /* Make sure it's still executing */
+                if (rq->rt.push_flags & RT_PUSH_IPI_EXECUTING) {
+                        /*
+                         * Tell the IPI to restart the loop as things have
+                         * changed since it started.
+                         */
+                        rq->rt.push_flags |= RT_PUSH_IPI_RESTART; /*设置重新遍历标志*/
+                        raw_spin_unlock(&rq->rt.push_lock);
+                        return;
+                }
+                raw_spin_unlock(&rq->rt.push_lock);
+        }
+
+        /* When here, there's no IPI going around */
+        /*能走到这儿，说明还没有进行 IPI 遍历。
+          push CPU 检查的开始为当前队列 CPU（它会被跳过），既是遍历的起点，也是遍历的终点*/
+        rq->rt.push_cpu = rq->cpu;
+        cpu = find_next_push_cpu(rq);
+        if (cpu >= nr_cpu_ids) /*搜索结束标志为 nr_cpu_ids*/
+                return;
+        /*搜索未结束，或者一次搜索开始了，变更 push_flags*/
+        rq->rt.push_flags = RT_PUSH_IPI_EXECUTING;
+        /*把找到的 cpu 排入 irq 工作队列，工作内容为 rq->rt.push_work 指向的函数。
+          这是一个异步的过程，目的是让找到的 cpu 把任务推到这里来。*/
+        irq_work_queue_on(&rq->rt.push_work, cpu);
+}
+```
+* kernel/irq_work.c
+```c
+/*
+ * Enqueue the irq_work @work on @cpu unless it's already pending
+ * somewhere.
+ *
+ * Can be re-enqueued while the callback is still in progress.
+ */
+bool irq_work_queue_on(struct irq_work *work, int cpu)
+{
+        /* All work should have been flushed before going offline */
+        WARN_ON_ONCE(cpu_is_offline(cpu));
+
+        /* Arch remote IPI send/receive backend aren't NMI safe */
+        WARN_ON_ONCE(in_nmi());
+
+        /* Only queue if not already pending */
+        if (!irq_work_claim(work))
+                return false;
+        /*将工作放入指定的 cpu 的 raised_list 链表，通过体系结构相关的函数发送 ipi 到指定 cpu*/
+        if (llist_add(&work->llnode, &per_cpu(raised_list, cpu)))
+                arch_send_call_function_single_ipi(cpu);
+
+        return true;
+}
+EXPORT_SYMBOL_GPL(irq_work_queue_on);
+```
+* `rq->rt.push_work`是在初始化实时任务运行队列的时候进行的初始化
+  * kernel/sched/rt.c
+  ```c
+  void init_rt_rq(struct rt_rq *rt_rq)
+  {
+  ...
+  #ifdef HAVE_RT_PUSH_IPI
+          rt_rq->push_flags = 0;
+          rt_rq->push_cpu = nr_cpu_ids; /*初始化 push_cpu*/
+          raw_spin_lock_init(&rt_rq->push_lock);
+          init_irq_work(&rt_rq->push_work, push_irq_work_func); /*在此初始化 irq work*/
+  #endif
+  ...
+  }
+  ```
+* 当指定的推 CPU 收到触发的 IPI 后，会调用`raised_list`链表上的工作的回调函数处理 irq 工作
+* `push_irq_work_func()`在执行推任务的 CPU 收到 IPI 后异步地调用
+* kernel/sched/rt.c
+```c
+/* Called from hardirq context */
+static void try_to_push_tasks(void *arg)
+{
+        struct rt_rq *rt_rq = arg; /*推的目标，即拉操作的那个实时运行队列*/
+        struct rq *rq, *src_rq;
+        int this_cpu;
+        int cpu;
+
+        this_cpu = rt_rq->push_cpu; /*发起推操作的 cpu 是被拉操作选中的*/
+
+        /* Paranoid check */
+        BUG_ON(this_cpu != smp_processor_id()); /*如果当前 cpu 不是选中 cpu 肯定是 bug*/
+
+        rq = cpu_rq(this_cpu); /*推操作所在运行队列*/
+        src_rq = rq_of_rt_rq(rt_rq); /*拉操作所在运行队列设为源队列*/
+
+again:
+        if (has_pushable_tasks(rq)) { /*如果推操作上有任务可推*/
+                raw_spin_lock(&rq->lock);
+                push_rt_task(rq);     /*从推队列上推一个任务出去*/
+                raw_spin_unlock(&rq->lock);
+        }
+
+        /* Pass the IPI to the next rt overloaded queue */
+        /*下面是把 IPI 发给下一个实时过载队列的过程*/
+        raw_spin_lock(&rt_rq->push_lock);
+        /*
+         * If the source queue changed since the IPI went out,
+         * we need to restart the search from that CPU again.
+         */
+        /*如果此时发现源队列又有拉操作发生（比如说，优先级又降低了），需要清除
+          RT_PUSH_IPI_RESTART标志位，并重新开始 RT_PUSH_IPI*/
+        if (rt_rq->push_flags & RT_PUSH_IPI_RESTART) {
+                rt_rq->push_flags &= ~RT_PUSH_IPI_RESTART;
+                rt_rq->push_cpu = src_rq->cpu; /*重新开始的起点是源队列 cpu*/
+        }
+        /*源队列上接着往下找推操作 cpu*/
+        cpu = find_next_push_cpu(src_rq);
+        /*如果找不到了，清除 RT_PUSH_IPI_EXECUTING 标志位，准备结束 RT_PUSH_IPI*/
+        if (cpu >= nr_cpu_ids)
+                rt_rq->push_flags &= ~RT_PUSH_IPI_EXECUTING;
+        raw_spin_unlock(&rt_rq->push_lock);
+        /*找不到推任务的 cpu 了，结束 RT_PUSH_IPI*/
+        if (cpu >= nr_cpu_ids)
+                return;
+
+        /*
+         * It is possible that a restart caused this CPU to be
+         * chosen again. Don't bother with an IPI, just see if we
+         * have more to push.
+         */
+        /*如果发生了拉操作 restart，又选中该 cpu 执行推操作，这种情况无需再次触发 IPI，只需
+          看当前队列还有没有任务要推就可以了。*/
+        if (unlikely(cpu == rq->cpu))
+                goto again;
+        /*否则，触发 IPI 给下一个推操作的 cpu，把拉操作的 push_work 又排入 irq 工作队列*/
+        /* Try the next RT overloaded CPU */
+        irq_work_queue_on(&rt_rq->push_work, cpu);
+}
+
+static void push_irq_work_func(struct irq_work *work)
+{       /*这个 work 指向拉任务队列的 push_work，因此 rt_rq 是拉任务队列，也是我们要推的目标*/
+        struct rt_rq *rt_rq = container_of(work, struct rt_rq, push_work);
+        /*推任务 CPU 把任务往拉任务队列 rt_rq 上推*/
+        try_to_push_tasks(rt_rq);
+}
+```
+* 调用`push_irq_work_func()`的函数是`irq_work_run_list()`，它也是 irq 工作队列的遍历函数，比如，会在时钟中断的处理过程中被调用
+  ```
+  update_process_times()
+    -> irq_work_tick()
+        -> irq_work_run_list()
+  ```
+## 思考以下几个问题
+
+#### `RT_PUSH_IPI` 将拉操作转为推操作，但推操作有其选定推目标 cpu 的方法，未必会将任务推给原来执行拉操作的 cpu ？
+
+#### `RT_PUSH_IPI` 的效率问题
+* `RT_PUSH_IPI` 是以 root domain 的 `rto_mask` 为顺序遍历的，如果攻击 CPU 同时降到同一优先级，那么 IPI 都会发到被攻击 CPU（即优先级最高的）上，这是理想的情况。
+  * cpu[4] 为被攻击的 CPU，IPI 会发给它，它只需要把任务推出来就完了。
+  ```
+  RT priority
+      ^
+      |              
+      |             *
+      |             *
+      |             *
+      |             *
+      |             *           
+      |             *
+      |             *
+      | *  *  *  *  *  *  *  *  
+      +-------------------------> cpu id
+        0  1  2  3  4  5  6  7  
+  ```
+* 最坏的情况是，如果攻击 CPU 降到的是不同的优先级，且按顺序排列，而最先发起 `RT_PUSH_IPI` 遍历的恰好是优先级最低的 CPU，那么会不会又造成 *任务弹跳* 的问题？
+  * 例如下面场景，cpu[5] 最先开始发起 `RT_PUSH_IPI`，会不会造成逐个发送 IPI，而且推算法都选中 cpu[5] 作为推的目标的情况？
+  ```
+  RT priority
+      ^
+      |              
+      |             *
+      |          *  *
+      |       *  *  *
+      |    *  *  *  *
+      | *  *  *  *  *           
+      | *  *  *  *  *        *  
+      | *  *  *  *  *     *  *  
+      | *  *  *  *  *  *  *  *  
+      +-------------------------> cpu id
+        0  1  2  3  4  5  6  7  
   ```
 
 # 参考资料
@@ -1258,3 +1551,4 @@ static inline void balance_callback(struct rq *rq)
 - [Linux Kernel 排程機制介紹](http://blog.csdn.net/hlchou/article/details/7425416)
 - [Oliver Yang - Linux Preemption - 1](http://oliveryang.net/2016/03/linux-scheduler-1/)
 - [Inter-processor interrupt](https://en.wikipedia.org/wiki/Inter-processor_interrupt)
+- [linux内核SMP负载均衡浅析](http://blog.csdn.net/ctthuangcheng/article/details/8914938)
