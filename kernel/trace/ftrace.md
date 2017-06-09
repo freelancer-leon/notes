@@ -468,8 +468,6 @@ cpus=8
 ```
 # echo ip_rcv > /sys/kernel/debug/tracing/set_graph_function
 # echo function_graph > /sys/kernel/debug/tracing/current_tracer
-# cat trace_pipe
-# cat tracing_on
 # echo 1 > /sys/kernel/debug/tracing/tracing_on
 # cat /sys/kernel/debug/tracing/trace_pipe
 # echo 0 > /sys/kernel/debug/tracing/tracing_on

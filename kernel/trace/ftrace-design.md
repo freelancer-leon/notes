@@ -95,11 +95,11 @@ ENTRY(function_hook)
 
 fgraph_trace:
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
-				cmpq $ftrace_stub, ftrace_graph_return ; 接着比较，可见如果开启了CONFIG_FUNCTION_GRAPH_TRACER，即使关闭 ftrace，也会有此比较
-				jnz ftrace_graph_caller ; 如果上面比较结果不为 0，即不相等，跳转到标签 ftrace_graph_caller，开始跟踪；否则往下执行
+        cmpq $ftrace_stub, ftrace_graph_return ; 接着比较，可见如果开启了CONFIG_FUNCTION_GRAPH_TRACER，即使关闭 ftrace，也会有此比较
+        jnz ftrace_graph_caller ; 如果上面比较结果不为 0，即不相等，跳转到标签 ftrace_graph_caller，开始跟踪；否则往下执行
 
-				cmpq $ftrace_graph_entry_stub, ftrace_graph_entry ; 含义和之前类似
-				jnz ftrace_graph_caller
+        cmpq $ftrace_graph_entry_stub, ftrace_graph_entry ; 含义和之前类似
+        jnz ftrace_graph_caller
 #endif
 
 GLOBAL(ftrace_stub)
@@ -136,28 +136,36 @@ END(function_hook)
 ```c
 foo()
   |
-  +-> mcount()
-  |     |
-  |     +-> ftrace_trace_function()
-  |     |
-  |     +-> if (ftrace_graph_return != ftrace_stub || ftrace_graph_entry != ftrace_graph_entry_stub)
-  |             |
-  |             +-> ftrace_graph_caller()
-  |                   |  /*Save address of the return address of traced function*/
-  |                   +-> prepare_ftrace_return()
-  |                        |
-  |                        +-> ftrace_graph_entry()
-  |                        +-> ftrace_push_return_trace()
   +-> bar()
-  |     |
-  |     +-> return_to_handler()
-  |           |
-  |           +-> ftrace_return_to_handler()
-  |           |     +-> ftrace_pop_return_trace()
-  |           |     +-> ftrace_graph_return()
-  |           |<----+
-  |<---------+
-  ;
+        |
+        +-> mcount()
+        .     |
+        .     +-> ftrace_trace_function() /*function hook*/
+        .     |
+        .     +-> if (ftrace_graph_return != ftrace_stub || ftrace_graph_entry != ftrace_graph_entry_stub)
+        .             |
+        .             +-> ftrace_graph_caller()
+        .                   |
+        .                   +->/*Save address of the return address of traced function*/
+        .                   +-> prepare_ftrace_return()
+        .                         |
+        .                         +-> /*hijack the return address*/
+        .                         +-> ftrace_graph_entry() /*function_graph hook 1*/
+        .                         +-> ftrace_push_return_trace()
+        .
+        . /*bar() will return to the hijack address, but not foo()*/
+        +--> return_to_handler()
+               |
+               +-> ftrace_return_to_handler() /*return the original address*/
+               |     +-> ftrace_pop_return_trace()
+               |     +-> ftrace_graph_return() /*function_graph hook 2*/
+               |   /*jump to the original call site*/
+               +-> jmp original_return_point
+                         |
+  +<---------------------+
+  | /*back to original flow*/
+  v
+;
 ```
 * function_graph 跟踪器要复杂一些，在 function 跟踪器调用完 `ftrace_trace_function` 指向的函数后执行，即`jmp fgraph_trace`
 * 这里会比较`ftrace_graph_return`和`ftrace_stub`，`ftrace_graph_entry`和`ftrace_graph_entry_stub`
