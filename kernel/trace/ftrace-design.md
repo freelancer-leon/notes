@@ -139,28 +139,30 @@ foo()
   +-> bar()
         |
         +-> mcount()
-        .     |
-        .     +-> ftrace_trace_function() /*function hook*/
-        .     |
-        .     +-> if (ftrace_graph_return != ftrace_stub || ftrace_graph_entry != ftrace_graph_entry_stub)
-        .             |
-        .             +-> ftrace_graph_caller()
-        .                   |
-        .                   +->/*Save address of the return address of traced function*/
-        .                   +-> prepare_ftrace_return()
-        .                         |
-        .                         +-> /*hijack the return address*/
-        .                         +-> ftrace_graph_entry() /*function_graph hook 1*/
-        .                         +-> ftrace_push_return_trace()
-        .
-        . /*bar() will return to the hijack address, but not foo()*/
-        +--> return_to_handler()
-               |
-               +-> ftrace_return_to_handler() /*return the original address*/
-               |     +-> ftrace_pop_return_trace()
-               |     +-> ftrace_graph_return() /*function_graph hook 2*/
-               |   /*jump to the original call site*/
-               +-> jmp original_return_point
+        |     |
+        |     +-> ftrace_trace_function() /*function hook*/
+        |     |
+        |     +-> if (ftrace_graph_return != ftrace_stub ||
+        |             ftrace_graph_entry != ftrace_graph_entry_stub)
+        |             |
+        |             +-> ftrace_graph_caller()
+        |                   |
+        |                   +-> [ Save the return address of traced function ]
+        |                   +-> prepare_ftrace_return()
+        |                         |
+        |                         +-> [ hijack the return address ]
+        |                         +-> ftrace_graph_entry() /*function_graph hook 1*/
+        |                         +-> ftrace_push_return_trace()
+        |
+        +-> [ bar() function body ]
+        |   /*bar() will return to the hijack address, but not foo()*/
+        +-> return_to_handler()
+              |
+              +-> ftrace_return_to_handler() /*return the original address*/
+              |     +-> ftrace_pop_return_trace()
+              |     +-> ftrace_graph_return() /*function_graph hook 2*/
+              |   /*jump to the original call site*/
+              +-> jmp original_return_point
                          |
   +<---------------------+
   | /*back to original flow*/
