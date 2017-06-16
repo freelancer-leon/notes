@@ -36,6 +36,9 @@
 - [Monitoring and Tuning the Linux Networking Stack: Receiving Data](https://github.com/freelancer-leon/notes/blob/master/kernel/networking/monitoring-tuning-linux-networking-stack-receiving-data.md)
 - [TCP](https://github.com/freelancer-leon/notes/blob/master/kernel/networking/TCP.md)
 
+## 初始化
+- [initcall](https://github.com/freelancer-leon/notes/blob/master/kernel/init/initcall.md)
+
 ## 性能诊断
 - [Perf](https://github.com/freelancer-leon/notes/blob/master/kernel/profiling/perf.md)
 

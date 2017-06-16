@@ -450,7 +450,7 @@ $ sudo ethtool -K eth0 gro on
   * 一个描述某个给定的接口和RX队列应该由那个CPU处理包的位掩码。
   ```
   /sys/class/net/DEVICE_NAME/queues/QUEUE/rps_cpus
-  /sys/class/net/eth0/queues/rx-0/rps_cpus`
+  /sys/class/net/eth0/queues/rx-0/rps_cpus
   ```
 
 > **Note**: enabling RPS to distribute packet processing to CPUs which were previously not processing packets will cause the number of `NET_RX` softirqs to increase for that CPU, as well as the `si` or `sitime` in the CPU usage graph. You can compare before and after of your softirq and CPU usage graphs to confirm that RPS is configured properly to your liking.

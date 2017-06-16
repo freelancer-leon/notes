@@ -478,6 +478,41 @@ cpus=8
 * [KernelShark](http://rostedt.homelinux.com/kernelshark/)
 * [Using KernelShark to analyze the real-time scheduler](https://lwn.net/Articles/425583/)
 
+## trace_options
+* `/sys/kernel/debug/tracing/trace_options`文件
+
+```
+# cat /sys/kernel/debug/tracing/trace_options
+print-parent
+nosym-offset
+nosym-addr
+noverbose
+noraw
+nohex
+nobin
+noblock
+nostacktrace
+trace_printk
+noftrace_preempt
+nobranch
+annotate
+nouserstacktrace
+nosym-userobj
+noprintk-msg-only
+context-info
+nolatency-format
+sleep-time
+graph-time
+record-cmd
+overwrite
+nodisable_on_free
+irq-info
+markers
+function-trace
+notest_nop_accept
+notest_nop_refuse
+```
+
 # Reference
 
 * [ftrace 简介](https://www.ibm.com/developerworks/cn/linux/l-cn-ftrace/)
