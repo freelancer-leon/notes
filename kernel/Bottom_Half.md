@@ -74,11 +74,20 @@ struct softirq_action
 * 通常中断处理程序会在返回前标记它的软中断，使其在稍后被执行。
 * 软中断被检查和执行的地方
   * 从一个硬件中断代码处返回时
-  * 在ksoftirqd内核线程中
-  * 在那些显式检查和执行待处理软中断的代码中，如网络子系统中。
-* 不管用什么方法唤起，软中断都要在`do_softirq()`中执行。
-  * `do_softirq()` --> `do_softirq_own_stack()` --> `__do_softirq()` --> `softirq_vec->action()`
-  * kernel/softirq.c
+  * 在`ksoftirqd`内核线程中
+  * 在那些显式检查和执行待处理软中断的代码中，如网络子系统中
+* 不管用什么方法唤起，软中断都要在`__do_softirq()`中执行。
+
+### 直接调用`do_softirq()`处理软中断
+* kernel/softirq.c::`__local_bh_enable_ip()` -> `do_softirq()`
+* net/core/dev.c::`netif_rx_ni()` -> `do_softirq()`
+```
+do_softirq()
+ -> do_softirq_own_stack()
+    -> __do_softirq()
+       -> softirq_vec->action()
+```
+* kernel/softirq.c
 ```c
 asmlinkage __visible void __softirq_entry __do_softirq(void)
 {
@@ -190,9 +199,127 @@ void do_softirq_own_stack(void)
     /* Push the previous esp onto the stack */
     prev_esp = (u32 *)irqstk;
     *prev_esp = current_stack_pointer();
-
+    /*通过一段汇编指令调用函数__do_softirq，函数的栈指针为 isp*/
     call_on_stack(__do_softirq, isp);
 }
+...__```
+```
+### 中断退出时处理软中断
+* 从`irq_exit()`开始看起。退出中断上下文，如果需要且可能的话，执行软中断处理。
+* kernel/softirq.c
+```c
+
+static inline void invoke_softirq(void)
+{       /*如果本 CPU 上软中断处理进程已经在运行状态了，则直接返回*/
+        if (ksoftirqd_running())
+                return;
+        /*如果没有启用中断线程化，则直接处理软中断（同步方式）*/
+        if (!force_irqthreads) {
+#ifdef CONFIG_HAVE_IRQ_EXIT_ON_IRQ_STACK
+                /*
+                 * We can safely execute softirq on the current stack if
+                 * it is the irq stack, because it should be near empty
+                 * at this stage.
+                 */
+                /*如果开启 CONFIG_HAVE_IRQ_EXIT_ON_IRQ_STACK，在中断处理函数使用过的
+                  栈上继续执行软中断，这很安全，因为此时它几乎是空的*/
+                __do_softirq();
+#else
+                /*
+                 * Otherwise, irq_exit() is called on the task stack that can
+                 * be potentially deep already. So call softirq in its own stack
+                 * to prevent from any overrun.
+                 */
+                /*否则，用 softirq 自己的栈，该函数实现与体系结构相关*/
+                do_softirq_own_stack();
+#endif
+        } else {
+                /*如果启用中断线程化，且中断处理进程并未运行，在这里唤醒它（异步方式）*/
+                wakeup_softirqd();
+        }
+}
+...
+/*
+ * Exit an interrupt context. Process softirqs if needed and possible:
+ */
+void irq_exit(void)
+{
+#ifndef __ARCH_IRQ_EXIT_IRQS_DISABLED
+        local_irq_disable();
+#else
+        WARN_ON_ONCE(!irqs_disabled());
+#endif
+        /*在 irq 退出时进行记账*/
+        account_irq_exit_time(current);
+        preempt_count_sub(HARDIRQ_OFFSET); /*递减抢占计数中用于 HARDIRQ 的计数*/
+        /*如果不处于中断上下文，包括：NMI，硬中断，软中断或者禁止下半部的情形；
+          并且有挂起的软中断待处理，调用软中断处理函数*/
+        if (!in_interrupt() && local_softirq_pending())
+                invoke_softirq();
+
+        tick_irq_exit();
+        rcu_irq_exit();
+        trace_hardirq_exit(); /* must be last! */
+}
+...*```
+```
+
+### `ksoftirqd`中断处理进程
+```
+early_initcall(spawn_ksoftirqd)
+
+start_kernel()
+ ...
+ -> spawn_ksoftirqd()
+    -> smpboot_register_percpu_thread(&softirq_threads)
+       -> smpboot_register_percpu_thread_cpumask()
+          -> __smpboot_create_thread()
+             -> kthread_create_on_cpu(smpboot_thread_fn,...)
+
+smpboot_thread_fn()
+ -> ht->thread_fn(td->cpu)
+```
+
+* kernel/softirq.c
+```c
+static int ksoftirqd_should_run(unsigned int cpu)
+{
+        return local_softirq_pending();
+}
+
+static void run_ksoftirqd(unsigned int cpu)
+{
+        local_irq_disable(); /*先关闭中断，在进入软中断处理函数前一刻才开启它*/
+        if (local_softirq_pending()) { /*如果有软中断挂起*/
+                /*
+                 * We can safely run softirq on inline stack, as we are not deep
+                 * in the task stack here.
+                 */
+                __do_softirq();        /*进行软中断处理*/
+                local_irq_enable();    /*开启之前关闭的中断*/
+                cond_resched_rcu_qs();
+                return;
+        }
+        local_irq_enable(); /*开启之前关闭的中断*/
+}
+...
+static struct smp_hotplug_thread softirq_threads = {
+        .store                  = &ksoftirqd,
+        .thread_should_run      = ksoftirqd_should_run,
+        .thread_fn              = run_ksoftirqd, /*软中断处理进程函数*/
+        .thread_comm            = "ksoftirqd/%u",
+};
+
+static __init int spawn_ksoftirqd(void)
+{
+        cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, "softirq:dead", NULL,
+                                  takeover_tasklets);
+        BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
+
+        return 0;
+}
+early_initcall(spawn_ksoftirqd); /*通过 initcall 的方式来注册软中断处理进程函数*/
+...__```
 ```
 
 ## 使用软中断
@@ -262,7 +389,7 @@ inline void raise_softirq_irqoff(unsigned int nr)
      * schedule the softirq soon.
      */
     if (!in_interrupt())
-        wakeup_softirqd(); /*唤醒软中断处理程序*/
+        wakeup_softirqd(); /*唤醒 ksoftirqd 软中断处理进程*/
 }
 
 void raise_softirq(unsigned int nr)
@@ -279,6 +406,7 @@ void __raise_softirq_irqoff(unsigned int nr)
     trace_softirq_raise(nr);
     or_softirq_pending(1UL << nr);  /*置位*/
 }
+...__```
 ```
 
 * 如果知道中断已经被禁，可以直接调`raise_softirq_irqoff()`。

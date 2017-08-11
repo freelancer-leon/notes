@@ -317,8 +317,13 @@ EXPORT_SYMBOL(bio_put);
   * 维护请求队列近乎FIFO的顺序排列。
 * 对于类似Flash这样的随机访问设备，没有“寻道”的负担，空操作I/O调度程序是理想的选择。
 
-# 相关内核命令行参数
+# 相关配置
+* 内核命令行参数
 ```
 elevator=   [IOSCHED]
         Format: {"cfq" | "deadline" | "noop"}
+```
+* 更改设备IO调度器
+```
+echo SCHEDULER > /sys/block/DEVICE/queue/scheduler
 ```

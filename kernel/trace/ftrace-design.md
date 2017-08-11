@@ -321,6 +321,44 @@ preempt_disable()
                  -> start_critical_timing()
                       -> __trace_function()
 ```
+```dot
+engine:dot
+digraph G {
+	rankdir="LR";
+	node [shape="record"];
+	preempt_disable[label="<f0> include/linux/preempt.h | <f1> preempt_disable"];
+	preempt_count_add[label="preempt_count_add(1)"];
+  preempt_latency_start[label="<f0> kernel/trace/trace_irqsoff.c | <f1> preempt_latency_start"];
+	trace_preempt_off;
+	start_critical_timing;
+	__trace_function;
+
+	preempt_disable:f1 -> preempt_count_inc -> preempt_count_add;
+	preempt_count_inc -> preempt_latency_start:f1;
+
+	subgraph cluster1 {
+		node[shape="point", width=0, height=0];
+		{
+			edge[arrowhead="none", penwidth=0];
+		  preempt_latency_start:f1 -> s01 -> s02 -> s03;
+		}
+		{
+			edge[arrowhead="none", penwidth=0];
+		  s10 -> trace_preempt_off -> s12 -> s13;
+		}
+		{
+			edge[arrowhead="none", penwidth=0];
+			s20 -> s21 -> start_critical_timing -> s23;
+		}
+		{
+			edge[arrowhead="none", penwidth=0];
+			s30 -> s31 -> s32 -> __trace_function;
+		}
+		preempt_latency_start:f1 -> trace_preempt_off -> start_critical_timing -> __trace_function;
+	}
+}
+```
+
 * kernel/sched/core.c
 ```c
 /*
@@ -508,14 +546,18 @@ EXPORT_SYMBOL(trace_hardirqs_off);
 ```
 init/main.c
 start_kernel()
-  kernel/trace/ftrace.c
+  |   kernel/trace/trace.c
+  +-> trace_init()
+  |     -> tracer_alloc_buffers()
+  |     -> trace_event_init()
+  |   kernel/trace/ftrace.c
   +-> ftrace_init()
   |     |
   |     +-> ftrace_process_locs()
   |     |    -> ftrace_allocate_pages()
   |     |    -> ftrace_update_code()
   |     +-> set_ftrace_early_filters()
-	+-> rest_init()
+  +-> rest_init()
 ```
 * 关注两个全局变量`__stop_mcount_loc`和`__start_mcount_loc`，以下是我的猜测：
 	* 由编译器脚本创建并放到特定的 section 里
@@ -526,6 +568,137 @@ start_kernel()
 	* arch/x86/kernel/vmlinux.lds.S
 * 由于 ftrace plugins 的初始化函数多是用 initcalls 的宏进行声明，因此 plugins 的初始化在内核启动过程中是比较靠后的（见 initcalls 章节）
 * 通过 initcalls 把 tracer 提供的初始化函数放到 initcalls 所属的 section，这个初始化函数最重要的事情是调用`register_tracer(tracer)`，注册`struct tracer`类型的 tracer plugin
+
+## tracefs的初始化
+* `tracefs`文件系统是借助`fs_initcall()`的方式来初始化的
+* 为保证向后兼容那些挂载`debugfs`来获得跟踪功能的工具，`tracefs`自动挂载到`debugfs/tracing`目录下，即`/sys/kernel/debug/tracing`目录
+```
+fs_initcall(tracer_init_tracefs)
+  +-----------+
+  +-> trace_access_lock_init()
+  +-> tracing_init_dentry()
+  |     -> debugfs_create_automount("tracing", NULL, trace_automount, NULL)
+  +-> init_tracer_tracefs()
+  |     +-> trace_create_file("available_tracers", ...)
+  |     +-> trace_create_file("current_tracer", ...)
+  |     +-> trace_create_file("trace_options", ...)
+  |     +-> trace_create_file("trace", ...)
+  |     +-> trace_create_file("trace_pipe", ...)
+  |     +-> trace_create_file("tracing_on", ...)
+  |     +-> trace_create_file ...
+  |     +-> create_trace_options_dir()
+  |     |    -> trace_options_init_dentry()
+  |     |          -> tracefs_create_dir("options", ...)
+  |     |    -> for (i = 0; trace_options[i]; i++) {
+  |     |         ...
+  |     |         create_trace_option_core_file(tr, trace_options[i], i)
+  |     |       }
+  |     |   kernel/trace/trace_functions.c
+  |     +-> ftrace_create_function_files()
+  |     |     -> allocate_ftrace_ops()
+  |     |        kernel/trace/ftrace.c
+  |     |     -> ftrace_create_filter_files()
+  |     |          -> trace_create_file("set_ftrace_filter", ...)
+  |     |          -> trace_create_file("set_ftrace_notrace", ...)
+  |     +-> for_each_tracing_cpu(cpu)
+  |     |      tracing_init_tracefs_percpu(tr, cpu);
+  |     +-> ftrace_init_tracefs()
+  |           -> trace_create_file("set_ftrace_pid", ...)
+  +-> ftrace_init_tracefs_toplevel()
+  +-> trace_create_file("tracing_thresh", ...)
+  +-> trace_create_file("README", ...)
+  +-> trace_create_file ...
+  +-> trace_enum_init()
+  +-> trace_create_enum_file()
+  +-> create_trace_instances()
+  +-> update_tracer_options(&global_trace)
+```
+* 通过`debugfs`提供的`fs/debugfs/inode.c::debugfs_create_automount()`函数，在`debugfs`文件系统创建自动挂载点
+	* 传入回调函数`trace_automount()`会在路径名解析的时候被调用，该函数将完成挂载`tracefs`这个动作
+* 通过`create_trace_options_dir()`会在初始化期间把`tracing/options`目录创建好，并根据`trace_options[]`数组在`tracing/options`目录下创建预定的 options 文件
+
+## TRACE_FLAGS
+* 通过不同的宏定义`C(a, b)`将同一个`TRACE_FLAGS`宏定义分别转成：
+	* `enum trace_iterator_bits` 枚举 **位名称** 列表
+	* `enum trace_iterator_flags` 枚举 **位掩码** 列表
+	* `const char *trace_options[]` 给每个位提供对应的字符串定义，并且顺序与枚举位列表中的保持一致（因为是同一个`TRACE_FLAGS`转出来的）
+* kernel/trace/trace.h
+	```c
+	/*
+	 * trace_iterator_flags is an enumeration that defines bit
+	 * positions into trace_flags that controls the output.
+	 *
+	 * NOTE: These bits must match the trace_options array in
+	 *       trace.c (this macro guarantees it).
+	 */
+	#define TRACE_FLAGS                                             \
+	                C(PRINT_PARENT,         "print-parent"),        \
+	                C(SYM_OFFSET,           "sym-offset"),          \
+	                C(SYM_ADDR,             "sym-addr"),            \
+	                C(VERBOSE,              "verbose"),             \
+	                C(RAW,                  "raw"),                 \
+	                C(HEX,                  "hex"),                 \
+	                C(BIN,                  "bin"),                 \
+	                C(BLOCK,                "block"),               \
+	                C(PRINTK,               "trace_printk"),        \
+	                C(ANNOTATE,             "annotate"),            \
+	                C(USERSTACKTRACE,       "userstacktrace"),      \
+	                C(SYM_USEROBJ,          "sym-userobj"),         \
+	                C(PRINTK_MSGONLY,       "printk-msg-only"),     \
+	                C(CONTEXT_INFO,         "context-info"),   /* Print pid/cpu/time */ \
+	                C(LATENCY_FMT,          "latency-format"),      \
+	                C(RECORD_CMD,           "record-cmd"),          \
+	                C(OVERWRITE,            "overwrite"),           \
+	                C(STOP_ON_FREE,         "disable_on_free"),     \
+	                C(IRQ_INFO,             "irq-info"),            \
+	                C(MARKERS,              "markers"),             \
+	                C(EVENT_FORK,           "event-fork"),          \
+	                FUNCTION_FLAGS                                  \
+	                FGRAPH_FLAGS                                    \
+	                STACK_FLAGS                                     \
+	                BRANCH_FLAGS
+
+	/*
+	 * By defining C, we can make TRACE_FLAGS a list of bit names
+	 * that will define the bits for the flag masks.
+	 */
+	#undef C
+	#define C(a, b) TRACE_ITER_##a##_BIT
+
+	enum trace_iterator_bits {
+	        TRACE_FLAGS
+	        /* Make sure we don't go more than we have bits for */
+	        TRACE_ITER_LAST_BIT
+	};
+
+	/*
+	 * By redefining C, we can make TRACE_FLAGS a list of masks that
+	 * use the bits as defined above.
+	 */
+	#undef C
+	#define C(a, b) TRACE_ITER_##a = (1 << TRACE_ITER_##a##_BIT)
+
+	enum trace_iterator_flags { TRACE_FLAGS };
+	```
+* kernel/trace/trace.c
+	```c
+	/*
+	 * TRACE_FLAGS is defined as a tuple matching bit masks with strings.
+	 * It uses C(a, b) where 'a' is the enum name and 'b' is the string that
+	 * matches it. By defining "C(a, b) b", TRACE_FLAGS becomes a list
+	 * of strings in the order that the enums were defined.
+	 */
+	#undef C
+	#define C(a, b) b
+
+	/* These must match the bit postions in trace_iterator_flags */
+	static const char *trace_options[] = {
+	        TRACE_FLAGS
+	        NULL
+	};
+	..._
+	```
+* 例如，对于`TRACE_FLAGS C(VERBOSE, "verbose")`会有`TRACE_ITER_VERBOSE_BIT`，`TRACE_ITER_VERBOSE`两个枚举成员和一个`/sys/kernel/debug/tracing/option/verbose`文件被创建出来
 
 ## `struct tracer`结构
 * **`struct tracer`结构** 用于定义一个跟踪器以及它与 tracefs 交互的回调函数
@@ -699,26 +872,26 @@ flag_changed | 当通用的 flag 发生改变时调用，让 tracer 有机会决
 	static void
 	init_tracer_tracefs(struct trace_array *tr, struct dentry *d_tracer)
 	{
-		...
-		/*/sys/kernel/debug/tracing/trace_options*/
-		trace_create_file("trace_options", 0644, d_tracer,
-										tr, &tracing_iter_fops);
-		...
+	    ...
+	    /*/sys/kernel/debug/tracing/trace_options*/
+	    trace_create_file("trace_options", 0644, d_tracer,
+	        tr, &tracing_iter_fops);
+	    ...
 	};
 	```
 * 打开`/sys/kernel/debug/tracing/trace_options`文件时会通过`tracing_trace_options_open()`设置`seq_read`时的回调为`tracing_trace_options_show()`
 * 写`/sys/kernel/debug/tracing/trace_options`文件时最终会调用 tracer 的`set_flag`
-	```
-	tracing_trace_options_write()
-	  -> trace_set_options()
-		      |
-	        +-> set_tracer_flag()
-					|     -> tr->current_trace->flag_changed(tr, mask, !!enabled)
-					+-> set_tracer_option()
-					      -> set_tracer_option()
-								      -> __set_tracer_option()
-											    -> trace->set_flag(tr, tracer_flags->val, opts->bit, !neg);
-	```
+  ```
+  tracing_trace_options_write()
+    -> trace_set_options()
+          |
+          +-> set_tracer_flag()
+          |     -> tr->current_trace->flag_changed(tr, mask, !!enabled)
+          +-> set_tracer_option()
+                -> set_tracer_option()
+                      -> __set_tracer_option()
+                          -> trace->set_flag(tr, tracer_flags->val, opts->bit, !neg);
+  ```
 * kernel/trace/trace.c
 	```c
 	/* These must match the bit postions in trace_iterator_flags */
@@ -866,7 +1039,7 @@ create_trace_option_files(struct trace_array *tr, struct tracer *tracer)
         tr->topts[tr->nr_topts].topts = topts;
         tr->nr_topts++; /*options 数组计数增加*/
         /*在 /sys/kernel/debug/tracing/options 下创建新的 option 文件*/
-				for (cnt = 0; opts[cnt].name; cnt++) {
+        for (cnt = 0; opts[cnt].name; cnt++) {
                 create_trace_option_file(tr, &topts[cnt], flags,
                                          &opts[cnt]);
                 WARN_ONCE(topts[cnt].entry == NULL,
@@ -921,7 +1094,7 @@ int __init register_tracer(struct tracer *type)
         /*新 tracer 没有定义自己的 set_flag 回调则给它一个空的 dummy_set_flag() 函数*/
         if (!type->set_flag)
                 type->set_flag = &dummy_set_flag;
-				/*新 tracer 没有定义自己的私有 flag 则给它一个空的 tracer_flags 实例*/
+        /*新 tracer 没有定义自己的私有 flag 则给它一个空的 tracer_flags 实例*/
         if (!type->flags) {
                 /*allocate a dummy tracer_flags*/
                 type->flags = kmalloc(sizeof(*type->flags), GFP_KERNEL);
@@ -935,8 +1108,8 @@ int __init register_tracer(struct tracer *type)
                 if (!type->flags->opts)
                         type->flags->opts = dummy_tracer_opt;
         /*设置私有 option 时通过这个回指的指针找到提供该私有 flag 的 tracer，并调用它提供
-				  的 set_flag 回调函数*/
-				/* store the tracer for __set_tracer_option */
+          的 set_flag 回调函数*/
+        /* store the tracer for __set_tracer_option */
         type->flags->trace = type;
         /*如果开启了 tracer 自测，会在这里先测试一下*/
         ret = run_tracer_selftest(type);

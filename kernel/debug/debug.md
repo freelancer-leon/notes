@@ -51,8 +51,101 @@ loglevel=   All Kernel Messages with a loglevel smaller than the
         5 (KERN_NOTICE)     normal but significant condition
         6 (KERN_INFO)       informational
         7 (KERN_DEBUG)      debug-level messages
-```
 
+debug       [KNL] Enable kernel debugging (events log level).
+quiet       [KNL] Disable most log messages
+```
+* include/linux/kern_levels.h
+```c
+#define KERN_SOH        "\001"          /* ASCII Start Of Header */
+#define KERN_SOH_ASCII  '\001'
+
+#define KERN_EMERG      KERN_SOH "0"    /* system is unusable */
+#define KERN_ALERT      KERN_SOH "1"    /* action must be taken immediately */
+#define KERN_CRIT       KERN_SOH "2"    /* critical conditions */
+#define KERN_ERR        KERN_SOH "3"    /* error conditions */
+#define KERN_WARNING    KERN_SOH "4"    /* warning conditions */
+#define KERN_NOTICE     KERN_SOH "5"    /* normal but significant condition */
+#define KERN_INFO       KERN_SOH "6"    /* informational */
+#define KERN_DEBUG      KERN_SOH "7"    /* debug-level messages */
+#define KERN_DEFAULT    KERN_SOH "d"    /* the default kernel loglevel */
+```
+* include/linux/printk.h
+```c
+/* printk's without a loglevel use this.. */
+#define MESSAGE_LOGLEVEL_DEFAULT CONFIG_MESSAGE_LOGLEVEL_DEFAULT
+
+/* We show everything that is MORE important than this.. */
+#define CONSOLE_LOGLEVEL_SILENT  0 /* Mum's the word */
+#define CONSOLE_LOGLEVEL_MIN     1 /* Minimum loglevel we let people use */
+#define CONSOLE_LOGLEVEL_QUIET   4 /* Shhh ..., when booted with "quiet" */
+#define CONSOLE_LOGLEVEL_DEBUG  10 /* issue debug messages */
+#define CONSOLE_LOGLEVEL_MOTORMOUTH 15  /* You can't shut this one up */
+
+/*
+ * Default used to be hard-coded at 7, we're now allowing it to be set from
+ * kernel config.
+ */
+#define CONSOLE_LOGLEVEL_DEFAULT CONFIG_CONSOLE_LOGLEVEL_DEFAULT
+
+extern int console_printk[];
+
+#define console_loglevel (console_printk[0])
+#define default_message_loglevel (console_printk[1])
+#define minimum_console_loglevel (console_printk[2])
+#define default_console_loglevel (console_printk[3])
+```
+* kernel/printk/printk.c
+```c
+int console_printk[4] = {
+        CONSOLE_LOGLEVEL_DEFAULT,       /* console_loglevel */
+        MESSAGE_LOGLEVEL_DEFAULT,       /* default_message_loglevel */
+        CONSOLE_LOGLEVEL_MIN,           /* minimum_console_loglevel */
+        CONSOLE_LOGLEVEL_DEFAULT,       /* default_console_loglevel */
+};
+```
+* init/main.c
+```c
+static int __init debug_kernel(char *str)
+{
+        console_loglevel = CONSOLE_LOGLEVEL_DEBUG;
+        return 0;
+}
+
+static int __init quiet_kernel(char *str)
+{
+        console_loglevel = CONSOLE_LOGLEVEL_QUIET;
+        return 0;
+}
+
+early_param("debug", debug_kernel);
+early_param("quiet", quiet_kernel);
+
+static int __init loglevel(char *str)
+{
+        int newlevel;
+
+        /*
+         * Only update loglevel value when a correct setting was passed,
+         * to prevent blind crashes (when loglevel being set to 0) that
+         * are quite hard to debug
+         */
+        if (get_option(&str, &newlevel)) {
+                console_loglevel = newlevel;
+                return 0;
+        }
+
+        return -EINVAL;
+}
+
+early_param("loglevel", loglevel);
+```
+* 调整
+```
+# cat /proc/sys/kernel/printk
+4	4	1	7
+# echo 8 > /proc/sys/kernel/printk
+```
 ### logbuffer
 ```
 log_buf_len=n[KMG]  Sets the size of the printk ring buffer,

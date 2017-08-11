@@ -481,7 +481,7 @@ struct vm_operations_struct {
 
 ## find_vma()
 * `find_vma()`在给定地址空间内找出 **第一个**`vm_end`大于`addr`的VMA。
-  * 注意，返回的VMA的首地址可能大于`addr`，所以`addr`并不已定在返回的VMA中。
+  * 注意，返回的VMA的首地址可能大于`addr`，所以`addr`并不一定在返回的VMA中。
 * mm/mmap.c
 ```c
 /* Look up the first VMA which satisfies  addr < vm_end,  NULL if none. */

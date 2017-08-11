@@ -1,5 +1,47 @@
 # MACVLAN
 
+## 创建端口
+* drivers/net/macvlan.c
+```c
+static int macvlan_port_create(struct net_device *dev)
+{
+  struct macvlan_port *port;
+  unsigned int i;
+  int err;
+
+  if (dev->type != ARPHRD_ETHER || dev->flags & IFF_LOOPBACK)
+    return -EINVAL;
+
+  if (netdev_is_rx_handler_busy(dev))
+    return -EBUSY;
+
+  port = kzalloc(sizeof(*port), GFP_KERNEL);
+  if (port == NULL)
+    return -ENOMEM;
+
+  port->dev = dev;
+  ether_addr_copy(port->perm_addr, dev->dev_addr);
+  INIT_LIST_HEAD(&port->vlans);
+  for (i = 0; i < MACVLAN_HASH_SIZE; i++)
+    INIT_HLIST_HEAD(&port->vlan_hash[i]);
+  for (i = 0; i < MACVLAN_HASH_SIZE; i++)
+    INIT_HLIST_HEAD(&port->vlan_source_hash[i]);
+
+  skb_queue_head_init(&port->bc_queue);
+  INIT_WORK(&port->bc_work, macvlan_process_broadcast); /*初始化广播帧处理工作*/
+
+  err = netdev_rx_handler_register(dev, macvlan_handle_frame, port);
+  if (err)
+    kfree(port);
+  else
+    dev->priv_flags |= IFF_MACVLAN_PORT;
+  return err;
+}
+```
+
+## 收包处理
+### 收包回调
+* 网卡驱动将 polling 得到的数据通过`netif_receive_skb()`提交给协议栈，该函数会一直调用到`__netif_receive_skb_core()`这里将处理 skb 相关的设备注册的回调
 * drivers/net/macvlan.c
 ```c
 /* called under rcu_read_lock() from netif_receive_skb */
@@ -44,7 +86,9 @@ static rx_handler_result_t macvlan_handle_frame(struct sk_buff **pskb)
 		}
 		/*如果源 MAC 地址不是同一父接口下，或者是同一父接口但是 bridge 或 VEPA 模式*/
 		hash = mc_hash(NULL, eth->h_dest);
-		/*如果目的 MAC 地址的 hash 在过滤列表里，则将包排回广播队列*/
+		/*如果目的 MAC 地址的 hash 在过滤列表里，则将包排回 macvlan 广播帧处理工作队列;
+		  通过 schedule_work(&port->bc_work) 唤醒工作队列，
+			work 处理回调为 macvlan_process_broadcast()*/
 		if (test_bit(hash, port->mc_filter))
 			macvlan_broadcast_enqueue(port, src, skb);
 		/*返回，表示 macvlan 并没有消耗调该包，让后续过程继续处理该包*/
@@ -85,7 +129,67 @@ out:
 	return handle_res;
 }
 ```
+### 广播帧工作队列处理回调
+* drivers/net/macvlan.c
+```c
+static void macvlan_process_broadcast(struct work_struct *w)
+{
+  struct macvlan_port *port = container_of(w, struct macvlan_port,
+                                           bc_work);
+  struct sk_buff *skb;
+  struct sk_buff_head list;
 
+  __skb_queue_head_init(&list);
+
+  spin_lock_bh(&port->bc_queue.lock);
+  skb_queue_splice_tail_init(&port->bc_queue, &list);
+  spin_unlock_bh(&port->bc_queue.lock);
+
+  while ((skb = __skb_dequeue(&list))) {
+    /*macvlan_broadcast_enqueue() 时传入的 macvlan 广播源设备*/
+    const struct macvlan_dev *src = MACVLAN_SKB_CB(skb)->src;
+
+    rcu_read_lock();
+
+    if (!src)
+      /* frame comes from an external address */
+      /*如果源设备为空，说明是来自外部的广播，将该广播发给该口下所有模式的 macvlan 接口*/
+      macvlan_broadcast(skb, port, NULL,
+                        MACVLAN_MODE_PRIVATE |
+                        MACVLAN_MODE_VEPA    |    
+                        MACVLAN_MODE_PASSTHRU|
+                        MACVLAN_MODE_BRIDGE);
+    /*如果源设备不为空，说明是 macvlan 内部的广播，且源设备为 source，passthru，private
+      在 macvlan_handle_frame() 时处理了，进不到这个函数*/
+    else if (src->mode == MACVLAN_MODE_VEPA)
+      /* flood to everyone except source */
+      /*如果源设备是 VEPA 模式，则广播给除自己之外的所有 VEPA 和 bridge 的接口*/
+      macvlan_broadcast(skb, port, src->dev,
+                        MACVLAN_MODE_VEPA |
+                        MACVLAN_MODE_BRIDGE);
+    else
+      /*
+       * flood only to VEPA ports, bridge ports
+       * already saw the frame on the way out.
+       */
+      /*如果源设备是 bridge 模式，则广播给除自己之外的所有 VEPA 模式接口。
+        birdge 模式接口在发包 macvlan_queue_xmit() 时会被广播到，所有这里无需重复处理。
+        然而问题来了，bridge 模式接口发包广播时把帧排回接收队列，顺着接收流程会走到这，而这里
+        又不处理，这是不是就是同一父接口下的 bridge mode 的 macvlan 之间 ARP request
+        可以收到但不回复的原因？*/
+      macvlan_broadcast(skb, port, src->dev,
+                        MACVLAN_MODE_VEPA);
+
+    rcu_read_unlock();
+
+    if (src)
+      dev_put(src->dev);
+    kfree_skb(skb);
+  }
+}
+```
+
+## 发包回调
 * drivers/net/macvlan.c
 ```c
 static int macvlan_queue_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -120,6 +224,8 @@ xmit_world:
   return dev_queue_xmit(skb);
 }
 ```
+
+##
 
 ## Ping 试验
 ```
