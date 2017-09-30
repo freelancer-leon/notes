@@ -527,7 +527,7 @@ static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 ...
 ```
 
-#### 让CPU歇一会
+#### cpu_relex() - 让CPU歇一会
 
 * arch/x86/include/asm/processor.h
 ```c
@@ -586,7 +586,7 @@ static __always_inline void cpu_relax(void)
 
 * 见讨论 [rep; Nop / -asm pause](https://software.intel.com/en-us/forums/watercooler-catchall/topic/309231)
 
-> NOP instruction can be between 0.4-0.5 clocks and PAUSE instruction can consume 38-40 clocks. Please refer to the whitepaper on how to measure the latency and throughput of various instructions. The REPE instruction comes in various flavors and the latency/throughput of each of them varies. Please also see below for the sample code to measure the average clocks.
+> `NOP` instruction can be between 0.4-0.5 clocks and `PAUSE` instruction can consume 38-40 clocks. Please refer to the whitepaper on how to measure the latency and throughput of various instructions. The `REPE` instruction comes in various flavors and the latency/throughput of each of them varies. Please also see below for the sample code to measure the average clocks.
 
 * 简单地说，比起用`pause`指令，用`nop`指令让CPU歇的时间更短，能耗必然会增高。
 

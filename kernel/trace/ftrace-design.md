@@ -543,7 +543,7 @@ EXPORT_SYMBOL(trace_hardirqs_off);
 
 # 主框架
 ## 初始化
-```
+```c
 init/main.c
 start_kernel()
   |   kernel/trace/trace.c
@@ -572,7 +572,7 @@ start_kernel()
 ## tracefs的初始化
 * `tracefs`文件系统是借助`fs_initcall()`的方式来初始化的
 * 为保证向后兼容那些挂载`debugfs`来获得跟踪功能的工具，`tracefs`自动挂载到`debugfs/tracing`目录下，即`/sys/kernel/debug/tracing`目录
-```
+```c
 fs_initcall(tracer_init_tracefs)
   +-----------+
   +-> trace_access_lock_init()
@@ -881,7 +881,7 @@ flag_changed | 当通用的 flag 发生改变时调用，让 tracer 有机会决
 	```
 * 打开`/sys/kernel/debug/tracing/trace_options`文件时会通过`tracing_trace_options_open()`设置`seq_read`时的回调为`tracing_trace_options_show()`
 * 写`/sys/kernel/debug/tracing/trace_options`文件时最终会调用 tracer 的`set_flag`
-  ```
+  ```c
   tracing_trace_options_write()
     -> trace_set_options()
           |

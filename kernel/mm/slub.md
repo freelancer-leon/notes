@@ -37,8 +37,32 @@
 
 # slub调试
 
-## 内核启动参数
+## Slub的debug机制
 
+> 了解slub的debug机制之前，先要弄清楚可能会出现哪些问题，无论是slab还是slub，问题无非是以下几类：
+>
+> * **内存泄露（leak）**，alloc之后忘了free，导致内存占用不断增长；
+> * **越界（overrun）**，访问了alloc分配的区域之外的内存，覆盖了不属于自己的数据；
+> * **使用已经释放的内存（use after free）**，正常情况下，已经被free释放的内存是不应该再被读写的，否则就意味着程序有bug；
+> * **使用未经初始化的数据（use uninitialised bytes）**，缺省模式下alloc分配的内存是不被初始化的，内存值 是随机的，直接使用的话后果可能是灾难性的。
+>
+> Slub提供了red zone和poisoning等debug机制来检测以上问题。
+>
+> * **Red zone** 来自于橄榄球术语，是指球场底线附近的区域，slub通过在每一个对象后面额外添加一块red zone区域来帮助检测越界(overrun)问题，在red zone里填充了特征字符，如果代码访问到了red zone就意味着越界了。
+> * **Poisoning** 是通过往slub对象中填充特征字符的方式来检测use-after-free、use-uninitialised等问题，比如在分配slub对象时填充0x5a，在释放时填充0x6b，然后debug代码检查时如果看到本该是0x6b的位置变成了别的内容，就可能是发生了use-after-free，而本该是0x5a的位置如果变成了其它内容就意味着可能是use-uninitialised问题。
+>
+> 更多的poison字节定义参见以下文件： /lib/modules/$(uname -r)/build/include/linux/poison.h
+>
+> ![http://linuxperf.com/wp-content/uploads/2017/08/slub.png](pic/mm_slub_obj.png)
+>
+> （图）SLUB对象的格式
+> * 绿色的 Payload表示分配出去的 slub object；
+> * slub debug机制需要占用额外的内存，比如 Red zone，还有，为了追溯 slub object的分配和释放过程，需要额外的空间来存放 stack trace，即图中的 Tracking/Debugging；
+> * 图中的 FP是 Free Pointer的缩写，处于 free状态的 object是以链表的形式串在一起的，FP就是链表指针。
+
+以上内容摘自[如何诊断SLUB问题](http://linuxperf.com/?p=184)，非常准确和清晰，因此不再另写。
+
+## 内核启动参数
 ```
 slub_debug                              # Enable full debugging for all slabs.
 slub_debug=<Debug-Options>              # Enable options for all slabs
@@ -55,10 +79,18 @@ Possible debug options are
     -       Switch all debugging off (useful if the kernel is configured with CONFIG_SLUB_DEBUG_ON)
 ```
 
+debug option | sysfs debug file	| 功能
+---|---|---
+F |	sanity_checks |	激活完整性检查功能，在特定的环节比如free的时候增加各种条件判断，验证数据是否完好。
+Z |	red_zone | 用于检测overrun。通过在slub object后面插入一块额外的红色区域（橄榄球术语），一旦进入就表示有错。
+P |	poison | 用于检测use-after-free和use-uninitialised。给slub对象填充特征字符，比如在分配时填充0x5a，在释放时填充0x6b，根据特征字符是否被覆盖来检测是否出错。更多的poison字节定义参见： /lib/modules/$(uname -r)/build/include/linux/poison.h
+U |	store_user | 在slub object后面添加一块额外的空间，记录调用alloc/free的stack trace
+T |	trace |	在slub object alloc/free时，向系统日志中输出相关信息，包括stack trace
+
 * 系统启动后也可以调整slub调试功能，但比较有限。例如，打开某个slab的trace功能：
-```
-echo 1 > /sys/kernel/slab/<slab name>/trace
-```
+  ```
+  echo 1 > /sys/kernel/slab/<slab name>/trace
+  ```
 
 #### 为什么有的slab不能打开trace？
 * 例如：
@@ -454,4 +486,6 @@ diff --git a/mm/slab_common.c b/mm/slab_common.c
 ```
 
 ## 参考资料
+- Linux Kernel v4.12
 - [怎样诊断SLAB泄露问题](http://linuxperf.com/?p=148)
+- [如何诊断SLUB问题](http://linuxperf.com/?p=184)

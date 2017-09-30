@@ -9,7 +9,7 @@
 	* 监听 socket 其实是有两个队列：
 		* 完全建立连接，等待被`accept`的socket的队列，长度由`listen()`的`backlog`参数指定，应用程序来设定；
 		* 未完成的连接请求队列，长度由`/proc/sys/net/ipv4/tcp_max_syn_backlog`指定，系统级的设定。
-	* `backlog`能支持的最大队列长度受`/proc/sys/net/core/somaxconn`的限制，超过限制会被默然截断。
+	* `backlog`能支持的最大队列长度受`/proc/sys/net/core/somaxconn`的限制，超过限制会被悄然截断。
 
 ### 当 *接受队列* 满了，还有连接收到对端的 `ACK` 而需从 *未完成队列* 移入时的行为
 * 比如说，服务器端没有及时调用`accept()`消耗掉 *接收队列* 里的连接，又有新的连接连入并回复`ACK`时。
@@ -99,3 +99,5 @@
 * [man tcp](http://man7.org/linux/man-pages/man7/tcp.7.html)
 * [proc/sys/net/ipv4/下各项的意义](http://lijichao.blog.51cto.com/67487/308509)
 * [Linux之TCPIP内核参数优化](http://www.cnblogs.com/fczjuever/archive/2013/04/17/3026694.html)
+* [TCP/IP重传超时--RTO](http://www.orczhou.com/index.php/2011/10/tcpip-protocol-start-rto/)
+* [TCP的超时与重传](http://blog.csdn.net/sjin_1314/article/details/10254779)

@@ -677,3 +677,17 @@ static int intel_gtt_init(void)
 
 * GPU命令流
 ![GPU command flow](pic/graph-gpu-cmd-flow.png)
+
+# encoder_type
+One of the `DRM_MODE_ENCODER_<foo>` types in `drm_mode.h`. The following encoder types are defined thus far:
+
+encoder | connector
+---|---
+DRM_MODE_ENCODER_DAC | VGA and analog on DVI-I/DVI-A.
+DRM_MODE_ENCODER_TMDS | DVI, HDMI and (embedded) DisplayPort.
+DRM_MODE_ENCODER_LVDS | display panels, or in general any panel with a proprietary parallel connector.
+DRM_MODE_ENCODER_TVDAC | TV output (Composite, S-Video, Component, SCART).
+DRM_MODE_ENCODER_VIRTUAL | virtual machine displays
+DRM_MODE_ENCODER_DSI | panels connected using the DSI serial bus.
+DRM_MODE_ENCODER_DPI | panels connected using the DPI parallel bus.
+DRM_MODE_ENCODER_DPMST | special fake encoders used to allow mutliple DP MST streams to share one physical encoder.

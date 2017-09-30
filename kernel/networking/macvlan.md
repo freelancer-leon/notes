@@ -255,3 +255,14 @@ dhclient -v macvlan3
 * macvlan[2-3] (non-bridge) ====ping====> macvlan0 (bridge)
   * macvlan[2-3]: see ARP the request (broadcast), go through upper interface, not forward to macvlan0
   * macvlan0: cannot see the ARP request (broadcast)
+
+# References
+- [Linux Networking: MAC VLANs and Virtual Ethernets](http://www.pocketnix.org/posts/Linux%20Networking:%20MAC%20VLANs%20and%20Virtual%20Ethernets)
+- [commit: 618e1b7482f7a8a4c6c6e8ccbe140e4c331df4e9 - macvlan: implement bridge, VEPA and private mode](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=618e1b7482f7a8a4c6c6e8ccbe140e4c331df4e9)
+- [Linux 上虚拟网络与真实网络的映射](https://www.ibm.com/developerworks/cn/linux/1312_xiawc_linuxvirtnet/index.html)
+- [图解几个与Linux网络虚拟化相关的虚拟网卡-VETH/MACVLAN/MACVTAP/IPVLAN](http://blog.csdn.net/dog250/article/details/45788279)
+- [linux 网络虚拟化： macvlan](http://cizixs.com/2017/02/14/network-virtualization-macvlan)
+- [Macvlan Bridge Mode Example Usage](https://docs.docker.com/engine/userguide/networking/get-started-macvlan/#macvlan-bridge-mode-example-usage)
+- [About Veth and Macvlan](https://docs.oracle.com/cd/E37670_01/E37355/html/ol_mcvnbr_lxc.html)
+- [Docker Networking: macvlan bridge](http://hicu.be/docker-networking-macvlan-bridge-mode-configuration)
+- [Edge Virtual Bridging](http://wikibon.org/wiki/v/Edge_Virtual_Bridging)

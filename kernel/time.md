@@ -104,7 +104,6 @@ EXPORT_SYMBOL(get_jiffies_64);
 EXPORT_SYMBOL(jiffies);
 ```
 * 32位体系结构不能原子地一次访问64位变量中的两个32位数值。因此在读取`jiffies`时需用seq锁对变量`jiffies`进行锁定。
-
 * 这里用`jiffies_64`变量的初值覆盖`jiffies`变量
   * arch/x86/kernel/vmlinux.lds.S
   ```c
@@ -118,7 +117,7 @@ EXPORT_SYMBOL(jiffies);
   jiffies_64 = jiffies;
   #endif
   ```
-* `jiffies`取整个64为`jiffies_64`变量的低32位，时间管理代码使用整个64位，来避免整个64位的溢出。
+* `jiffies`取整个64位`jiffies_64`变量的低32位，时间管理代码使用整个64位，来避免整个64位的溢出。
 * 访问`jiffies`的代码仅会读取`jiffies_64`的低32位。通过`get_jiffies_64()`读取整个64位数值。
 
 ## jiffies的回绕
@@ -1252,3 +1251,10 @@ EXPORT_SYMBOL(schedule_timeout_idle);
 # Profiling
 * 时钟中断处理程序调用profile驱动程序的中断处理函数，根据pc（程序计数器）所在函数的范围，使对应的内部计数器加1。
 * 没有计入花在执行时钟中断处理程序和屏蔽时钟级中断的代码上的时间。
+
+# References
+- [Linux时间子系统之一：clock source（时钟源）](http://blog.csdn.net/droidphone/article/details/7975694)
+- [Linux时间子系统之二：表示时间的单位和结构](http://blog.csdn.net/DroidPhone/article/details/7979295)
+- [Linux时间子系统之三：时间的维护者：timekeeper](http://blog.csdn.net/droidphone/article/details/7989566)
+- [Linux时间子系统之四：定时器的引擎：clock_event_device](http://blog.csdn.net/droidphone/article/details/8017604)
+- [Linux时间子系统之五：低分辨率定时器的原理和实现](http://blog.csdn.net/droidphone/article/details/8051405)
