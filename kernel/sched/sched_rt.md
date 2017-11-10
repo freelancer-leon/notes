@@ -841,7 +841,7 @@ void sched_avg_update(struct rq *rq)
 * kernel/sched/sched.h
 ```c
 static inline u64 sched_avg_period(void)
-{       /*周期的值是设定的 sysctl_sched_time_avg 的1/2*/
+{       /* 周期的值是设定的 sysctl_sched_time_avg 的1/2 */
         return (u64)sysctl_sched_time_avg * NSEC_PER_MSEC / 2;
 }
 ```
@@ -869,7 +869,7 @@ static void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
 {
         struct sched_rt_entity *rt_se;
         int cpu = cpu_of(rq_of_rt_rq(rt_rq)); /*实时调度队列所在的 CPU*/
-
+        /*rt_se 为该实时调度队列所属的实时调度实体*/
         rt_se = rt_rq->tg->rt_se[cpu];
         /*如果该调度实体存在则从队列上移除它，否则只对队列的顶层的一些数据进行变更*/
         if (!rt_se)
@@ -1118,6 +1118,7 @@ short int | bit code | unsigned short int | 5 bit maximum = 31
 * RT throttling 一旦出现什么时候会结束呢？换句话来说，实时调度队列积累的实时任务运行时间`rt_rq->rt_time`什么时候会减小？这是我们接下来要观察的问题。
 * 这里主要依赖的机制是高精度定时器，基本过程如下：
   * 该定时器在内核初始化时，由`sched_init()`根据不同的条件调用`init_rt_bandwidth()`初始化定时器，回调函数为`sched_rt_period_timer()`。
+  * 该定时器在该任务组没有进程时并不会工作，通过`/proc/timer_list`无法看到该定时器在排队。
   * 在有进程进入队列时，如果该队列的任务组的周期性定时器尚未启动，则会在此时启动。
   * 当定时器到期时调用注册的回调函数`sched_rt_period_timer()`进行检查。
 
@@ -1219,7 +1220,7 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
            hrtimer_forward_now() 返回 overrun = 0，循环结束。
         b) 某时刻 T1 为 12，此时旧定时器时刻 timer1 为 6，那么调用 hrtimer_forward_now()，
            新定时器时刻 timer2 为 6 + 8 = 14，overrun = 1。
-           由于某种原因 do_sched_rt_period_timer() 得到运行的时间过长（注意，它处于
+           由于某种原因 do_sched_rt_period_timer() 得到运行的时间过长（注意，它不在
            rt_b->rt_runtime_lock 保护的临界区），返回时时刻 T2 为 16，
            T2 在 timer2 之后，新定时器时间已经错过了，这种情况也需要处理。再次调用
            hrtimer_forward_now()，将更新定时器 14 + 8 = 22，返回 overrun = 1，需要下
@@ -1667,6 +1668,17 @@ static void put_prev_task_rt(struct rq *rq, struct task_struct *p)
 ```c
 #define rt_entity_is_task(rt_se) (!(rt_se)->my_q)
 ```
+
+### 问题：如果一个`SCHED_FIFO`进程被中断打断，抢占是开启的，不考虑进程迁移情况，也没有新的高优先级实时进程插进运行队列，中断退出时会否因为内核抢占而被换走？
+* 之所以会有这样一个疑问是因为在普通任务调度上会存在这样的情况：
+  * 对于普通任务调度来说，正在执行的任务是不在运行队列（红黑树）上的（尽管它的`sched_entity->on_rq`域的值 > 0）。
+  * 在`__schedule()`时，普通任务调度的`put_prev_task_fair()`会有一个入列后再遴选的动作，由于`vruntime`的增加，原进程很可能不再是最合适的任务了。
+* 对于实时调度，这个问题涉及到的一个关键细节是，正在执行的实时进程在不在实时运行队列上？
+  * 对于实时任务调度来说，正在执行的任务还在实时运行队列上，并没被移出过队列。
+  * 在`__schedule()`时，实时调度的`put_prev_task_rt()`并没有操作实时运行队列。
+  * 所以如果不考虑进程迁移和新的高优先级实时进程插进运行队列的情况，`pick_next_rt_entity()`选中的仍然是原来位置上的任务，也就是原进程。
+* 如果抢占是关闭的，无论是普通任务还是实时任务，即使有更合适的任务（对于普通任务调度，有`vruntime`更小的任务；对于实时调度，有高优先的任务进入运行队列），也不会发生内核抢占。
+  * 记得，`preempt_enable()`是内核抢占的一个点，所以高优先任务会在低优先级任务开启抢占的时候被调度。
 
 # 进程退出
 * 实时任务的退出队列时从`dequeue_task_rt()`开始看起。

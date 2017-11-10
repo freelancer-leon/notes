@@ -1252,9 +1252,128 @@ EXPORT_SYMBOL(schedule_timeout_idle);
 * 时钟中断处理程序调用profile驱动程序的中断处理函数，根据pc（程序计数器）所在函数的范围，使对应的内部计数器加1。
 * 没有计入花在执行时钟中断处理程序和屏蔽时钟级中断的代码上的时间。
 
+# Debug
+## /proc/timer_list
+* 源码 `kernel/time/timer_list.c`
+* active timers 的格式
+
+timer 索引 | timer 地址 | timer 到期时执行的回调函数名 | S:timer 当前状态
+---|---|---|---
+4 | `<c0923c98>` | sched_rt_period_timer | S:01
+
+expires at | 到期的软时刻 | - | 到期的时刻 | nsecs | [in | 到期的软时间 | to | 到期的时间 | nsecs]
+---|---|---|---|---|---|---|---|---|---
+expires at | 69210000000000 | - | 69210000000000 | nsecs | [in | 624168272 | to | 624168272 | nsecs]
+
+### `/proc/timer_list`例子
+```# cat /proc/timer_list
+Timer List Version: v0.6
+HRTIMER_MAX_CLOCK_BASES: 2
+now at 69209375831728 nsecs
+
+cpu: 0
+ clock 0:
+  .base:       c2a5daf8
+  .index:      0
+  .resolution: 1 nsecs
+  .get_time:   ktime_get_real
+  .offset:     1509435077983117381 nsecs
+active timers:
+ clock 1:
+  .base:       c2a5db28
+  .index:      1
+  .resolution: 1 nsecs
+  .get_time:   ktime_get
+  .offset:     0 nsecs
+active timers:
+#0: <c2a5db90>, tick_sched_timer, S:01
+# expires at 69209376000000-69209376000000 nsecs [in 168272 to 168272 nsecs]
+#1: <eac95aa8>, hrtimer_wakeup, S:01
+# expires at 69209549034720-69209549284718 nsecs [in 173202992 to 173452990 nsecs]
+#2: <eb055a08>, hrtimer_wakeup, S:01
+# expires at 69209905092186-69209905697621 nsecs [in 529260458 to 529865893 nsecs]
+#3: <eb2f1e88>, hrtimer_wakeup, S:01
+# expires at 69209961466124-69209961516124 nsecs [in 585634396 to 585684396 nsecs]
+#4: <c0923c98>, sched_rt_period_timer, S:01
+# expires at 69210000000000-69210000000000 nsecs [in 624168272 to 624168272 nsecs]
+#5: <eb2897c0>, sched_rt_period_timer, S:01
+# expires at 69210000000000-69210000000000 nsecs [in 624168272 to 624168272 nsecs]
+...
+.expires_next   : 69209376000000 nsecs
+.hres_active    : 1
+.nr_events      : 17692832
+.nr_retries     : 168
+.nr_hangs       : 0
+.max_hang_time  : 0 nsecs
+.nohz_mode      : 0
+.idle_tick      : 0 nsecs
+.tick_stopped   : 0
+.idle_jiffies   : 0
+.idle_calls     : 0
+.idle_sleeps    : 0
+.idle_entrytime : 0 nsecs
+.idle_waketime  : 0 nsecs
+.idle_exittime  : 0 nsecs
+.idle_sleeptime : 0 nsecs
+.last_jiffies   : 0
+.next_jiffies   : 0
+.idle_expires   : 0 nsecs
+jiffies: 17227343
+
+
+Tick Device: mode:     1
+Per CPU device: 0
+Clock Event Device: decrementer
+max_delta_ns:   42950102504
+min_delta_ns:   1000
+mult:           214746217
+shift:          32
+mode:           3
+next_event:     69209376000000 nsecs
+set_next_event: decrementer_set_next_event
+set_mode:       decrementer_set_mode
+event_handler:  hrtimer_interrupt
+retries:        0
+```
+
+## /proc/timer_stats
+* 内核选项 `CONFIG_TIMER_STATS`
+* 源码 `kernel/time/timer_stats.c`
+* 格式
+
+timer 调用的次数 | 启动 timer 的 PID | 启动 timer 的进程名 | 启动 timer 的函数名 | (timer到期时执行的回调函数名)
+---|---|---|---|---
+223|27|watchdog/1|start_bandwidth_timer|(sched_rt_period_timer)
+
+### `/proc/timer_stats`例子
+```
+# echo 1 > /proc/timer_stats
+# cat /proc/timer_stats
+Timer Stats Version: v0.3
+Sample period: 347.695 s
+Collection: active
+ 2844,     0 swapper/7        hrtimer_start_range_ns (ehci_hrtimer_func)
+ 19379,  3037 chromium-browse  schedule_hrtimeout_range_clock (hrtimer_wakeup)
+    1,     0 swapper/4        hrtimer_start_range_ns (tick_sched_timer)
+ 8060,     0 swapper/2        hrtimer_start_range_ns (tick_sched_timer)
+ 4375,     0 swapper/5        hrtimer_start_range_ns (tick_sched_timer)
+ 9519,     7 rcu_sched        rcu_gp_kthread (process_timeout)
+ 6925,  3475 chromium-browse  hrtimer_start_range_ns (hrtimer_wakeup)
+ 20862,  3156 SoftwareVsyncTh  hrtimer_start_range_ns (hrtimer_wakeup)
+ 7652,     0 swapper/3        hrtimer_start_range_ns (tick_sched_timer)
+3176D,    99 kworker/5:1      mod_delayed_work_on (delayed_work_timer_fn)
+  223,    27 watchdog/1       start_bandwidth_timer (sched_rt_period_timer)
+...
+254916 total events, 733.159 events/sec
+
+```
+
 # References
 - [Linux时间子系统之一：clock source（时钟源）](http://blog.csdn.net/droidphone/article/details/7975694)
 - [Linux时间子系统之二：表示时间的单位和结构](http://blog.csdn.net/DroidPhone/article/details/7979295)
 - [Linux时间子系统之三：时间的维护者：timekeeper](http://blog.csdn.net/droidphone/article/details/7989566)
 - [Linux时间子系统之四：定时器的引擎：clock_event_device](http://blog.csdn.net/droidphone/article/details/8017604)
 - [Linux时间子系统之五：低分辨率定时器的原理和实现](http://blog.csdn.net/droidphone/article/details/8051405)
+- [Linux时间子系统之六：高精度定时器（HRTIMER）的原理和实现](http://blog.csdn.net/droidphone/article/details/8074892)
+- [Linux时间子系统之七：定时器的应用--msleep()，hrtimer_nanosleep()](http://blog.csdn.net/DroidPhone/article/details/8104433)
+- [Linux时间子系统之八：动态时钟框架（CONFIG_NO_HZ、tickless）](http://blog.csdn.net/DroidPhone/article/details/8112948)

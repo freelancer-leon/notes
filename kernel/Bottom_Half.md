@@ -265,6 +265,13 @@ void irq_exit(void)
 ```
 
 ### `ksoftirqd`中断处理进程
+* 每个CPU一个的辅助处理softirq（和tasklet）的内核线程
+* 引入ksoftirqd的原因：
+  * 在中断处理函数返回时处理softirq是最常见的softirq处理时机
+  * softirq触发的频率有时很高，而有的softirq还会重新触发自己以便得到再次执行
+  * 为防止用户空间进程饥饿，作为折中的方案，内核不会立即处理重新触发的softirq
+  * 当大量softirq出现时，内核会唤醒一组内核线程来处理这些负载，即**ksoftirqd**
+* ksoftirqd每次迭代都会最终调用`schedule()`让其他进程有机会得到处理
 ```
 early_initcall(spawn_ksoftirqd)
 
@@ -597,57 +604,6 @@ EXPORT_SYMBOL(tasklet_init);
   * 会等待正在执行的tasklet执行完毕
   * 注意，其他地方仍有可能将tasklet再度放回链表
   * 可能会引起休眠，**禁止在中断上下文使用**
-
-## ksoftirqd
-* 每个CPU一个的辅助处理softirq（和tasklet）的内核线程
-* 引入ksoftirqd的原因：
-  * 在中断处理函数返回时处理softirq是最常见的softirq处理时机
-  * softirq触发的频率有时很高，而有的softirq还会重新触发自己以便得到再次执行
-  * 为防止用户空间进程饥饿，作为折中的方案，内核不会立即处理重新触发的softirq
-  * 当大量softirq出现时，内核会唤醒一组内核线程来处理这些负载，即**ksoftirqd**
-* ksoftirqd每次迭代都会最终调用`schedule()`让其他进程有机会得到处理
-* kernel/softirq.c
-```c
-static int ksoftirqd_should_run(unsigned int cpu)
-{
-    return local_softirq_pending();
-}
-
-static void run_ksoftirqd(unsigned int cpu)
-{
-    local_irq_disable();
-    if (local_softirq_pending()) {
-        /*
-         * We can safely run softirq on inline stack, as we are not deep
-         * in the task stack here.
-         */
-        __do_softirq();
-        local_irq_enable();
-        cond_resched_rcu_qs();
-        return;
-    }
-    local_irq_enable();
-}
-...
-
-static struct smp_hotplug_thread softirq_threads = {
-    .store          = &ksoftirqd,
-    .thread_should_run  = ksoftirqd_should_run,
-    .thread_fn      = run_ksoftirqd,
-    .thread_comm        = "ksoftirqd/%u",
-};
-
-static __init int spawn_ksoftirqd(void)
-{
-    register_cpu_notifier(&cpu_nfb);
-
-    BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
-
-    return 0;
-}
-early_initcall(spawn_ksoftirqd);
-```
-
 
 # 工作队列（work queue)
 

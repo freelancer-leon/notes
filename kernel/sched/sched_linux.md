@@ -607,7 +607,7 @@ Per-CPU相关代码见：
 ### 计算优先级
 * `static_prio` 通常是优先级计算的起点
 * `prio` 是调度器关心的优先级，通常由`effective_prio()`计算，计算时考虑当前的优先级的值
-* `prio` 有可能会因为*非实时进程*要使用实时互斥量(RT-Mutex)而临时提高优先级至实时优先级
+* `prio` 有可能会因为 *非实时进程* 要使用实时互斥量(RT-Mutex)而临时提高优先级至实时优先级
 * `normal_prio` 通常由`normal_prio()`计算，计算时考虑调度策略的因素
 
 ```c
@@ -629,7 +629,7 @@ static inline int __normal_prio(struct task_struct *p)
 static inline int normal_prio(struct task_struct *p)
 {
     int prio;
-
+    /*基于进程静态优先级和调度策略计算优先级，不考虑优先级继承*/
     if (task_has_dl_policy(p))
         prio = MAX_DL_PRIO-1;
     else if (task_has_rt_policy(p))
@@ -656,12 +656,12 @@ static int effective_prio(struct task_struct *p)
      */
     if (!rt_prio(p->prio))
         return p->normal_prio;
-    return p->prio;
+    return p->prio; /*返回继承的 RT boosted 优先级*/
 }
 ```
 * `fork`子进程时
   * 子进程的静态优先级`static_prio`继承自父进程
-  * 动态优先级`prio`设置为父进程的普通优先级`normal_prio`。这是为了确保实时互斥量引起的优先级提高**不会**传递到子进程
+  * 动态优先级`prio`设置为父进程的普通优先级`normal_prio`。这是为了确保实时互斥量引起的优先级提高 **不会** 传递到子进程
 
 
 ## 创建进程

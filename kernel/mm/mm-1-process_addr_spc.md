@@ -702,6 +702,19 @@ static inline pteval_t pte_flags(pte_t pte)
   * 对于链接到同一共享库的 **不同程序** 来说，则可以从共享库的映射中获得好处，因为同一共享库的`.text`只会映射到同一物理页。如，bash 和 vi 都链接到的 libc.so 共享同一物理页。
   * 用静态链接显然就没有这一好处了，静态链接实际上把内容合并到程序的二进制文件中，在运行不同程序时无法区分这些相同的内容，因此必然会消耗更多的内存。
 
+## 页表为什么要分级？
+* [Linux内核4级页表的演进](http://larmbr.com/2014/01/19/the-evolution-of-4-level-page-talbe-in-linux/)讲的蛮好
+* 简单地说，分级的目的是为了 **节省内存**
+  * 如果采用一个简单的大页表一对一映射虚拟地址到物理地址，需要较多的 **连续的物理页面(phsical page)**，因为是 **一对一** 映射，此时又未分级，所以必须是 **连续的**。
+  * 如果进程比较多，则需要大量的连续物理页，这不现实。
+  * 然而，在现实中，程序存在局部化特征, 这意味着在特定的时间内只有部分内存会被频繁访问，具体点，进程空间中的`.text`段(即程序代码), 堆， 共享库，栈都是固定在进程空间的某个特定部分，这样导致进程空间其实是非常稀疏的。
+  * 所谓 **分级** 简单说就是，把整个进程空间分成区块（block），区块下面可以再细分，这样在内存中只要常驻某个区块的页表即可，这样可以大量节省内存。
+  * 这里的套路是：
+    * 区块中的条目存的是下一级区块的 **基址** （物理地址）
+    * 将虚拟地址的不同位分别作为不同级别区块的 **索引**（也就是 **偏移**）
+    * 只要提供 *最上级页目录的基址* 和 *虚拟地址*，即可采用 **基址 + 偏移** 的方式逐级索引至物理地址。
+  * 每个区块所需的空间并不大，而进程空间中未使用的地址无需建立对应的区块，因此每个进程的页表用的空间并不多，这样目的就达到了。
+
 # 参考资料
 
 * [How the Kernel Manages Your Memory](http://duartes.org/gustavo/blog/post/how-the-kernel-manages-your-memory/)
@@ -709,3 +722,6 @@ static inline pteval_t pte_flags(pte_t pte)
 * [The Performance Impact of Kernel Prefetching on Buffer Cache Replacement Algorithms](http://www.cs.arizona.edu/projects/dream/papers/sigm05_prefetch.pdf)
 * [Linux Cache 机制探究](http://www.penglixun.com/tech/system/linux_cache_discovery.html)
 * [Using the Microprocessor MMU for Software Protection in Real-Time Systems](http://www.lynx.com/using-the-microprocessor-mmu-for-software-protection-in-real-time-systems/)
+* [Linux内核4级页表的演进](http://larmbr.com/2014/01/19/the-evolution-of-4-level-page-talbe-in-linux/)
+* [地址空间的归纳总结](http://alanwu.blog.51cto.com/3652632/1082195)
+* [PCI设备的地址空间](http://www.cnblogs.com/zszmhd/archive/2012/05/08/2490105.html)
