@@ -126,7 +126,7 @@ END(function_hook)
 ### 开启`CONFIG_DYNAMIC_FTRACE`
 * 最初`mcount`的作用是直接从函数返回。
 * arch/x86/kernel/mcount_64.S
-```nasm
+```assembly
 ENTRY(function_hook)
         retq
 END(function_hook)
@@ -196,7 +196,7 @@ ENTRY(ftrace_graph_caller)
         movq $0, %rdx   /* No framepointers needed */
 #else
         /* Save address of the return address of traced function */
-        leaq 8(%rdx), %rsi     /*保存被跟踪的函数的返回地址*/
+        leaq 8(%rdx), %rsi     ;保存被跟踪的函数的返回地址
         /* ftrace does sanity checks against frame pointers */
         movq (%rdx), %rdx
 #endif
@@ -289,11 +289,11 @@ GLOBAL(return_to_handler)
 
         call ftrace_return_to_handler
 
-        movq %rax, %rdi     /*函数返回值保存在%rax，把它放到%rdi*/
+        movq %rax, %rdi     ;函数返回值保存在%rax，把它放到%rdi
         movq 8(%rsp), %rdx
         movq (%rsp), %rax
         addq $24, %rsp
-        jmp *%rdi           /*跳到原返回地址*/
+        jmp *%rdi           ;跳到原返回地址
 ```
 
 # irqsoff/preemptoff/preemptirqsoff tracer

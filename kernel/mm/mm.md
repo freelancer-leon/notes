@@ -225,6 +225,7 @@ struct zone {
       return (unsigned long) page_address(page);
   }
   EXPORT_SYMBOL(__get_free_pages);
+  ...
   ```
 
 * 分配单个页面

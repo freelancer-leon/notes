@@ -1241,7 +1241,7 @@ static inline void balance_callback(struct rq *rq)
    * IPI to that CPU and let that CPU push the RT task to where
    * it should go may be a better scenario.
    */
-  /*为了避免多个 CPU 同时降低其优先级的雷霆群体攻击（回忆之前所说的，进程优先级降低
+  /*为了避免多个 CPU 同时降低其优先级的惊群攻击（回忆之前所说的，进程优先级降低
     的时候会引发拉迁移），且有一个 CPU 上有一个实时任务可以被迁移并等待运行，这样其
     他的 CPU 会尽可能尝试获取那个 CPU 的 `rq lock` 从而造成一次大型的争用，在这
     种场景下更好的方案是，发送一个 IPI 给那个 CPU，让它把那个实时任务推到它该去的

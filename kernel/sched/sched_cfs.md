@@ -12,7 +12,7 @@
 	- [新进程进入队列](#新进程进入队列)
 	- [新进程能否抢占当前进程](#新进程能否抢占当前进程)
 - [周期性调度](#周期性调度)
-	- [周期性抢占检查check_preempt_tick](#周期性抢占检查check_preempt_tick)
+	- [周期性调度检查check_preempt_tick](#周期性调度检查check_preempt_tick)
 - [进程唤醒](#进程唤醒)
 - [选择下一个进程](#选择下一个进程)
 	- [CFS的pick_next_task实现](#CFS的pick_next_task实现)
@@ -230,10 +230,10 @@ static void update_curr(struct cfs_rq *cfs_rq)
     curr->exec_start = now;
 
     ...
-    /* sum_exec_runtime是进程累计使用的CPU时间，因此是物理时间。在此处更新*/
+    /* sum_exec_runtime是进程累计使用的CPU时间，因此是实际时间。在此处更新*/
     curr->sum_exec_runtime += delta_exec;
     ...
-    /* vruntime是进程累计使用的虚拟时间，需要将exec_start经过加权运算后得到 */
+    /* vruntime是进程累计使用的虚拟时间，需要将delta_exec经过加权运算后得到 */
     curr->vruntime += calc_delta_fair(delta_exec, curr);
     /*因为有进程的vruntime变了，因此该队列的min_vruntime可能也发生了变化，更新它*/
     update_min_vruntime(cfs_rq);
@@ -242,7 +242,7 @@ static void update_curr(struct cfs_rq *cfs_rq)
 ```
 
 #### 计算虚拟运行时间增量calc_delta_fair
-* 函数`calc_delta_fair()`根据传入的物理时间增量以及进程的权重计算虚拟时间的增量
+* 函数`calc_delta_fair()`根据传入的实际时间增量以及进程的权重计算虚拟时间的增量
 * 计算公式之前讨论过，计算的细节`__calc_delta()`后面在专门讨论
   * kernel/sched/fair.c
 ```c
@@ -257,7 +257,7 @@ static inline u64 calc_delta_fair(u64 delta, struct sched_entity *se)
     return delta;
 }
 ```
-* 根据CFS的设计，`nice`为**0**的进程的权重为`NICE_0_LOAD`，此时物理时间和虚拟时间是相等的。
+* 根据CFS的设计，`nice`为**0**的进程的权重为`NICE_0_LOAD`，此时实际时间和虚拟时间是相等的。
 
 #### 更新CFS运行队列的min_vruntime
 * `update_min_vruntime`函数通常要从**当前进程**与**运行队列里的进程**中选出**最小**的`vruntime`作为CFS运行队列的`min_vruntime`
@@ -296,11 +296,11 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 ### 创建新进程时的place_entity()
 * `task_fork_fair()`是这么调用`place_entity()`的
   * kernel/sched/fair.c
-```c
-  if (curr)
-      se->vruntime = curr->vruntime;
-  place_entity(cfs_rq, se, 1);
-```
+	```c
+	  if (curr)
+	      se->vruntime = curr->vruntime;
+	  place_entity(cfs_rq, se, 1);
+	```
 
 * `place_entity()`函数我们在此只关心`initial = 1`的部分。
   * kernel/sched/fair.c
@@ -321,47 +321,47 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
     ...
     /* ensure we never gain time by being placed backwards. */
     /*此处表明, 对于新进程而言, 新进程的vruntime值是大于等于父进程vruntime值的。
-      所以后面如果没有设置子进程先运行, 则只要父进程本次调度运行的实际时间没有超过
-      调度周期分配的实际时间值, 父进程就会先运行, 否则, 父子进程的先后执行顺序不确定*/
+      所以后面如果没有设置子进程先运行, 则只要父进程本次调度运行的实际时间没有超过调度
+      周期分配的实际时间值, 父进程就会继续运行, 否则, 父子进程的先后执行顺序不确定*/
     se->vruntime = max_vruntime(se->vruntime, vruntime);
 }
 ```
 * 新进程的初始`vruntime`值就以它所在运行队列的`min_vruntime`以及父进程的`vruntime`为基础来设置，与旧进程保持在合理的差距范围内。
 
-* `sched_features`是控制调度器特性的开关，每个bit表示调度器的一个特性。在`kernel/sched/features.h`文件中记录了全部的特性。见《Professional Linux Kernel Architecture》
-> Note that the real kernel sources will execute portions of the code depending on outcomes of sched_feature queries. The CF
-scheduler supports some ‘‘configurable’’ features, but they can only be turned on and off in debugging mode — otherwise, the set
-of features is fixed.
+* `sched_features`是控制调度器特性的开关，每个 bit 表示调度器的一个特性。在`kernel/sched/features.h`文件中记录了全部的特性。见《Professional Linux Kernel Architecture》
+> Note that the real kernel sources will execute portions of the code depending on outcomes of sched_feature queries. The CF scheduler supports some ‘‘configurable’’ features, but they can only be turned on and off in debugging mode — otherwise, the set of features is fixed.
 
-* 如有管理员权限可以查看或修改一些调度器的features。
+* 如有管理员权限可以查看或修改一些调度器的 features。
 ```
 sudo cat /sys/kernel/debug/sched_features
 GENTLE_FAIR_SLEEPERS START_DEBIT NO_NEXT_BUDDY LAST_BUDDY CACHE_HOT_BUDDY WAKEUP_PREEMPTION ARCH_POWER NO_HRTICK NO_DOUBLE_TICK LB_BIAS NONTASK_POWER TTWU_QUEUE NO_FORCE_SD_OVERLAP RT_RUNTIME_SHARE NO_LB_MIN NO_NUMA NUMA_FAVOUR_HIGHER NO_NUMA_RESIST_LOWER
 ```
 
-* `START_DEBIT`是其中之一，如果打开这个特性，表示给新进程的`vruntime`初始值要设置得比默认值更大一些，这样会推迟它的运行时间，**以防进程通过不停的fork来获得CPU**。
+* `START_DEBIT`是其中之一，如果打开这个特性，表示给新进程的`vruntime`初始值要设置得比默认值更大一些，这样会推迟它的运行时间，**以防进程通过不停的 fork 来获得CPU**。
   * kernel/sched/features.h
-```c
-/*
- * Place new tasks ahead so that they do not starve already running
- * tasks
- */
-SCHED_FEAT(START_DEBIT, true)
-```
+	```c
+	/*
+	 * Place new tasks ahead so that they do not starve already running
+	 * tasks
+	 */
+	SCHED_FEAT(START_DEBIT, true)
+	```
 
 * `sched_vslice()`用于计算将要插入队列的进程的**虚拟时间片**，仅在`place_entity()`被调用。
+	* `sched_slice(cfs_rq, se)`先根据新进程的权重算出在调度周期内可分得的实际时间。
+	* 再通过`calc_delta_fair()`将实际时间转为虚拟时间。
   * kernel/sched/fair.c::sched_vslice()
-```c
-/*
- * We calculate the vruntime slice of a to-be-inserted task.
- *
- * vs = s/w
- */
-static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
-{
-    return calc_delta_fair(sched_slice(cfs_rq, se), se);
-}
-```
+	```c
+	/*
+	 * We calculate the vruntime slice of a to-be-inserted task.
+	 *
+	 * vs = s/w
+	 */
+	static u64 sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+	{
+	    return calc_delta_fair(sched_slice(cfs_rq, se), se);
+	}
+	```
 * 如果`START_DEBIT`位被设置，则通过加上一个调度周期内的虚拟时间片将新进程推后执行。
 * 否则新进程与父进程的`vruntime`一致，如果`sysctl_sched_child_runs_first`参数没有设成**1**，子进程与父进程谁先被执行还不确定。
 
@@ -581,7 +581,7 @@ wakeup_gran(struct sched_entity *curr, struct sched_entity *se)
 * 这过程中会一如既往地调用`update_curr()`更新当前进程的`vruntime`
 * 对于会否发生抢占的检查工作由`check_preempt_tick()`完成
 
-## 周期性抢占检查check_preempt_tick
+## 周期性调度检查check_preempt_tick
 * 在周期性调度过程中`check_preempt_tick()`用于检查当前进程会否被抢占
 	* kernel/sched/fair.c
 ```c
@@ -596,12 +596,11 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
     s64 delta;
     /*sched_slice()计算的是当前进程在一个调度周期内期望分得的实际运行时间*/
     ideal_runtime = sched_slice(cfs_rq, curr);
-    /* sum_exec_runtime: 累计运行的时间，上一次调用update_curr()会更新
-       prev_sum_exec_runtime: 上一次撤销CPU时的累计运行时间
-       delta_exec: 以上两个数的差值，即在当前调度周期内的实际运行时间
-     */
+    /*sum_exec_runtime: 累计运行的时间，上一次调用update_curr()会更新
+      prev_sum_exec_runtime: 上一次撤销CPU时的累计运行时间
+      delta_exec: 以上两个数的差值，即在当前调度周期内的实际运行时间*/
     delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
-    /* 在一个调度周期内，实际运行时间超过了理想情况运行时间，毫无疑问需重新调度 */
+    /*在一个调度周期内，实际运行时间超过了理想情况运行时间，毫无疑问需重新调度*/
     if (delta_exec > ideal_runtime) {
         resched_curr(rq_of(cfs_rq));
         /*
@@ -618,34 +617,36 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
      * narrow margin doesn't have to wait for a full slice.
      * This also mitigates buddy induced latencies under load.
      */
-    /* 实际运行时间没有超出理想运行时间，且小于最小调度粒度，则无需重新调度 */
+    /*实际运行时间没有超出理想运行时间，且小于最小调度粒度，则无需重新调度*/
     if (delta_exec < sysctl_sched_min_granularity)
         return;
-    /* 取红黑树上的最小结点 */
+    /*取红黑树上的最小结点*/
     se = __pick_first_entity(cfs_rq);
     delta = curr->vruntime - se->vruntime;
-    /* 实际运行时间没有超出理想运行时间，但大于最小调度粒度，
-       且虚拟运行时间相较运行队列里最左结点的虚拟运行时间要小，
-        则无需重新调度
-     */
+    /*实际运行时间没有超出理想运行时间，但大于最小调度粒度，
+      且虚拟运行时间相较运行队列里最左结点的虚拟运行时间要小，
+      则无需重新调度*/
     if (delta < 0)
         return;
-    /* 实际运行时间没有超出理想运行时间，但大于最小调度粒度，
-       且虚拟运行时间与运行队列里最左结点的虚拟运行时间的差值比理想运行时间还大，
-       需重新调度
-     */
+    /*实际运行时间没有超出理想运行时间，但大于最小调度粒度，
+      且虚拟运行时间与运行队列里最左结点的虚拟运行时间的差值比理想运行时间还大，
+      需重新调度*/
     if (delta > ideal_runtime)
         resched_curr(rq_of(cfs_rq));
 }
 ```
 * 这里有两组条件需重新调度，有两组条件无需重新调度
-* `sysctl_sched_min_granularity`之前说过，可以通过`/proc/sys/kernel/sched_min_granularity_ns`配置
-* 同样，这里只是检查，调度还需要等待适当的时机
+	* 前两个比较用的是 **实际时间**，随后又比较了两个进程的`vruntime`，然后用它们`vruntime`的差值与一个（理想的）实际时间进行比较，可见这里目前的实现比较 tricky
+	* 第一个条件，`delta_exec > ideal_runtime`,理所当然
+	* 第二个条件表明，当前进程即便预先分配的运行时间没有用完，实际运行时间一旦超过`sysctl_sched_min_granularity`就有可能被抢占
+	* 第三个条件，`vruntime`小的进程仍然更具优势，即使超出最小调度粒度的保障
+* `sysctl_sched_min_granularity`之前说过，可以通过`/proc/sys/kernel/sched_min_granularity_ns`配置，为了防止过于频繁的进程切换影响性能
+* 同样，这里只是检查是否需要调度，进程切换还需要等待适当的时机
 
 ### 调度实体在调度周期内分配的实际时间的计算sched_slice
 * `sched_slice()`计算的是调度实体在调度周期内应分配的实际时间，这可能是唯一一处通过计算算出实际运行时间的地方
 * `sched_nr_latency`是目标延迟与最小调度粒度的商，每当修改`/proc/sys/kernel/sched_latency_ns`或`/proc/sys/kernel/sched_min_granularity_ns`会影响它的值
-* `__sched_period()`计算的是**实际调度周期**，这里体现出调度周期与目标延迟是不同的
+* `__sched_period()`计算的是 **实际调度周期**，这里体现出调度周期与目标延迟是不同的
 * 实际的调度周期会因为运行队列上的进程数超出`sched_nr_latency`而扩展，保证队列上的实体都有机会被调度
 	* kernel/sched/fair.c
 ```c
@@ -1162,15 +1163,13 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
             /*需要跳过的恰好是刚从红黑树里取出的最左结点，则再取下一个结点*/
             second = __pick_next_entity(se);
             /*如果运行队列已经空了，或者当前进程vruntime比刚取上来的进程vruntime小，
-              second指回当前进程
-             */
+              second指回当前进程*/
             if (!second || (curr && entity_before(curr, second)))
                 second = curr;
         }
-        /* 如果left不能抢占second则second作为被选中的调度实体，left被跳过。
-           如果second的vruntime实在比left的vruntime大得太多，则还是会调度left，
-           否则对left来说太不公平，尽管它已经被设为skip，所以之前要用“可能”。
-         */
+        /*如果left不能抢占second则second作为被选中的调度实体，left被跳过。
+          如果second的vruntime实在比left的vruntime大得太多，则还是会调度left，
+          否则对left来说太不公平，尽管它已经被设为skip，所以之前要用“可能”。*/
         if (second && wakeup_preempt_entity(second, left) < 1)
             se = second;
     }
@@ -1223,7 +1222,7 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 ```
 * 红黑树是不保存”*当前*”进程的，因此需要`__dequeue_entity()`，之前`pick_next_task_fair()`提到过。
 * 之前`put_prev_entity()`把旧进程放回队列时将`cfs_rq->curr`置为空，此时选出了新进程需要将`cfs_rq->curr`指向它，保持“当前”进程与运行队列的关联。
-* 最后需要更新`prev_sum_exec_runtime`，我们在[周期性抢占检查check_preempt_tick](#周期性抢占检查check_preempt_tick)提到过它的作用。
+* 最后需要更新`prev_sum_exec_runtime`，我们在[周期性调度检查check_preempt_tick](#周期性调度检查check_preempt_tick)提到过它的作用。
 * `se->on_rq`通常在`enqueue_entity()`时被设为**1**，在`dequeue_entity()`时被值为**0**。
 
 # CFS调试接口

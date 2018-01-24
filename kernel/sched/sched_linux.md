@@ -765,24 +765,22 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 {
     const struct sched_class *class;
-    /* 同一调度器类之间的进程是否需要被重新调度，交由该调度器类内部去决定 */
+    /*同一调度器类之间的进程是否需要被重新调度，交由该调度器类内部去决定*/
     if (p->sched_class == rq->curr->sched_class) {
         rq->curr->sched_class->check_preempt_curr(rq, p, flags);
     } else {
-        /* 由高到低检查不同调度器类之间的进程是否需要重新调度 */
+        /*由高到低检查不同调度器类之间的进程是否需要重新调度*/
         for_each_class(class) {
-            /* 低级别的调度器类的进程无法抢占高级别的调度器类的进程，
-               例如rq->curr->sched_class是实时调度器类，而p->sched_class是CFS，
-               则循环会在class等于&rt_sched_class时break。
-             */
+            /*低级别的调度器类的进程无法抢占高级别的调度器类的进程。
+              例如rq->curr->sched_class是实时调度器类，而p->sched_class是CFS，
+              则循环会在class等于&rt_sched_class时break。*/
             if (class == rq->curr->sched_class)
-                break;            /* 无法抢占，故跳出循环 */
-            /* 反之，高级别的调度器类的进程可以抢占低级别的调度器类的进程，
-               例如p->sched_class是实时调度器类，而rq->curr->sched_class是CFS，
-               则循环会在class等于&rt_sched_class时设置标志位后break。
-             */
+                break; /*队列当前任务的调度器类优先级高于检查的进程的，无法抢占，跳出循环*/
+            /*反之，高级别的调度器类的进程可以抢占低级别的调度器类的进程。
+              例如p->sched_class是实时调度器类，而rq->curr->sched_class是CFS，
+              则循环会在class等于&rt_sched_class时设置标志位后break。*/
             if (class == p->sched_class) {
-                resched_curr(rq); /* 设置重新调度标志位 */
+                resched_curr(rq); /*设置重新调度标志位*/
                 break;
             }
         }
