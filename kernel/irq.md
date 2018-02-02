@@ -108,9 +108,9 @@ END(irq_entries_start)
         ENCODE_FRAME_POINTER
 
         testb   $3, CS(%rsp)
-        jz      1f   
+        jz      1f
 
-        /*   
+        /*
          * IRQ from user mode.  Switch to kernel gsbase and inform context
          * tracking that we're in kernel mode.
          */
