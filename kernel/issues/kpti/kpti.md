@@ -1,4 +1,6 @@
-# 目录
+# KPTI
+## 目录
+- [KPTI与KAISER](#KPTI与KAISER)
 - [pti.c](#ptic)
 - [进程页表的创建](#进程页表的创建)
 	- [一致映射区的起始地址](#一致映射区的起始地址)
@@ -10,7 +12,14 @@
 - [系统调用]()
 - [References](#references)
 
-# pti.c
+## KPTI与KAISER
+* **KPTI (Kernel Page Table Isolation)** 和 **KAISER (Kernel Address Isolation to have Side-channels Efficiently Removed)** 都是针对 Meltdown 问题的解决方案。
+* KPTI 的 **内核态页表（kernel mode page table）** 和 **用户态页表（user mode page table）** 分别对应于 KAISER 的 **普通页表（normal page table）** 和 **影子页表（shadow page table）** 的概念。
+* KAISER 的影子页表的 PGD 条目会在初始化时就分配用于映射内核地址空间的 256 个二级页表（PUD），然后填充到 PGD 条目里。这些二级页表占用 256 * 4096B = 1MB 的空间，各个进程会共享这些二级页表。
+* KPTI 用于映射内核地址空间的二级页表则是按需分配，用户态页表和内核态页表有可能从第二级就开始共享，也有可能要到 page 一级才共享。
+![pic/kpti_krnl.png](pic/kpti_krnl.png)
+
+## pti.c
 * arch/x86/include/asm/pgtable.h
 ```c
 static inline unsigned long pgd_page_vaddr(pgd_t pgd)
@@ -18,7 +27,6 @@ static inline unsigned long pgd_page_vaddr(pgd_t pgd)
 	return (unsigned long)__va((unsigned long)pgd_val(pgd) & PTE_PFN_MASK);
 }
 ```
-
 * arch/x86/include/asm/pgtable_64.h
 ```c
 static inline pgd_t *kernel_to_user_pgdp(pgd_t *pgdp)
@@ -411,7 +419,7 @@ static void __init pti_setup_vsyscall(void)
 	target_pte = pti_user_pagetable_walk_pte(VSYSCALL_ADDR);
 	if (WARN_ON(!target_pte))
 		return;
-	// VSYSCALL 所在的页，用户态页表与内核态页表是共享的！
+	// VSYSCALL 所在的页，连 PTE 都是新分配的，用户态页表与内核态页表仅共享 page！
 	*target_pte = *pte;
 	// VSYSCALL 所在的页是仅有的在内核地址范围但却可以被用户访问的页。
 	// 正常情况下，内核页表会清除 _PAGE_USER 标志，但如果 vsyscalls 使能
@@ -537,7 +545,8 @@ void __init pti_init(void)
 * 在最初的`KAISER`实现中，用户态页表在`KAISER`中叫 **影子页表**，它在`kaiser_init`的时候就分配了所有用于映射内核地址空间部分的二级页表，并填充到顶级页表
 * 在 KPTI 的实现中没有这么做，而是采用按需分配的方式，见`pti_init()`
 
-# 进程页表的创建
+## 进程页表的创建
+![pic/kpti_user.png](pic/kpti_user.png)
 ```c
 do_fork()
 -> copy_process()
@@ -560,7 +569,7 @@ do_fork()
 * `mm`就是每个进程的`struct task_struct`的类型为`struct mm_struct *`的成员
 * `struct mm_struct`的成员`pgd_t * pgd`指向进程的顶级页表
 
-## 一致映射区的起始地址
+### 一致映射区的起始地址
 * arch/x86/include/asm/page_64_types.h
 ```c
 /*
@@ -592,7 +601,7 @@ do_fork()
 ...__```
 ```
 
-## PGD的条目
+### PGD的条目
 * 一个 PGD 页为 `4KB`，一个 64 位的虚拟地址长度为 `8B`，故一个 PGD 页能映射
   `4KB / 8B = 512` 个下一级表项
 * arch/x86/include/asm/pgtable_64_types.h
@@ -623,7 +632,7 @@ do_fork()
 
 #endif /* CONFIG_X86_5LEVEL */
 ```
-## 新进程PGD的分配
+### 新进程PGD的分配
 * KPTI 顶级页表 PGD 需要两个 pages 来表示，即 2<sup>1</sup>，故`PGD_ALLOCATION_ORDER`为 **1**
 * 这两个页连续分配，大小为 8k 且 8k-对齐
   * `0 ～ 1<<12-1 = 4095 = 0x0fff` 表示 4096 个数，4k 对齐的页的地址低 12 位全零
@@ -660,7 +669,7 @@ static inline pgd_t *_pgd_alloc(void)
 #endif /* CONFIG_X86_PAE */
 ```
 
-## 新进程PGD内核地址空间部分的初始化
+### 新进程PGD内核地址空间部分的初始化
 * `KERNEL_PGD_BOUNDARY` 为一致映射区在 PGD 页中的索引
 * `KERNEL_PGD_PTRS` 为在 PGD 页中映射内核地址空间的条目数
 * 计算方式见它们的宏定义
@@ -764,8 +773,8 @@ out:
 * 而在`swapper`进程的用户态页表的内核地址空间部分做好了映射，仅仅映射最少的内容，目的是为了新进程的 **用户态页表** 的内核地址空间部分以此作为模版进行拷贝。
 * 结果就是，所有进程的用户态页表的内核地址空间都共享一个极小的地址映射。
 
-## 新进程PGD用户地址空间部分的填充
-### 五级页表时的填充
+### 新进程PGD用户地址空间部分的填充
+#### 五级页表时的填充
 ```c
 do_fork()
 -> copy_process()
@@ -795,7 +804,7 @@ do_fork()
   * 先用`pti_set_user_pgd(pgdp, pgd)`将第二级页表的地址填充到用户态页表的中的 PGD 条目，该条目的地址根据内核态页表条目的地址翻转第 13 位得到
   * 再将第二级页表的地址填充到内核态页表的中的 PGD 条目，该地址在`__pti_set_user_pgd()`被加工过，加上了`_PAGE_NX`标志以防止映射的代码被意外地执行
 
-### 四级页表时的填充
+#### 四级页表时的填充
 * 以上是采用五级页表的情况，对于四级页表，对`p4d`的引用都替换为`pgd`，以上调用关系退化为
 ```c
 do_fork()
@@ -818,7 +827,7 @@ do_fork()
 * 由于`p4d`一级在四级页表时其实是`pgd`，所以`p4d_alloc()`其实没做什么
 * 填充的操作发生在拷贝`pud`一级，此时它成了第二级页表
 
-# References
+## References
 - [Meltdown and Spectre](https://meltdownattack.com/)
 - [melddown.pdf](https://meltdownattack.com/meltdown.pdf)
 - [spectre.pdf](https://spectreattack.com/spectre.pdf)
@@ -826,3 +835,5 @@ do_fork()
 - [Project Zero: Reading privileged memory with a side-channel](https://googleprojectzero.blogspot.co.at/2018/01/reading-privileged-memory-with-side.html)
 - [lwn: KAISER: hiding the kernel from user space](https://lwn.net/Articles/738975/)
 - [lwn: The current state of kernel page-table isolation](https://lwn.net/Articles/741878/)
+- [KAISER github](https://github.com/IAIK/KAISER)
+- [Meltdown & Spectre 攻击及缓解措施（一）](https://paper.seebug.org/501/)
