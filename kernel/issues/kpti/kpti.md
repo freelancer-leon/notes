@@ -1,6 +1,7 @@
 # KPTI
 ## 目录
 - [KPTI与KAISER](#KPTI与KAISER)
+- [上游仓库的pti分支](#上游仓库的pti分支)
 - [pti.c](#ptic)
 - [进程页表的创建](#进程页表的创建)
 	- [一致映射区的起始地址](#一致映射区的起始地址)
@@ -15,9 +16,40 @@
 ## KPTI与KAISER
 * **KPTI (Kernel Page Table Isolation)** 和 **KAISER (Kernel Address Isolation to have Side-channels Efficiently Removed)** 都是针对 Meltdown 问题的解决方案。
 * KPTI 的 **内核态页表（kernel mode page table）** 和 **用户态页表（user mode page table）** 分别对应于 KAISER 的 **普通页表（normal page table）** 和 **影子页表（shadow page table）** 的概念。
+
+### 内核地址空间的页表映射
 * KAISER 的影子页表的 PGD 条目会在初始化时就分配用于映射内核地址空间的 256 个二级页表（PUD），然后填充到 PGD 条目里。这些二级页表占用 256 * 4096B = 1MB 的空间，各个进程会共享这些二级页表。
 * KPTI 用于映射内核地址空间的二级页表则是按需分配，用户态页表和内核态页表有可能从第二级就开始共享，也有可能要到 page 一级才共享。
+* 对于 **不同进程**，内核态页表与用户态页表用于映射内核地址空间部分的页表项是 **相同的**，这就是常说的 **一致映射、线性映射、直接映射**。
+* 对于 **同一进程**，内核态页表与用户态页表用于映射内核地址空间部分的页表项是 **不同的**，这就是 **页表隔离**。
+* 并非所有的内核页表条目在用户态页表内有克隆，仅仅是处理系统调用、中断、中断描述符、trace等最必要的一部分内核地址空间页表在用户态页表有克隆，否则切换`cr3`之后剩余的一些必要的内核代码无法执行或数据无法访问了。
+
 ![pic/kpti_krnl.png](pic/kpti_krnl.png)
+
+### 用户地址空间的页表映射
+* 用于映射用户地址空间的页表，**不同进程之间** 不共享（和原来的一样，也是虚拟内存管理的关键点之一）。
+* 和过去不同的是，对于 **同一进程** 来说，新增的用户态页表用于映射用户地址空间的页表项与内核态页表的页表项相同，自第二级页表开始共享。用户地址空间当然不需要页表隔离。
+* 建立新进程时，先填充用户态页表用于映射用户地址空间的页表项，后填充内核态页表。
+* 不隔离不意味着完全相同，填充内核态页表项时，KPTI 会给页表项加上`_PAGE_NX`标志，阻止执行内核态页表所映射用户地址空间的代码。在 KAISER patch 里把这一步骤叫 *毒化（poison）*。
+![pic/kpti_user.png](pic/kpti_user.png)
+
+## 上游仓库的pti分支
+* 可以跟踪 upstream 的 [tip/x86/pti](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/?h=x86%2Fpti) 分支获得该问题 fix 的最新动态
+	```
+	git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
+	git remote add tip git://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git
+	git pull tip
+	git checkout tip/x86/pti
+	```
+* 主有有以下几个 branch
+	* [tip/x86/pti](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/?h=x86/pti)
+	* [WIP.x86/pti.entry](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/?h=WIP.x86%2Fpti.entry)
+	* [WIP.x86/pti.base](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/?h=WIP.x86/pti.base)
+	* [WIP.x86/pti.base.prep](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/?h=WIP.x86/pti.base.prep)
+	```
+	git format-patch -M tip/WIP.x86/pti.base..64e16720ea0879f8ab4547e3b9758936d483909b
+	git format-patch -M 7e86548e2cc8d308cb75439480f428137151b0de..tip/x86/pti
+  ```
 
 ## pti.c
 * arch/x86/include/asm/pgtable.h
@@ -546,7 +578,6 @@ void __init pti_init(void)
 * 在 KPTI 的实现中没有这么做，而是采用按需分配的方式，见`pti_init()`
 
 ## 进程页表的创建
-![pic/kpti_user.png](pic/kpti_user.png)
 ```c
 do_fork()
 -> copy_process()
@@ -826,6 +857,7 @@ do_fork()
 ```
 * 由于`p4d`一级在四级页表时其实是`pgd`，所以`p4d_alloc()`其实没做什么
 * 填充的操作发生在拷贝`pud`一级，此时它成了第二级页表
+* `native_set_p4d()`与`pti_set_user_pgd()`做的事情是一样的
 
 ## References
 - [Meltdown and Spectre](https://meltdownattack.com/)
