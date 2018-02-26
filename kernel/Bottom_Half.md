@@ -61,7 +61,7 @@ struct softirq_action
     void    (*action)(struct softirq_action *);
 };
 ```
-* 一个软中断不会抢占另外一个软中断
+* 在一个核上，一个软中断不会抢占另外一个软中断
 * 实际上，唯一可以抢占软中断的是中断处理程序
 * 其他软中断（包括同类型的软中断）可以在其他处理器上同时执行
 * **软中断和tasklet都是运行在中断上下文中**，它们与任一进程无关，没有支持的进程完成重新调度。所以软中断和tasklet不能睡眠、不能阻塞，它们的代码中不能含有导致睡眠的动作，如减少信号量、从用户空间拷贝数据或手工分配内存等。
@@ -73,9 +73,9 @@ struct softirq_action
 * **触发软中断**（raising the softirq）一个注册的软中断必须在被标记后才会被执行。
 * 通常中断处理程序会在返回前标记它的软中断，使其在稍后被执行。
 * 软中断被检查和执行的地方
-  * 从一个硬件中断代码处返回时
+  * 在那些显式检查和执行待处理软中断的代码中，如网络子系统中（当`ksoftirqd`可运行时不会同步处理软中断）
+  * 从一个硬件中断代码处返回时（同上）
   * 在`ksoftirqd`内核线程中
-  * 在那些显式检查和执行待处理软中断的代码中，如网络子系统中
 * 不管用什么方法唤起，软中断都要在`__do_softirq()`中执行。
 
 ### 直接调用`do_softirq()`处理软中断
@@ -174,36 +174,52 @@ asmlinkage __visible void do_softirq(void)
     local_irq_save(flags);
 
     pending = local_softirq_pending();
-
-    if (pending)
+    /*如果有挂起的软中断，且 ksoftirqd 并未运行，则处理挂起的软中断*/
+    if (pending && !ksoftirqd_running())
         do_softirq_own_stack();
 
     local_irq_restore(flags);
 }
 ...__```
 ```
-* arch/x86/kernel/irq_32.c
-```c
-void do_softirq_own_stack(void)
-{   
-    struct thread_info *curstk;
-    struct irq_stack *irqstk;
-    u32 *isp, *prev_esp;
+* 注意：由此可见，调用`do_softirq()`并不意味着一定会调用`__do_softirq()`，让挂起的软中断同步得到处理。
+* 对于大部分体系结构，`do_softirq_own_stack()`的实现就是调用`__do_softirq()`
+  * include/linux/interrupt.h
+  ```c
+  ...
+  #ifdef __ARCH_HAS_DO_SOFTIRQ
+  void do_softirq_own_stack(void);
+  #else
+  static inline void do_softirq_own_stack(void)
+  {
+      __do_softirq();
+  }
+  #endif
+  ...
+  ```
+* x86-32 的`do_softirq_own_stack()`的实现比较特殊
+  * arch/x86/kernel/irq_32.c
+  ```c
+  void do_softirq_own_stack(void)
+  {   
+      struct thread_info *curstk;
+      struct irq_stack *irqstk;
+      u32 *isp, *prev_esp;
 
-    curstk = current_stack();
-    irqstk = __this_cpu_read(softirq_stack);
+      curstk = current_stack();
+      irqstk = __this_cpu_read(softirq_stack);
 
-    /* build the stack frame on the softirq stack */
-    isp = (u32 *) ((char *)irqstk + sizeof(*irqstk));
+      /* build the stack frame on the softirq stack */
+      isp = (u32 *) ((char *)irqstk + sizeof(*irqstk));
 
-    /* Push the previous esp onto the stack */
-    prev_esp = (u32 *)irqstk;
-    *prev_esp = current_stack_pointer();
-    /*通过一段汇编指令调用函数__do_softirq，函数的栈指针为 isp*/
-    call_on_stack(__do_softirq, isp);
-}
-...__```
-```
+      /* Push the previous esp onto the stack */
+      prev_esp = (u32 *)irqstk;
+      *prev_esp = current_stack_pointer();
+      /*通过一段汇编指令调用函数__do_softirq，函数的栈指针为 isp*/
+      call_on_stack(__do_softirq, isp);
+  }
+  ...__```
+  ```
 ### 中断退出时处理软中断
 * 从`irq_exit()`开始看起。退出中断上下文，如果需要且可能的话，执行软中断处理。
 * kernel/softirq.c
@@ -265,13 +281,13 @@ void irq_exit(void)
 ```
 
 ### `ksoftirqd`中断处理进程
-* 每个CPU一个的辅助处理softirq（和tasklet）的内核线程
-* 引入ksoftirqd的原因：
-  * 在中断处理函数返回时处理softirq是最常见的softirq处理时机
-  * softirq触发的频率有时很高，而有的softirq还会重新触发自己以便得到再次执行
-  * 为防止用户空间进程饥饿，作为折中的方案，内核不会立即处理重新触发的softirq
-  * 当大量softirq出现时，内核会唤醒一组内核线程来处理这些负载，即**ksoftirqd**
-* ksoftirqd每次迭代都会最终调用`schedule()`让其他进程有机会得到处理
+* 每个CPU一个的辅助处理 softirq（和tasklet）的内核线程
+* 引入 ksoftirqd 的原因：
+  * 在中断处理函数返回时处理 softirq 是最常见的 softirq 处理时机
+  * softirq 触发的频率有时很高，而有的 softirq 还会重新触发自己以便得到再次执行
+  * 为防止用户空间进程饥饿，作为折中的方案，内核不会立即处理重新触发的 softirq
+  * 当大量 softirq 出现时，内核会唤醒一组内核线程来处理这些负载，即 **ksoftirqd**
+* ksoftirqd 每次迭代都会最终调用`schedule()`让其他进程有机会得到处理
 ```
 early_initcall(spawn_ksoftirqd)
 
