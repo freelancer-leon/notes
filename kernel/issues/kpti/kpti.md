@@ -9,8 +9,8 @@
 	- [新进程PGD的分配](#新进程pgd的分配)
 	- [新进程PGD内核地址空间部分的初始化](#新进程pgd内核地址空间部分的初始化)
 	- [新进程PGD用户地址空间部分的填充](#新进程pgd用户地址空间部分的填充)
-- [中断]()
-- [系统调用]()
+- [中断](#中断)
+- [系统调用](#系统调用)
 - [References](#references)
 
 ## KPTI与KAISER
@@ -19,7 +19,7 @@
 
 ### 内核地址空间的页表映射
 * KAISER 的影子页表的 PGD 条目会在初始化时就分配用于映射内核地址空间的 256 个二级页表（PUD），然后填充到 PGD 条目里。这些二级页表占用 256 * 4096B = 1MB 的空间，各个进程会共享这些二级页表。
-* KPTI 用于映射内核地址空间的二级页表则是按需分配，用户态页表和内核态页表有可能从第二级就开始共享，也有可能要到 page 一级才共享。
+* KPTI 用于映射内核地址空间的二级页表则是按需分配，用户态页表和内核态页表有可能从第二级就开始共享（四级页表，克隆 P4D），有可能从第三级开始共享（五级页表，克隆 P4D），也有可能要到 page 一级才共享。
 * 对于 **不同进程**，内核态页表与用户态页表用于映射内核地址空间部分的页表项是 **相同的**，这就是常说的 **一致映射、线性映射、直接映射**。
 * 对于 **同一进程**，内核态页表与用户态页表用于映射内核地址空间部分的页表项是 **不同的**，这就是 **页表隔离**。
 * 并非所有的内核页表条目在用户态页表内有克隆，仅仅是处理系统调用、中断、中断描述符、trace等最必要的一部分内核地址空间页表在用户态页表有克隆，否则切换`cr3`之后剩余的一些必要的内核代码无法执行或数据无法访问了。
@@ -62,12 +62,12 @@ static inline unsigned long pgd_page_vaddr(pgd_t pgd)
 * arch/x86/include/asm/pgtable_64.h
 ```c
 static inline pgd_t *kernel_to_user_pgdp(pgd_t *pgdp)
-{// 用户模式页表和内核模式页表的顶级页表（PGD）相邻，用户模式页表向高地址偏移 4K
+{// 用户态页表和内核态页表的顶级页表（PGD）相邻，用户态页表向高地址偏移 4K
 	return ptr_set_bit(pgdp, PTI_PGTABLE_SWITCH_BIT);
 }
 
 static inline pgd_t *user_to_kernel_pgdp(pgd_t *pgdp)
-{// 将用户模式页表的 PGD 条目第 13 位翻转为 0 即对应内核模式页表的线性地址
+{// 将用户态页表的 PGD 条目第 13 位翻转为 0 即对应内核态页表的线性地址
 	return ptr_clear_bit(pgdp, PTI_PGTABLE_SWITCH_BIT);
 }
 ...
@@ -234,30 +234,30 @@ pgd_t __pti_set_user_pgd(pgd_t *pgdp, pgd_t pgd)
 	 * Top-level entries added to init_mm's usermode pgd after boot
 	 * will not be automatically propagated to other mms.
 	 */
-	// 对内核模式的页表的高地址（内核）部分的修改不会自动传播到用户模式的
+	// 对内核态的页表的高地址（内核）部分的修改不会自动传播到用户态的
 	// 页表。
-	// 用户应该铭记，用户模式的页表不像内核模式的页表，没有 vmalloc_fault
-	// 的等价物。启动后添加到 init_mm 的用户模式表的顶级页表条目不会被自动
+	// 用户应该铭记，用户态的页表不像内核态的页表，没有 vmalloc_fault
+	// 的等价物。启动后添加到 init_mm 的用户态表的顶级页表条目不会被自动
 	// 传播到其他 mm 实例。
 	//
 	// 这里涉及到的一个知识点是，对于非线性映射的地址，如 vmalloc 分配的
 	// 内存，会在其他进程访问时通过 vmalloc_fault 进行页表项同步。
 	//
 	// 这里检查传入的 pgdp 指向的条目是不是属于用户空间的。如果不是，说明要
-	// 设置的是一个内核空间的 PGD 条目。由于用户模式的内核空间部分的条目是
+	// 设置的是一个内核空间的 PGD 条目。由于用户态的内核空间部分的条目是
 	// 在初始化时分配并填充为共享的二级 （即 PUD）页表，因此是无需在以后进
 	// 行设置的，所以这里直接返回要设置的 pgd 内容即可。
 	if (!pgdp_maps_userspace(pgdp))
 		return pgd;
-	// 如果传入的 pgdp 指向的条目是属于用户空间的，要改变的是内核模式页表的
-	// 用户地址空间部分的条目，则在设置该条目的同时，也要修改其用户模式的页
+	// 如果传入的 pgdp 指向的条目是属于用户空间的，要改变的是内核态页表的
+	// 用户地址空间部分的条目，则在设置该条目的同时，也要修改其用户态的页
 	// 表条目。
 	/*
 	 * The user page tables get the full PGD, accessible from
 	 * userspace:
 	 */
-	kernel_to_user_pgdp(pgdp)->pgd = pgd.pgd;// 设置用户模式的 PGD 条目
-	// 注意，设置到用户模式页表的条目是没有 _PAGE_NX 标志的。
+	kernel_to_user_pgdp(pgdp)->pgd = pgd.pgd;// 设置用户态的 PGD 条目
+	// 注意，设置到用户态页表的条目是没有 _PAGE_NX 标志的。
 	/*
 	 * If this is normal user memory, make it NX in the kernel
 	 * pagetables so that, if we somehow screw up and return to
@@ -271,7 +271,7 @@ pgd_t __pti_set_user_pgd(pgd_t *pgdp, pgd_t pgd)
 	 *  - we don't have NX support
 	 *  - we're clearing the PGD (i.e. the new pgd is not present).
 	 */
-	// 如果这映射的是普通的用户空间内存，设置它在内核模式顶级页表（PGD）条
+	// 如果这映射的是普通的用户空间内存，设置它在内核态顶级页表（PGD）条
 	// 目的不可执行标志（_PAGE_NX），如果我们以某种方式搞砸了，返回到用户态
 	// 的时候加载的是内核的 pgd 到 CR3，我们会得到一个缺页错误，而不是允许
 	// 用错误的 CR3 在执行用户代码。
@@ -288,7 +288,7 @@ pgd_t __pti_set_user_pgd(pgd_t *pgdp, pgd_t pgd)
 	if ((pgd.pgd & (_PAGE_USER|_PAGE_PRESENT)) == (_PAGE_USER|_PAGE_PRESENT) &&
 	    (__supported_pte_mask & _PAGE_NX))
 		pgd.pgd |= _PAGE_NX;
-	// 当用这个返回值去设置内核模式页表条目的时候，该条目已带上 _PAGE_NX 标志
+	// 当用这个返回值去设置内核态页表条目的时候，该条目已带上 _PAGE_NX 标志
 	/* return the copy of the PGD we want the kernel to use: */
 	return pgd;
 }
@@ -576,6 +576,10 @@ void __init pti_init(void)
 ```
 * 在最初的`KAISER`实现中，用户态页表在`KAISER`中叫 **影子页表**，它在`kaiser_init`的时候就分配了所有用于映射内核地址空间部分的二级页表，并填充到顶级页表
 * 在 KPTI 的实现中没有这么做，而是采用按需分配的方式，见`pti_init()`
+* 用`pti_clone_p4d()`克隆的页表让某地址寻址时，内核态页表与用户态页表从 PUD 级开始共享
+	* 五级页表时，克隆使 P4D 级的页表内核态和用户态各有一份，然后需填充的 P4D 页表条目指向同一 PUD page
+	* 四级页表时，P4D 级的页表是没有的，用户态 PGD 条目和内核态 PGD 条目指向同一 PUD page
+* 目前，从 PUD、PTE、page 开始共享的情况都有，但还没有共享 PMD 的情况
 
 ## 进程页表的创建
 ```c
@@ -857,7 +861,7 @@ do_fork()
 ```
 * 由于`p4d`一级在四级页表时其实是`pgd`，所以`p4d_alloc()`其实没做什么
 * 填充的操作发生在拷贝`pud`一级，此时它成了第二级页表
-* `native_set_p4d()`与`pti_set_user_pgd()`做的事情是一样的
+* 当采用四级页表时，`native_set_p4d()`与`pti_set_user_pgd()`做的事情是一样的
 
 ## References
 - [Meltdown and Spectre](https://meltdownattack.com/)
