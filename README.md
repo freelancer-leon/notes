@@ -30,6 +30,7 @@
 
 ## 内存管理
 - [内存管理](https://github.com/freelancer-leon/notes/blob/master/kernel/mm/mm.md)
+- [分页管理](https://github.com/freelancer-leon/notes/blob/master/kernel/mm/mm_pagetable.md)
 - [进程地址空间](https://github.com/freelancer-leon/notes/blob/master/kernel/mm/mm-1-process_addr_spc.md)
 - [slub](https://github.com/freelancer-leon/notes/blob/master/kernel/mm/slub.md)
 

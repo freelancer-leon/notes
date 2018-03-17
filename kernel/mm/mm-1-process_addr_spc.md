@@ -618,80 +618,6 @@ MAP_NONBLOCK | Do not block on I/O.
   int munmap(void *addr, size_t length);
   ```
 
-# 页表
-
-* *应用程序操作的对象* 是映射到物理内存之上的 *虚拟内存*。
-* CPU直接操作的是 *物理内存*。
-* 应用程序访问一个虚拟地址时，要先将虚拟地址转换成物理地址，然后处理器才能解析地址访问请求。
-* 地址转换需要通过查询 **[页表](https://en.wikipedia.org/wiki/Page_table)** 才能完成。
-  * 地址转换需要将虚拟地址分段，每段虚拟地址作为一个索引指向页表
-  * 页表项指向下一级别的页表或者指向最终的物理页面。
-![http://45.79.74.171/wp-content/uploads/2013/09/page-1.gif](pic/mm_paging.gif)
-* Linux用的四级页表完成地址转换。
-* 顶级页表——**页全局目录（page global directory，PDG）**
-  * 包含一个`pdg_t`类型的数组，多数体系结构中等同于`unsigned long`
-  * 表项指向二级页目录中的表项 *PMD*
-* 二级页表——**PUD**
-* 三级页表——**中间页目录（page middle directory，PMD）**
-  * `pmd_t`类型数组
-  * 表项指向 *PTE* 中的表项
-* 最后一级页表——**页表（page table）**
-  * 包含`pte_t`类型的页表项 **（PTE）**
-  * 页表项指向物理页面
-
-![page table level](pic/page_table_level.png)
-
-* 多数体系结构中，搜索页表的工作由硬件（如MMU）完成（至少某种程度上），但前提是内核正确设置页表。
-* 每个进程都有自己的页表，当然，线程会共享页表。
-  * `struct mm_struct`的`pgd_t *pgd`域指向进程的页全局目录 **PDG**。
-  * 注意：操作和检索页表使必须使用`struct mm_struct`中的`page_table_lock`锁，以防竞争。
-  * 当进程切换发生的时候，进程的给 **用户空间** 的页表也会随之切换。
-* **[翻译后缓冲器（translation lookaside buffer，TLB）](https://en.wikipedia.org/wiki/Translation_lookaside_buffer)**——为了加快从虚拟内存中页面到物理内存中对应地址的搜索，多数体系结构都实现了一个将虚拟地址映射到物理地址的硬件缓存。
-  * 当访问一个虚拟地址时，CPU的MMU先检查TLB中是否缓存了该虚拟地址到物理地址的映射，如果在缓存中直接命中，物理地址立刻返回。
-  * 否则，通过页表搜索需要的物理地址。
-  * TLB中缓冲的是 **页表条目（PTE）**，而不是物理页。因此TLB命中返回PTE给MMU后，节省了MMU去查询页表的时间，仍然需要通过cache/memory去获取内容。
-* **[MMU](https://en.wikipedia.org/wiki/Memory_management_unit)** 是一种负责处理中央处理器（CPU）的内存访问请求的计算机硬件。它的功能包括：
-  * 虚拟地址到物理地址的转换（即虚拟内存管理）
-  * 内存保护、CPU cache的控制
-  * 在较为简单的计算机体系结构中，负责总线的仲裁以及存储体切换（bank switching，尤其是在8位的系统上）
-*  **[缺页（page fault）](https://en.wikipedia.org/wiki/Page_fault)**
-
-> A **page fault** (sometimes called #PF, PF or hard fault[a]) is a type of interrupt, called trap, raised by computer hardware when a running program accesses a memory page that is mapped into the virtual address space, but not actually loaded into main memory. The hardware that detects a page fault is the processor's memory management unit (MMU), while the exception handling software that handles page faults is generally a part of the operating system kernel. When handling a page fault, the operating system generally tries to make the required page accessible at the location in physical memory, or terminates the program in case of an illegal memory access.
-
-* MMU在缺页中的角色：
-  * *MMU* 作为活动的主体，查询 *页表*。
-  * 当发生缺页时，（硬件）引发缺页异常，将控制权交回内核（软件）处理。
-* 从页表的角度来说，发生page fault时，PTE的状态可能是：
-  * PTE是有的，虚拟地址曾经被使用过，但已被换出，PTE的 *Present* flag已被清除。
-  * 该虚拟地址从未被映射过，PTE完全为空（全零）。
-* arch/x86/include/asm/pgtable.h
-```c
-static inline int pte_present(pte_t a)
-{
-    return pte_flags(a) & (_PAGE_PRESENT | _PAGE_PROTNONE);
-}
-```
-* arch/x86/include/asm/pgtable_types.h
-```c
-#define _PAGE_BIT_PRESENT   0   /* is present */
-...
-#define _PAGE_PRESENT   (_AT(pteval_t, 1) << _PAGE_BIT_PRESENT)
-...
-static inline pteval_t native_pte_val(pte_t pte)
-{
-    return pte.pte;
-}
-
-static inline pteval_t pte_flags(pte_t pte)
-{
-    return native_pte_val(pte) & PTE_FLAGS_MASK;
-}
-...
-```
-###### Classic page-table format used on the Intel x86, Pentium, and Pentium Pro family, as well as on the PowerPC 821 and 860 PowerQUICC processors.
-![http://www.lynx.com/wp-content/uploads/2013/08/mmu-fig2-02b-300x291.gif](pic/mmu-x86-paging.gif)
-* 这里只采用了两级页表。
-
 # 题外话
 ## 共享库、静态链接和二进制程序在运行时对内存消耗有怎样的影响？
 * 这里要明确的一点是，共享库对减小存储器（硬盘、flash）的消耗肯定是有一定帮助的。
@@ -702,18 +628,6 @@ static inline pteval_t pte_flags(pte_t pte)
   * 对于链接到同一共享库的 **不同程序** 来说，则可以从共享库的映射中获得好处，因为同一共享库的`.text`只会映射到同一物理页。如，bash 和 vi 都链接到的 libc.so 共享同一物理页。
   * 用静态链接显然就没有这一好处了，静态链接实际上把内容合并到程序的二进制文件中，在运行不同程序时无法区分这些相同的内容，因此必然会消耗更多的内存。
 
-## 页表为什么要分级？
-* [Linux内核4级页表的演进](http://larmbr.com/2014/01/19/the-evolution-of-4-level-page-talbe-in-linux/)讲的蛮好
-* 简单地说，分级的目的是为了 **节省内存**
-  * 如果采用一个简单的大页表一对一映射虚拟地址到物理地址，需要较多的 **连续的物理页面(phsical page)**，因为是 **一对一** 映射，此时又未分级，所以必须是 **连续的**。
-  * 如果进程比较多，则需要大量的连续物理页，这不现实。
-  * 然而，在现实中，程序存在局部化特征, 这意味着在特定的时间内只有部分内存会被频繁访问，具体点，进程空间中的`.text`段(即程序代码), 堆， 共享库，栈都是固定在进程空间的某个特定部分，这样导致进程空间其实是非常稀疏的。
-  * 所谓 **分级** 简单说就是，把整个进程空间分成区块（block），区块下面可以再细分，这样在内存中只要常驻某个区块的页表即可，这样可以大量节省内存。
-  * 这里的套路是：
-    * 区块中的条目存的是下一级区块的 **基址** （物理地址）
-    * 将虚拟地址的不同位分别作为不同级别区块的 **索引**（也就是 **偏移**）
-    * 只要提供 *最上级页目录的基址* 和 *虚拟地址*，即可采用 **基址 + 偏移** 的方式逐级索引至物理地址。
-  * 每个区块所需的空间并不大，而进程空间中未使用的地址无需建立对应的区块，因此每个进程的页表用的空间并不多，这样目的就达到了。
 
 # 参考资料
 
@@ -722,9 +636,3 @@ static inline pteval_t pte_flags(pte_t pte)
 * [The Performance Impact of Kernel Prefetching on Buffer Cache Replacement Algorithms](http://www.cs.arizona.edu/projects/dream/papers/sigm05_prefetch.pdf)
 * [Linux Cache 机制探究](http://www.penglixun.com/tech/system/linux_cache_discovery.html)
 * [Using the Microprocessor MMU for Software Protection in Real-Time Systems](http://www.lynx.com/using-the-microprocessor-mmu-for-software-protection-in-real-time-systems/)
-* [Linux内核4级页表的演进](http://larmbr.com/2014/01/19/the-evolution-of-4-level-page-talbe-in-linux/)
-* [地址空间的归纳总结](http://alanwu.blog.51cto.com/3652632/1082195)
-* [PCI设备的地址空间](http://www.cnblogs.com/zszmhd/archive/2012/05/08/2490105.html)
-* [Linux内核追踪[4.14] X86的5级页表管理](http://blog.csdn.net/lovelycheng/article/details/78545502)
-* [lwn: Five-level page tables](https://lwn.net/Articles/717293/)
-* [lwn: x86: 5-level paging enabling for v4.12](https://lwn.net/Articles/716916/)
