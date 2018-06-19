@@ -534,9 +534,10 @@ wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se)
     return 0;
 }
 ```
-* 当`wakeup_preempt_entity()`返回**1**时，`check_preempt_wakeup()`会设置`TIF_NEED_RESCHED`标志允许新进程抢占当前进程。
-* 注释中的s1,s2,s3是新进程/调度实体的三种情况，横座标轴为`vruntime`。
+* 当`wakeup_preempt_entity()`返回 **1** 时，`check_preempt_wakeup()`会设置`TIF_NEED_RESCHED`标志允许新进程抢占当前进程。
+* 注释中的 s1，s2，s3 是新进程/调度实体的三种情况，横座标轴为`vruntime`。仅当 s3 情况，`se-vruntime`比`curr->vruntime`的值小且超过`gran`，可以抢占。
 * 为了让进程切换不会过于频繁，这里不会因为新进程的`vruntime`较小就立即切换，而是“缓冲”一下，与`wakeup_gran()`计算结果进行比较后再决定。
+* 注意参数的顺序，该函数判断`se`能否抢占`curr`
 
 ### 唤醒时粒度的计算wakeup_gran
 * `wakeup_gran()`函数用于计算根据`sysctl_sched_wakeup_granularity`和**新进程的权重**转换得到的虚拟时间。
@@ -1177,8 +1178,8 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
     /*
      * Prefer last buddy, try to return the CPU to a preempted task.
      */
-    /*尝试把CPU还给被抢占的进程，条件是，last进程的vruntime和left进程的vruntime相差不大
-      （具体可以回去看wakeup_preempt_entity()的实现）。这是为了提高cache的利用。
+    /*尝试把CPU还给被抢占的进程，条件是，last 进程的 vruntime 和 left 进程的 vruntime
+		  相差不大（具体可以回去看wakeup_preempt_entity()的实现）。这是为了提高cache的利用。
       如果last进程的vruntime比left进程的vruntime大很多，说明left进程已经积累的较大的不
       公平，需要及时被调度。
      */
@@ -1199,7 +1200,10 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 ```
 * `cfs_rq->rb_leftmost`会在`__enqueue_entity()`或者`__dequeue_entity()`操作时顺带缓存起来，再用到的时候就无需重新搜索红黑树了。
 * `cfs_rq->skip`通常会在`yield_task_fair()`的时候被设置，表明该实体会失去一次被调度的机会。
-* 在调用`wakeup_preempt_entity()`与`cfs_rq->next`和`cfs_rq->last`比较的时候传的是`left`，以及为什么这几个检查的顺序要这么排列，关系到次序问题，见该函数的注释。
+* 在调用`wakeup_preempt_entity()`与`cfs_rq->next`和`cfs_rq->last`比较时用的是`left`
+	* `left`记录的是当前红黑树上和当前进程中`vruntime`最小的调度实体
+	* 该调度实体会按照注释所说的顺序分别与`skip`，`last`，`next`实体的`vruntime`进行比较
+	* 最后一个给`se`赋值的被选中，因此实现时的顺序与列举的顺序相反
 
 ### 标记选出的进程set_next_entity
 * 进程选出来后还需要有一些与CFS运行队列相关的后续工作，由`set_next_entity()`完成

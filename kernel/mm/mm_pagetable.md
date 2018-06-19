@@ -129,7 +129,7 @@
 * **[翻译后缓冲器（translation lookaside buffer，TLB）](https://en.wikipedia.org/wiki/Translation_lookaside_buffer)**——为了加快从虚拟内存中页面到物理内存中对应地址的搜索，多数体系结构都实现了一个将虚拟地址映射到物理地址的硬件缓存。
   * 当访问一个虚拟地址时，CPU的MMU先检查TLB中是否缓存了该虚拟地址到物理地址的映射，如果在缓存中直接命中，物理地址立刻返回。
   * 否则，通过页表搜索需要的物理地址。
-  * TLB中缓冲的是 **页表条目（PTE）**，而不是物理页。因此TLB命中返回PTE给MMU后，节省了MMU去查询页表的时间，仍然需要通过cache/memory去获取内容。
+  * TLB中缓冲的是映射关系，而不是物理页。因此如果 TLB 命中直接将结果返回给MMU后，节省了MMU去查询页表的时间，仍然需要通过cache/memory去获取内容。
 * **[MMU](https://en.wikipedia.org/wiki/Memory_management_unit)** 是一种负责处理中央处理器（CPU）的内存访问请求的计算机硬件。它的功能包括：
   * 虚拟地址到物理地址的转换（即虚拟内存管理）
   * 内存保护、CPU cache的控制
