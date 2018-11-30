@@ -205,40 +205,42 @@ cat /sys/kernel/debug/tracing/trace_pipe | tee /tmp/ftrace.log
 	echo 1 > /proc/sys/kernel/stack_tracer_enabled
 	```
 * 从此，ftrace 便留心记录内核函数的堆栈使用。 Max Stack Tracer 的输出在 stack_trace 文件中：
-```
-# cat /sys/kernel/debug/tracing/stack_trace                                                                                                    
-        Depth    Size   Location    (25 entries)
-        -----    ----   --------
-  0)     2912     216   update_group_capacity+0x33/0x2b0
-  1)     2696      64   msecs_to_jiffies+0x5/0x20
-  2)     2632     120   update_group_capacity+0x33/0x2b0
-  3)     2512     368   find_busiest_group+0x103/0x9a0
-  4)     2144     288   load_balance+0x1bd/0xaa0
-  5)     1856     128   pick_next_task_fair+0x2df/0x4f0
-  6)     1728     112   __schedule+0x6c4/0xf60
-  7)     1616      32   schedule+0x35/0xa0
-  8)     1584     176   schedule_timeout+0x234/0x300
-  9)     1408      64   io_schedule_timeout+0xa4/0x110
- 10)     1344      96   wait_for_common_io.constprop.2+0x94/0x110
- 11)     1248      16   wait_for_completion_io+0x18/0x20
- 12)     1232     176   blk_execute_rq+0x7c/0x100
- 13)     1056      80   scsi_execute+0x131/0x1b0
- 14)      976     112   scsi_execute_req_flags+0x8e/0x100
- 15)      864     128   scsi_test_unit_ready+0x84/0x140
- 16)      736      48   sd_check_events+0x10e/0x150
- 17)      688     112   disk_check_events+0x51/0x160
- 18)      576      16   disk_events_workfn+0x16/0x20
- 19)      560     112   process_one_work+0x2e9/0x750
- 20)      448     128   worker_thread+0x420/0x800
- 21)      320       0   return_to_handler+0x0/0x28
- 22)      320     144   kthread+0xc9/0xe0
- 23)      176       0   return_to_handler+0x0/0x28
- 24)      176     176   ret_from_fork+0x42/0x70
- ```
+	```
+	# cat /sys/kernel/debug/tracing/stack_trace
+	        Depth    Size   Location    (25 entries)
+	        -----    ----   --------
+	  0)     2912     216   update_group_capacity+0x33/0x2b0
+	  1)     2696      64   msecs_to_jiffies+0x5/0x20
+	  2)     2632     120   update_group_capacity+0x33/0x2b0
+	  3)     2512     368   find_busiest_group+0x103/0x9a0
+	  4)     2144     288   load_balance+0x1bd/0xaa0
+	  5)     1856     128   pick_next_task_fair+0x2df/0x4f0
+	  6)     1728     112   __schedule+0x6c4/0xf60
+	  7)     1616      32   schedule+0x35/0xa0
+	  8)     1584     176   schedule_timeout+0x234/0x300
+	  9)     1408      64   io_schedule_timeout+0xa4/0x110
+	 10)     1344      96   wait_for_common_io.constprop.2+0x94/0x110
+	 11)     1248      16   wait_for_completion_io+0x18/0x20
+	 12)     1232     176   blk_execute_rq+0x7c/0x100
+	 13)     1056      80   scsi_execute+0x131/0x1b0
+	 14)      976     112   scsi_execute_req_flags+0x8e/0x100
+	 15)      864     128   scsi_test_unit_ready+0x84/0x140
+	 16)      736      48   sd_check_events+0x10e/0x150
+	 17)      688     112   disk_check_events+0x51/0x160
+	 18)      576      16   disk_events_workfn+0x16/0x20
+	 19)      560     112   process_one_work+0x2e9/0x750
+	 20)      448     128   worker_thread+0x420/0x800
+	 21)      320       0   return_to_handler+0x0/0x28
+	 22)      320     144   kthread+0xc9/0xe0
+	 23)      176       0   return_to_handler+0x0/0x28
+	 24)      176     176   ret_from_fork+0x42/0x70
+	 ```
 * 从上例中可以看到内核堆栈最满的情况如下，有 25 层函数调用，堆栈使用大小为 2912 字节。此外还可以在 Location 这列中看到整个的 calling stack 情况。
 
 # 前端工具
+
 ## trace-cmd
+
 ### 资源
 ```
 git://git.kernel.org/pub/scm/linux/kernel/git/rostedt/trace-cmd.git
@@ -247,6 +249,7 @@ git://git.kernel.org/pub/scm/linux/kernel/git/rostedt/trace-cmd.git
 * [trace-cmd: A front-end for Ftrace](https://lwn.net/Articles/410200/)
 * [trace-cmd(1) - Linux manual page](http://man7.org/linux/man-pages/man1/trace-cmd.1.html)
 ### 功能
+#### trace-cmd
 ```
 $ trace-cmd -h
 
@@ -273,6 +276,7 @@ usage:
      stack - output, enable or disable kernel stack tracing
      check-events - parse trace event formats
 ```
+#### trace-cmd record
 ```
 $ trace-cmd record -h
 

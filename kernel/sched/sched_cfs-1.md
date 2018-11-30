@@ -178,7 +178,7 @@ static u64 __sched_period(unsigned long nr_running)
 * `nr_running`通常是就绪队列上的进程数，由此可以看到，调度周期同时受`nr_running`,`sysctl_sched_min_granularity`,`sysctl_sched_latency`三者影响，`sched_nr_latency`是根据后二者计算出来的
 * 我们将这两个分支称为 **条件1** 和 **条件2**
 1. **条件1**: `nr_running > sched_nr_latency`：排队的就绪进程较多，每个进程分得的时间按权重比例划分`nr_running * sysctl_sched_min_granularity`
-2. **条件2**:`nr_running > sched_nr_latency`：排队的就绪进程较少，每个进程分得的时间按权重比例划分`sysctl_sched_latency`
+2. **条件2**:`nr_running < sched_nr_latency`：排队的就绪进程较少，每个进程分得的时间按权重比例划分`sysctl_sched_latency`
 
 ```c
 /*
@@ -221,16 +221,30 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 * 在`check_preempt_tick()`时会因`if (delta_exec > ideal_runtime)` 不易达成变得不易被抢占
 #### `sysctl_sched_min_granularity`不变，只减小`sysctl_sched_latency`
 * 根据公式，`sched_nr_latency`会比较小，因此容易进入 **条件1**
-* 以调度最小粒度换算后进行调度
-* 在`check_preempt_tick()`时，会使检查调度最小粒度的条件不容易通过，因此变得易被抢占
+* 以调度最小粒度换算后进行调度，即`ideal_runtime`会变小
+* 由于调度周期变短了，因此`check_preempt_tick()`的以下条件会比较容易达成，易于发生抢占
+  ```c
+  if (delta_exec > ideal_runtime) {
+      resched_curr(rq_of(cfs_rq));
+      ...
+      return;
+  }
+  ```
+* 在`check_preempt_tick()`时，即使之前那个条件未达成，以下检查条件与之前相当，对抢占没影响
   ```c
   if (delta_exec < sysctl_sched_min_granularity)
       return;
   ```
+* 但由于调度周期变短，以下条件会容易达成，易于抢占
+  ```c
+  if (delta > ideal_runtime)
+      resched_curr(rq_of(cfs_rq));
+  ```
 #### 同时减小`sysctl_sched_latency`和`sysctl_sched_min_granularity`
-* 根据公式，`sched_nr_latency`不变，因此容易进入 **条件1** 和 **条件2** 的机会和调整之前想当
+* 根据公式，`sched_nr_latency`不变，因此容易进入 **条件1** 和 **条件2** 的机会和调整之前相当
 * 然而，不论是进入哪个条件，调度周期都变短了，见`__sched_period()`
 * 因此，理想运行时间也变短了，见`sched_slice()`
 * 在`check_preempt_tick()`时，
   * `if (delta_exec > ideal_runtime)` 容易达成，易被抢占
   * `if (delta_exec < sysctl_sched_min_granularity)` 不易达成，易被抢占
+  * `if (delta > ideal_runtime)` 容易达成，易被抢占
