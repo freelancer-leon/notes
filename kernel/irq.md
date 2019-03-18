@@ -66,69 +66,83 @@ start_kernel()
   -> idt_setup_ist_traps()
   -> x86_init.irqs.trap_init()
   -> idt_setup_debugidt_traps()
+-> init_IRQ()
+  -> x86_init.irqs.intr_init()
+  => native_init_IRQ()
+     -> idt_setup_apic_and_irq_gates()
+        -> idt_setup_from_table(idt_table, apic_idts, ARRAY_SIZE(apic_idts), true);
+        -> int i = FIRST_EXTERNAL_VECTOR;
+           for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR)
+              set_intr_gate(i, irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR));
 ```
-* `idt_table`为设置好内容的 IDT 表
+* `idt_table`为设置好内容的 **IDT 表**
 * `idt_descr`为存储 IDT 表地址的指针，用`lidt`指令将它加载到`idtr`寄存器
+* `def_idts[]`为通用的异常数组，`apic_idts[]`为 x86 APIC 的中断数组
+* x86 通过`native_init_IRQ()`调用`idt_setup_apic_and_irq_gates()`设置好 APIC 和 **中断** 的门
+  * 对于中断来说，`irq_entries_start`就是软件在中断处理的第一段例程
+  * `irq_entries_start`见 arch/x86/entry/entry_64.S，里面包含一个很大的汇编宏展开`.rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)`
 
 ### `def_idts[]`数组
-* arch/x86/include/asm/desc_defs.h
-```c
-enum {  //对应到表示门描述符类型的 40-43 位
-        GATE_INTERRUPT = 0xE,
-        GATE_TRAP = 0xF,
-        GATE_CALL = 0xC,
-        GATE_TASK = 0x5,
-};
-...
-struct idt_bits {
-        u16             ist     : 3, //32-34 位
-                        zero    : 5, //35-39 位为 0
-                        type    : 5, //40-43 位为门描述符类型，44 为 0
-                        dpl     : 2, //45-46 位为门描述符 DPL
-                        p       : 1; //47 位为 P
-} __attribute__((packed));
+* `struct gate_struct`对应到 Intel IDT 的表项，存储格式见上面图示，注意，中断处理函数的地址不是连续存储的，而是被`offset_low`，`offset_middle`，`offset_high`分成三个部分
+  * arch/x86/include/asm/desc_defs.h
+  ```c
+  enum {  //对应到表示门描述符类型的 40-43 位
+          GATE_INTERRUPT = 0xE,
+          GATE_TRAP = 0xF,
+          GATE_CALL = 0xC,
+          GATE_TASK = 0x5,
+  };
+  ...
+  struct idt_bits {
+          u16             ist     : 3, //32-34 位
+                          zero    : 5, //35-39 位为 0
+                          type    : 5, //40-43 位为门描述符类型，44 为 0
+                          dpl     : 2, //45-46 位为门描述符 DPL
+                          p       : 1; //47 位为 P
+  } __attribute__((packed));
 
-struct gate_struct {
-        u16             offset_low; //0~15 位为 Offset(0-15)
-        u16             segment;    //16~31 位为段选择符
-        struct idt_bits bits;       //32-47 位为门描述符 bit 位，见 struct idt_bits
-        u16             offset_middle; //48-63 位为 Offset(16-31)
-#ifdef CONFIG_X86_64
-        u32             offset_high; //64 位的高 32 位， Offset(32-63)
-        u32             reserved;
-#endif
-} __attribute__((packed));
+  struct gate_struct {
+          u16             offset_low; //0~15 位为 Offset(0-15)
+          u16             segment;    //16~31 位为段选择符
+          struct idt_bits bits;       //32-47 位为门描述符 bit 位，见 struct idt_bits
+          u16             offset_middle; //48-63 位为 Offset(16-31)
+  #ifdef CONFIG_X86_64
+          u32             offset_high; //64 位的高 32 位， Offset(32-63)
+          u32             reserved;
+  #endif
+  } __attribute__((packed));
 
-typedef struct gate_struct gate_desc;
-```
-* arch/x86/include/asm/traps.h
-```c
-/* Interrupts/Exceptions */
-enum {
-        X86_TRAP_DE = 0,        /*  0, Divide-by-zero */
-        X86_TRAP_DB,            /*  1, Debug */
-        X86_TRAP_NMI,           /*  2, Non-maskable Interrupt */
-        X86_TRAP_BP,            /*  3, Breakpoint */
-        X86_TRAP_OF,            /*  4, Overflow */
-        X86_TRAP_BR,            /*  5, Bound Range Exceeded */
-        X86_TRAP_UD,            /*  6, Invalid Opcode */
-        X86_TRAP_NM,            /*  7, Device Not Available */
-        X86_TRAP_DF,            /*  8, Double Fault */
-        X86_TRAP_OLD_MF,        /*  9, Coprocessor Segment Overrun */
-        X86_TRAP_TS,            /* 10, Invalid TSS */
-        X86_TRAP_NP,            /* 11, Segment Not Present */
-        X86_TRAP_SS,            /* 12, Stack Segment Fault */
-        X86_TRAP_GP,            /* 13, General Protection Fault */
-        X86_TRAP_PF,            /* 14, Page Fault */
-        X86_TRAP_SPURIOUS,      /* 15, Spurious Interrupt */
-        X86_TRAP_MF,            /* 16, x87 Floating-Point Exception */
-        X86_TRAP_AC,            /* 17, Alignment Check */
-        X86_TRAP_MC,            /* 18, Machine Check */
-        X86_TRAP_XF,            /* 19, SIMD Floating-Point Exception */
-        X86_TRAP_IRET = 32,     /* 32, IRET Exception */
-};
-```
-
+  typedef struct gate_struct gate_desc;
+  ```
+* 0~32 号异常的枚举定义
+  * arch/x86/include/asm/traps.h
+  ```c
+  /* Interrupts/Exceptions */
+  enum {
+          X86_TRAP_DE = 0,        /*  0, Divide-by-zero */
+          X86_TRAP_DB,            /*  1, Debug */
+          X86_TRAP_NMI,           /*  2, Non-maskable Interrupt */
+          X86_TRAP_BP,            /*  3, Breakpoint */
+          X86_TRAP_OF,            /*  4, Overflow */
+          X86_TRAP_BR,            /*  5, Bound Range Exceeded */
+          X86_TRAP_UD,            /*  6, Invalid Opcode */
+          X86_TRAP_NM,            /*  7, Device Not Available */
+          X86_TRAP_DF,            /*  8, Double Fault */
+          X86_TRAP_OLD_MF,        /*  9, Coprocessor Segment Overrun */
+          X86_TRAP_TS,            /* 10, Invalid TSS */
+          X86_TRAP_NP,            /* 11, Segment Not Present */
+          X86_TRAP_SS,            /* 12, Stack Segment Fault */
+          X86_TRAP_GP,            /* 13, General Protection Fault */
+          X86_TRAP_PF,            /* 14, Page Fault */
+          X86_TRAP_SPURIOUS,      /* 15, Spurious Interrupt */
+          X86_TRAP_MF,            /* 16, x87 Floating-Point Exception */
+          X86_TRAP_AC,            /* 17, Alignment Check */
+          X86_TRAP_MC,            /* 18, Machine Check */
+          X86_TRAP_XF,            /* 19, SIMD Floating-Point Exception */
+          X86_TRAP_IRET = 32,     /* 32, IRET Exception */
+  };
+  ```
+* `def_idts[]`数组存储的 Linux 中断向量与中断处理函数的对应关系，这与 Intel IDT 表`idt_table[]`是不同的，尤其是 Intel IDT 表项中存的是 **段选择符** 和 **偏移**，因此需要在`idt_init_desc()`函数中进行格式转换
 * arch/x86/kernel/idt.c
 ```c
 struct idt_data {
@@ -234,29 +248,30 @@ static const __initconst struct idt_data def_idts[] = {
 * 其中，`X86_TRAP_NMI`向量的中断处理函数的入口地址为`nmi`，例如在 x86-64 中的定义见`arch/x86/entry/entry_64.S`中的`ENTRY(nmi)`
   * 该中断处理函数的入口地址会在`idt_init_desc()`函数中被分为`offset_low`（16 bit）、`offset_middle`（16 bit）、`offset_high`（32 bit）三段存储
 * 其他的一些中断向量的入口函数可能会用类似`idtentry invalid_op do_invalid_op has_error_code=0`的汇编宏`.macro idtentry sym do_sym has_error_code:req paranoid=0 shift_ist=-1`来实现
-* arch/x86/include/asm/desc.h
-```c
-#ifdef CONFIG_PARAVIRT
-#include <asm/paravirt.h>
-#else
-#define load_TR_desc()                          native_load_tr_desc()
-...
-#define load_idt(dtr)                           native_load_idt(dtr)
-#define load_tr(tr)                             asm volatile("ltr %0"::"m" (tr))
-...
-#define store_tr(tr)                            (tr = native_store_tr())
+* x86 填充 Intel IDT 表，加载 IDT 表的实现
+  * arch/x86/include/asm/desc.h
+  ```c
+  #ifdef CONFIG_PARAVIRT
+  #include <asm/paravirt.h>
+  #else
+  #define load_TR_desc()                          native_load_tr_desc()
+  ...
+  #define load_idt(dtr)                           native_load_idt(dtr)
+  #define load_tr(tr)                             asm volatile("ltr %0"::"m" (tr))
+  ...
+  #define store_tr(tr)                            (tr = native_store_tr())
 
-#define load_TLS(t, cpu)                        native_load_tls(t, cpu)
-...
-#define write_idt_entry(dt, entry, g)           native_write_idt_entry(dt, entry, g)
-...
-#endif  /* CONFIG_PARAVIRT */
-...
-static inline void native_write_idt_entry(gate_desc *idt, int entry, const gate_desc *gate)
-{
-        memcpy(&idt[entry], gate, sizeof(*gate));
-}
-```
+  #define load_TLS(t, cpu)                        native_load_tls(t, cpu)
+  ...
+  #define write_idt_entry(dt, entry, g)           native_write_idt_entry(dt, entry, g)
+  ...
+  #endif  /* CONFIG_PARAVIRT */
+  ...
+  static inline void native_write_idt_entry(gate_desc *idt, int entry, const gate_desc *gate)
+  {
+          memcpy(&idt[entry], gate, sizeof(*gate));
+  }
+  ```
 * `idt_descr` 初始值为`idt_table[]`的起始地址，在`trap_init()`中会被改写
 * arch/x86/kernel/idt.c
 ```c
@@ -408,6 +423,47 @@ void __init trap_init(void)
 ```
 
 ## x86的`do_IRQ()`
+### 几个相关的数组
+#### irq_desc数组/radix tree
+* 中断请求描述符`struct irq_desc`用于记录各个中断事件的处理方法和未处理事件
+* 注意：不要与硬件分发中用到的“中断描述符表”（IDT）相混淆 —— 那是与不同中断向量入口地址相关的
+* `struct irq_desc`定义见 include/linux/irqdesc.h
+* `struct irq_desc irq_desc[NR_IRQS]`数组的初值
+  - 索引是中断向量，值是`struct irq_desc`实例
+  - kernel/irq/irqdesc.c
+  ```c
+  struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
+          [0 ... NR_IRQS-1] = {
+                  .handle_irq     = handle_bad_irq,
+                  .depth          = 1,
+                  .lock           = __RAW_SPIN_LOCK_UNLOCKED(irq_desc->lock),
+          }
+  };
+  ```
+#### vector_irq
+* `vector_irq`则是 per-CPU 的存储指向`struct irq_desc`实例的指针
+* 声明
+  - arch/x86/include/asm/hw_irq.h
+  ```c
+  typedef struct irq_desc* vector_irq_t[NR_VECTORS];
+  DECLARE_PER_CPU(vector_irq_t, vector_irq);
+  ```
+* 初值
+  - arch/x86/kernel/irqinit.c
+  ```c
+  DEFINE_PER_CPU(vector_irq_t, vector_irq) = {
+          [0 ... NR_VECTORS - 1] = VECTOR_UNUSED,
+  };
+  ```
+
+### Call Trace
+```c
+irq_entries_start
+-> jmp common_interrupt
+   -> interrupt do_IRQ
+      -> call \func
+      => call do_IRQ()
+```
 * `struct pt_regs`结构体的定义见`arch/x86/include/uapi/asm/ptrace.h`
 * Per-CPU的`struct pt_regs`类型的`irq_regs`变量用于保存被中断时的寄存器的值。
   * 这些值是在调用`do_IRQ()`前在汇编入口例程中保存的。
@@ -549,7 +605,7 @@ END(irq_entries_start)
         pushq   %rdi
         /* We entered an interrupt context - irqs are off: */
         TRACE_IRQS_OFF
-
+        /*跳转至x86通用的 C 中断处理，在上面列出了*/
         call    \func   /* rdi points to pt_regs */
         .endm
 
@@ -561,7 +617,7 @@ END(irq_entries_start)
 common_interrupt:
         ASM_CLAC
         addq    $-0x80, (%rsp)                  /* Adjust vector to [-256, -1] range */
-        interrupt do_IRQ       /*跳转至x86通用的 C 中断处理，在上面列出了*/
+        interrupt do_IRQ       /*上面列出的 .macro interrupt 汇编宏在此处展开*/
         /* 0(%rsp): old RSP */
 ret_from_intr:                 /*注意，这里是连着的，do_IRQ 返回后会接着执行后面的指令*/
         DISABLE_INTERRUPTS(CLBR_ANY)
@@ -569,9 +625,9 @@ ret_from_intr:                 /*注意，这里是连着的，do_IRQ 返回后�
         decl    PER_CPU_VAR(irq_count)
 
         /* Restore saved previous stack */
-        popq    %rsp
+        popq    %rsp          /*将之前存在栈上的前一个栈的栈指针弹出，放到栈指针寄存器*/
 
-        testb   $3, CS(%rsp)  /*读寄存器，判断中断是返回到 user space 还是 kernel space*/
+        testb   $3, CS(%rsp)  /*CS 为宏 17*8，即根据栈指针寄存器的值做偏移运算，在栈中找到被打断的上下文原 %cs 寄存器的值，判断中断是该返回到 user space 还是 kernel space*/
         jz      retint_kernel
 
         /* Interrupt came from user space */

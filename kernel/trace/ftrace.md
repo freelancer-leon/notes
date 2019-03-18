@@ -469,14 +469,14 @@ cpus=8
 ...
 ```
 * 对应的 ftrace 操作
-```
-# echo ip_rcv > /sys/kernel/debug/tracing/set_graph_function
-# echo function_graph > /sys/kernel/debug/tracing/current_tracer
-# echo 1 > /sys/kernel/debug/tracing/tracing_on
-# cat /sys/kernel/debug/tracing/trace_pipe
-# echo 0 > /sys/kernel/debug/tracing/tracing_on
-# echo nop > /sys/kernel/debug/tracing/current_tracer
-```
+	```
+	# echo ip_rcv > /sys/kernel/debug/tracing/set_graph_function
+	# echo function_graph > /sys/kernel/debug/tracing/current_tracer
+	# echo 1 > /sys/kernel/debug/tracing/tracing_on
+	# cat /sys/kernel/debug/tracing/trace_pipe
+	# echo 0 > /sys/kernel/debug/tracing/tracing_on
+	# echo nop > /sys/kernel/debug/tracing/current_tracer
+	```
 
 ### 图形前端-kernelshark
 * [KernelShark](http://rostedt.homelinux.com/kernelshark/)
@@ -484,38 +484,37 @@ cpus=8
 
 ## trace_options
 * `/sys/kernel/debug/tracing/trace_options`文件
-
-```
-# cat /sys/kernel/debug/tracing/trace_options
-print-parent
-nosym-offset
-nosym-addr
-noverbose
-noraw
-nohex
-nobin
-noblock
-nostacktrace
-trace_printk
-noftrace_preempt
-nobranch
-annotate
-nouserstacktrace
-nosym-userobj
-noprintk-msg-only
-context-info
-nolatency-format
-sleep-time
-graph-time
-record-cmd
-overwrite
-nodisable_on_free
-irq-info
-markers
-function-trace
-notest_nop_accept
-notest_nop_refuse
-```
+	```
+	# cat /sys/kernel/debug/tracing/trace_options
+	print-parent
+	nosym-offset
+	nosym-addr
+	noverbose
+	noraw
+	nohex
+	nobin
+	noblock
+	nostacktrace
+	trace_printk
+	noftrace_preempt
+	nobranch
+	annotate
+	nouserstacktrace
+	nosym-userobj
+	noprintk-msg-only
+	context-info
+	nolatency-format
+	sleep-time
+	graph-time
+	record-cmd
+	overwrite
+	nodisable_on_free
+	irq-info
+	markers
+	function-trace
+	notest_nop_accept
+	notest_nop_refuse
+	```
 
 # Reference
 

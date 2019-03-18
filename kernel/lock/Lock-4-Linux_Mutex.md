@@ -261,8 +261,8 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
      */
     if (!mutex_is_locked(lock) &&
         (atomic_xchg_acquire(&lock->count, 0) == 1))
-        goto skip_wait; 
-    
+        goto skip_wait;
+
     debug_mutex_lock_common(lock, &waiter);
     debug_mutex_add_waiter(lock, &waiter, task_thread_info(task));
 
@@ -338,5 +338,94 @@ err:
     preempt_enable();
     return ret;
 }
-...
+...__```
+```
+
+## Mutex 锁调试
+```c
+#include "mutex-debug.h"
+
+/*
+ * Must be called with lock->wait_lock held.
+ */
+/*调用于加锁之时，还未获得锁之前*/
+void debug_mutex_lock_common(struct mutex *lock, struct mutex_waiter *waiter)
+{
+	memset(waiter, MUTEX_DEBUG_INIT, sizeof(*waiter)); //poison 栈上的变量 waiter
+	waiter->magic = waiter; //设置锁调试特定域 magic
+	INIT_LIST_HEAD(&waiter->list); //该 waiter 稍后会被挂在 lock->wait_list 上
+}
+/*调用于解锁之时，未调用 wake_q_add()之前*/
+void debug_mutex_wake_waiter(struct mutex *lock, struct mutex_waiter *waiter)
+{
+	SMP_DEBUG_LOCKS_WARN_ON(!spin_is_locked(&lock->wait_lock)); //mutex 的等锁队列未上锁！
+	DEBUG_LOCKS_WARN_ON(list_empty(&lock->wait_list)); //因为该函数在等锁队列不为空的分支被调用，等锁队列为空意味着有问题！
+	DEBUG_LOCKS_WARN_ON(waiter->magic != waiter); //waiter 的 magic 域被修改！
+	DEBUG_LOCKS_WARN_ON(list_empty(&waiter->list)); //waiter 刚从等锁队列上被找到，还未拿下来，此时 waiter->list 为空必为异常！waiter->list 要一直等到锁争用成功后，在 mutex_remove_waiter() 里从等锁队列里删除
+}
+/*调用于加锁之时，获得锁之后，mutex_remove_waiter()之后*/
+void debug_mutex_free_waiter(struct mutex_waiter *waiter)
+{
+	DEBUG_LOCKS_WARN_ON(!list_empty(&waiter->list));
+	memset(waiter, MUTEX_DEBUG_FREE, sizeof(*waiter));
+}
+/*调用于加锁之时，还未获得锁之前，紧跟 debug_mutex_lock_common()*/
+void debug_mutex_add_waiter(struct mutex *lock, struct mutex_waiter *waiter,
+			    struct task_struct *task)
+{
+	SMP_DEBUG_LOCKS_WARN_ON(!spin_is_locked(&lock->wait_lock)); //未获得 mutex 等锁队列的锁！
+
+	/* Mark the current thread as blocked on the lock: */
+	task->blocked_on = waiter; /*在 task_struct 里记录导致任务阻塞的 mutex*/
+}
+/*调用于加锁之时，获得锁之后，debug_mutex_free_waiter()之前。
+  注意：无论 mutex 锁调试是否打开，该函数都会被调用到*/
+void mutex_remove_waiter(struct mutex *lock, struct mutex_waiter *waiter,
+			 struct task_struct *task)
+{
+	DEBUG_LOCKS_WARN_ON(list_empty(&waiter->list)); //争锁前无论是否获得锁，都会先把 waiter 挂于 lock->wait_list 上，因此该条件不成立肯定是有问题
+	DEBUG_LOCKS_WARN_ON(waiter->task != task); //争锁前无论是否获得锁，都会先把 waiter-> task = current，争锁成功后发现该条件不成立，肯定有问题
+	DEBUG_LOCKS_WARN_ON(task->blocked_on != waiter);//争锁成功后，任务阻塞的 waiter 与之前不一致，肯定有问题！mutex锁调试未打开时，task->blocked_on 恒等于 NULL
+	task->blocked_on = NULL;
+
+	list_del_init(&waiter->list); //争锁成功后，waiter 需从 lock->wait_list 上删除
+	waiter->task = NULL; //争锁成功后，waiter 不再有意义，task 域置为 NULL
+}
+/*调用于解锁之时，调用 debug_mutex_wake_waiter()之前*/
+void debug_mutex_unlock(struct mutex *lock)
+{
+	if (likely(debug_locks)) {
+		DEBUG_LOCKS_WARN_ON(lock->magic != lock); //将要解的锁被破坏了！
+		DEBUG_LOCKS_WARN_ON(!lock->wait_list.prev && !lock->wait_list.next); //将要解的锁的等锁队列异常！
+	}
+}
+/*调用于 __mutex_init()*/
+void debug_mutex_init(struct mutex *lock, const char *name,
+		      struct lock_class_key *key)
+{
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	/*
+	 * Make sure we are not reinitializing a held lock:
+	 */
+	debug_check_no_locks_freed((void *)lock, sizeof(*lock));
+	lockdep_init_map(&lock->dep_map, name, key, 0);
+#endif
+	lock->magic = lock; //mutex 锁调试特定域赋初值
+}
+/*mutex 锁调试被关闭时，该函数定义为空函数*/
+/***
+ * mutex_destroy - mark a mutex unusable
+ * @lock: the mutex to be destroyed
+ *
+ * This function marks the mutex uninitialized, and any subsequent
+ * use of the mutex is forbidden. The mutex must not be locked when
+ * this function is called.
+ */
+void mutex_destroy(struct mutex *lock)
+{
+	DEBUG_LOCKS_WARN_ON(mutex_is_locked(lock));
+	lock->magic = NULL;
+}
+
+EXPORT_SYMBOL_GPL(mutex_destroy);
 ```
