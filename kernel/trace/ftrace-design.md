@@ -132,6 +132,65 @@ ENTRY(function_hook)
 END(function_hook)
 ```
 
+### 修改文本段
+#### current_tracer
+
+```c
+static const struct file_operations set_tracer_fops = {
+       .open           = tracing_open_generic,
+       .read           = tracing_set_trace_read,
+       .write          = tracing_set_trace_write,
+       .llseek         = generic_file_llseek,
+};
+```
+
+```c
+fs_initcall(tracer_init_tracefs)
+-> tracer_init_tracefs()
+   -> trace_create_file("current_tracer", 0644, d_tracer, tr, &set_tracer_fops);
+```
+
+#### 修改 current_tracer
+
+```c
+static struct tracer function_trace __tracer_data =
+{
+        .name           = "function",
+        .init           = function_trace_init,
+        .reset          = function_trace_reset,
+        .start          = function_trace_start,
+        .flags          = &func_flags,
+        .set_flag       = func_set_flag,
+        .allow_instances = true,
+#ifdef CONFIG_FTRACE_SELFTEST
+        .selftest       = trace_selftest_startup_function,
+#endif
+};
+```
+
+```c
+tracing_set_trace_write()
+-> tracing_set_tracer()
+   -> tracer_init()
+      -> tracing_reset_online_cpus()
+      -> t->init(tr)
+      => function_trace_init()
+         -> tracing_start_cmdline_record()
+         -> tracing_start_function_trace()
+         -> register_ftrace_function()
+            -> ftrace_startup()
+               -> ftrace_startup_enable()
+                  -> ftrace_run_update_code()
+                     -> ftrace_arch_code_modify_prepare()
+                        -> set_kernel_text_rw()
+                        -> set_all_modules_text_rw()
+                     -> arch_ftrace_update_code()
+                        -> ftrace_modify_all_code()
+                     -> ftrace_arch_code_modify_post_process()
+                        -> set_all_modules_text_ro()
+                        -> set_kernel_text_ro()
+```
+
 # function_graph tracer的实现
 ```c
 foo()
@@ -321,6 +380,7 @@ preempt_disable()
                  -> start_critical_timing()
                       -> __trace_function()
 ```
+
 ```dot
 engine:dot
 digraph G {

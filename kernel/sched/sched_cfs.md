@@ -637,8 +637,8 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 }
 ```
 * 这里有两组条件需重新调度，有两组条件无需重新调度
-	* 前两个比较用的是 **实际时间**，随后又比较了两个进程的`vruntime`，然后用它们`vruntime`的差值与一个（理想的）实际时间进行比较，可见这里目前的实现比较 tricky
-	* 第一个条件，`delta_exec > ideal_runtime`,理所当然
+	* 这里有四个 `if` 语句，前两个比较用的是 **实际时间**，随后又比较了两个进程的`vruntime`，然后用它们`vruntime`的差值与一个（理想的）实际时间进行比较，可见这里目前的实现比较 tricky
+	* 第一个条件，`delta_exec > ideal_runtime`，理所当然
 	* 第二个条件表明，当前进程即便预先分配的运行时间没有用完，实际运行时间一旦超过`sysctl_sched_min_granularity`就有可能被抢占
 	* 第三个条件，`vruntime`小的进程仍然更具优势，即使超出最小调度粒度的保障
 * `sysctl_sched_min_granularity`之前说过，可以通过`/proc/sys/kernel/sched_min_granularity_ns`配置，为了防止过于频繁的进程切换影响性能
