@@ -92,6 +92,161 @@
 	* 缺省值采用如下公式计算
 		* `max(65536, min(4MB, tcp_mem[1]*PAGE_SIZE/128))`
 
+## TCP 收包 call trace
+```c
+2315.979009: funcgraph_entry:                   |  ip_rcv() {
+2315.979020: funcgraph_entry:                   |    ip_rcv_finish() {
+2315.979020: funcgraph_entry:                   |      tcp_v4_early_demux() {
+2315.979020: funcgraph_entry:                   |        __inet_lookup_established() {
+2315.979021: funcgraph_entry:        0.084 us   |          inet_ehashfn();
+2315.979021: funcgraph_entry:        0.044 us   |          __rcu_read_lock();
+2315.979022: funcgraph_entry:        0.047 us   |          __rcu_read_unlock();
+2315.979022: funcgraph_exit:         1.847 us   |        }
+2315.979023: funcgraph_entry:        0.047 us   |        ipv4_dst_check();
+2315.979023: funcgraph_exit:         3.028 us   |      }
+2315.979024: funcgraph_entry:                   |      ip_local_deliver() {
+2315.979024: funcgraph_entry:                   |        ip_local_deliver_finish() {
+2315.979024: funcgraph_entry:        0.035 us   |          __rcu_read_lock();
+2315.979025: funcgraph_entry:        0.072 us   |          raw_local_deliver();
+2315.979025: funcgraph_entry:                   |          tcp_v4_rcv() {
+2315.979026: funcgraph_entry:                   |            tcp_filter() {
+2315.979026: funcgraph_entry:                   |              sk_filter_trim_cap() {
+2315.979026: funcgraph_entry:        0.040 us   |                __rcu_read_lock();
+2315.979027: funcgraph_entry:        0.040 us   |                __rcu_read_unlock();
+2315.979027: funcgraph_exit:         1.081 us   |              }
+2315.979027: funcgraph_exit:         1.668 us   |            }
+2315.979028: funcgraph_entry:                   |            _raw_spin_lock() {
+2315.979028: funcgraph_entry:        0.042 us   |              preempt_count_add();
+2315.979028: funcgraph_exit:         0.558 us   |            }
+2315.979029: funcgraph_entry:        0.061 us   |            tcp_prequeue();
+2315.979029: funcgraph_entry:                   |            tcp_v4_do_rcv() {
+2315.979030: funcgraph_entry:        0.038 us   |              ipv4_dst_check();
+2315.979030: funcgraph_entry:                   |              tcp_rcv_established() {
+2315.979031: funcgraph_entry:        0.042 us   |                tcp_parse_aligned_timestamp.part.6();
+2315.979031: funcgraph_entry:                   |                tcp_ack() {
+2315.979031: funcgraph_entry:        0.038 us   |                  get_seconds();
+2315.979032: funcgraph_exit:         0.674 us   |                }
+2315.979032: funcgraph_entry:        0.044 us   |                tcp_urg();
+2315.979033: funcgraph_entry:                   |                tcp_data_queue() {
+2315.979033: funcgraph_entry:                   |                  tcp_try_rmem_schedule() {
+2315.979034: funcgraph_entry:        0.056 us   |                    __sk_mem_schedule();
+2315.979034: funcgraph_exit:         0.644 us   |                  }
+2315.979034: funcgraph_entry:        0.136 us   |                  tcp_queue_rcv();
+2315.979035: funcgraph_entry:        0.203 us   |                  tcp_event_data_recv();
+2315.979036: funcgraph_entry:                   |                  sock_def_readable() {
+2315.979036: funcgraph_entry:        0.035 us   |                    __rcu_read_lock();
+2315.979037: funcgraph_entry:        0.038 us   |                    __rcu_read_unlock();
+2315.979037: funcgraph_exit:         1.094 us   |                  }
+2315.979038: funcgraph_exit:         4.565 us   |                }
+2315.979038: funcgraph_entry:        0.041 us   |                tcp_check_space();
+2315.979039: funcgraph_entry:                   |                __tcp_ack_snd_check() {
+2315.979039: funcgraph_entry:                   |                  tcp_send_ack() {
+2315.979039: funcgraph_entry:                   |                    __alloc_skb() {
+2315.979040: funcgraph_entry:                   |                      kmem_cache_alloc_node() {
+2315.979040: funcgraph_entry:        0.444 us   |                        __slab_alloc.isra.22();
+2315.979041: funcgraph_exit:         0.975 us   |                      }
+2315.979041: funcgraph_entry:                   |                      __kmalloc_reserve.isra.5() {
+2315.979041: funcgraph_entry:                   |                        __kmalloc_node_track_caller() {
+2315.979042: funcgraph_entry:        0.047 us   |                          kmalloc_slab();
+2315.979042: funcgraph_exit:         0.650 us   |                        }
+2315.979042: funcgraph_exit:         1.176 us   |                      }
+2315.979043: funcgraph_entry:        0.149 us   |                      ksize();
+2315.979043: funcgraph_exit:         3.869 us   |                    }
+2315.979044: funcgraph_entry:                   |                    tcp_transmit_skb() {
+2315.979044: funcgraph_entry:        0.039 us   |                      skb_push();
+2315.979045: funcgraph_entry:        0.050 us   |                      __tcp_select_window();
+2315.979045: funcgraph_entry:        0.052 us   |                      tcp_options_write();
+2315.979046: funcgraph_entry:                   |                      tcp_v4_send_check() {
+2315.979046: funcgraph_entry:        0.052 us   |                        __tcp_v4_send_check();
+2315.979047: funcgraph_exit:         0.569 us   |                      }
+2315.979047: funcgraph_entry:                   |                      ip_queue_xmit() {
+2315.979047: funcgraph_entry:        0.040 us   |                        __rcu_read_lock();
+2315.979048: funcgraph_entry:                   |                        __sk_dst_check() {
+2315.979048: funcgraph_entry:        0.037 us   |                          ipv4_dst_check();
+2315.979049: funcgraph_exit:         0.578 us   |                        }
+2315.979049: funcgraph_entry:        0.038 us   |                        skb_push();
+2315.979050: funcgraph_entry:                   |                        ip_local_out_sk() {
+2315.979050: funcgraph_entry:                   |                          __ip_local_out_sk() {
+2315.979050: funcgraph_entry:        0.044 us   |                            ip_send_check();
+2315.979051: funcgraph_exit:         0.630 us   |                          }
+2315.979051: funcgraph_entry:                   |                          ip_output() {
+2315.979052: funcgraph_entry:                   |                            ip_finish_output() {
+2315.979052: funcgraph_entry:        0.054 us   |                              ipv4_mtu();
+2315.979053: funcgraph_entry:        0.061 us   |                              __local_bh_disable_ip();
+2315.979053: funcgraph_entry:                   |                              neigh_resolve_output() {
+2315.979054: funcgraph_entry:                   |                                eth_header() {
+2315.979054: funcgraph_entry:        0.043 us   |                                  skb_push();
+2315.979055: funcgraph_exit:         0.624 us   |                                }
+2315.979055: funcgraph_entry:                   |                                dev_queue_xmit_sk() {
+2315.979055: funcgraph_entry:                   |                                  __dev_queue_xmit() {
+2315.979056: funcgraph_entry:        0.055 us   |                                    __local_bh_disable_ip();
+2315.979056: funcgraph_entry:        0.066 us   |                                    netdev_pick_tx();
+2315.979057: funcgraph_entry:                   |                                    _raw_spin_lock() {
+2315.979057: funcgraph_entry:        0.045 us   |                                      preempt_count_add();
+2315.979057: funcgraph_exit:         0.553 us   |                                    }
+2315.979058: funcgraph_entry:                   |                                    sch_direct_xmit() {
+2315.979058: funcgraph_entry:                   |                                      _raw_spin_unlock() {
+2315.979058: funcgraph_entry:        0.047 us   |                                        preempt_count_sub();
+2315.979059: funcgraph_exit:         0.566 us   |                                      }
+2315.979059: funcgraph_entry:                   |                                      validate_xmit_skb_list() {
+2315.979059: funcgraph_entry:                   |                                        validate_xmit_skb.isra.31.part.32() {
+2315.979060: funcgraph_entry:                   |                                          netif_skb_features() {
+2315.979060: funcgraph_entry:        0.038 us   |                                            passthru_features_check();
+2315.979061: funcgraph_entry:        0.044 us   |                                            skb_network_protocol();
+2315.979061: funcgraph_exit:         1.137 us   |                                          }
+2315.979061: funcgraph_exit:         1.759 us   |                                        }
+2315.979062: funcgraph_exit:         2.355 us   |                                      }
+2315.979062: funcgraph_entry:                   |                                      _raw_spin_lock() {
+2315.979062: funcgraph_entry:        0.042 us   |                                        preempt_count_add();
+2315.979063: funcgraph_exit:         0.554 us   |                                      }
+2315.979063: funcgraph_entry:                   |                                      dev_hard_start_xmit() {
+2315.979063: funcgraph_entry:                   |                                        e1000_xmit_frame() {
+2315.979064: funcgraph_entry:        0.059 us   |                                          e1000_maybe_stop_tx();
+2315.979065: funcgraph_entry:        0.038 us   |                                          e1000_maybe_stop_tx();
+2315.979065: funcgraph_exit:         1.590 us   |                                        }
+2315.979065: funcgraph_exit:         2.233 us   |                                      }
+2315.979066: funcgraph_entry:                   |                                      _raw_spin_unlock() {
+2315.979066: funcgraph_entry:        0.044 us   |                                        preempt_count_sub();
+2315.979066: funcgraph_exit:         0.542 us   |                                      }
+2315.979067: funcgraph_entry:                   |                                      _raw_spin_lock() {
+2315.979067: funcgraph_entry:        0.044 us   |                                        preempt_count_add();
+2315.979067: funcgraph_exit:         0.539 us   |                                      }
+2315.979068: funcgraph_exit:         9.720 us   |                                    }
+2315.979068: funcgraph_entry:                   |                                    _raw_spin_unlock() {
+2315.979068: funcgraph_entry:        0.043 us   |                                      preempt_count_sub();
+2315.979069: funcgraph_exit:         0.558 us   |                                    }
+2315.979069: funcgraph_entry:                   |                                    __local_bh_enable_ip() {
+2315.979069: funcgraph_entry:        0.036 us   |                                      preempt_count_sub();
+2315.979070: funcgraph_entry:        0.052 us   |                                      preempt_count_sub();
+2315.979070: funcgraph_exit:         1.038 us   |                                    }
+2315.979070: funcgraph_exit:       + 14.906 us  |                                  }
+2315.979071: funcgraph_exit:       + 15.436 us  |                                }
+2315.979071: funcgraph_exit:       + 17.189 us  |                              }
+2315.979071: funcgraph_entry:                   |                              __local_bh_enable_ip() {
+2315.979071: funcgraph_entry:        0.043 us   |                                preempt_count_sub();
+2315.979072: funcgraph_entry:        0.047 us   |                                preempt_count_sub();
+2315.979072: funcgraph_exit:         1.075 us   |                              }
+2315.979073: funcgraph_exit:       + 20.776 us  |                            }
+2315.979073: funcgraph_exit:       + 21.392 us  |                          }
+2315.979073: funcgraph_exit:       + 23.249 us  |                        }
+2315.979073: funcgraph_entry:        0.037 us   |                        __rcu_read_unlock();
+2315.979074: funcgraph_exit:       + 26.635 us  |                      }
+2315.979074: funcgraph_exit:       + 30.372 us  |                    }
+2315.979074: funcgraph_exit:       + 35.364 us  |                  }
+2315.979075: funcgraph_exit:       + 35.945 us  |                }
+2315.979075: funcgraph_exit:       + 44.626 us  |              }
+2315.979075: funcgraph_exit:       + 45.728 us  |            }
+2315.979075: funcgraph_entry:                   |            _raw_spin_unlock() {
+2315.979076: funcgraph_entry:        0.049 us   |              preempt_count_sub();
+2315.979076: funcgraph_exit:         0.608 us   |            }
+2315.979077: funcgraph_exit:       + 51.183 us  |          }
+2315.979077: funcgraph_entry:        0.038 us   |          __rcu_read_unlock();
+2315.979077: funcgraph_exit:       + 53.305 us  |        }
+2315.979078: funcgraph_exit:       + 53.839 us  |      }
+2315.979078: funcgraph_exit:       + 57.984 us  |    }
+2315.979078: funcgraph_exit:       + 58.839 us  |  }
+...__```
+```
 ## Reference
 * [How TCP backlog works in Linux](http://veithen.github.io/2014/01/01/how-tcp-backlog-works-in-linux.html)
 * [man listen](https://linux.die.net/man/2/listen)
