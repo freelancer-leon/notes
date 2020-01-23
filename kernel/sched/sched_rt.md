@@ -862,21 +862,41 @@ static inline u64 sched_avg_period(void)
 * 之前介绍过的 *Real Time Scheduler Throttling* 功能的检测在`update_curr_rt()`的`sched_rt_runtime_exceeded()`函数。
 * `sched_rt_runtime_exceeded()`返回值为 **1** 时，`update_curr_rt()`会设置重新调度标志，表示需要限流。
 * `sched_rt_runtime_exceeded()`返回值为 **0** 时，实时任务至少不会因为 RT Throttling 的原因被抢占（当然，还有其他别的原因而被抢占）。
+* `rt_rq->rt_queued` 作为实时调度队列的标志位，大于 0 时表示未被限流。
+* 被限流的是调度实体是进程是比较简单，只是简单地关闭 `rt_rq->rt_queued = 0`，不会改变进程状态。
+* 被限流的调度实体是调度组的情况比较复杂。调度实体会被移出所属调度组的实时调度队列，但也不会处于任何一个睡眠队列，因为它并不是真正睡眠，而且它也不是一个进程。
+  * 实时调度队列 `rt_rq->rt_queued = 0`
+  * 等到限流被放开时，它会被放回实时调度队列
 * kernel/sched/rt.c
 ```c
 ...
+#ifdef CONFIG_RT_GROUP_SCHED
+...
 static void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
 {
+        /*对于实时组调度的情况要复杂一些*/
         struct sched_rt_entity *rt_se;
         int cpu = cpu_of(rq_of_rt_rq(rt_rq)); /*实时调度队列所在的 CPU*/
-        /*rt_se 为该实时调度队列所属的实时调度实体*/
+        /*rt_se 为该实时调度队列所属的 task_group 的实时调度实体*/
         rt_se = rt_rq->tg->rt_se[cpu];
-        /*如果该调度实体存在则从队列上移除它，否则只对队列的顶层的一些数据进行变更*/
+        /*如果该调度实体不是调度组，而是进程，则简单地关闭 rt_rq->rt_queued = 0*/
         if (!rt_se)
                 dequeue_top_rt_rq(rt_rq);
+        /*如果该调度实体是调度组，则将该调度组移出队列，且把它的 rt_queued = 0，这样就不会
+          被 pick 到，并且还要将它的父调度实体放回队列*/
         else if (on_rt_rq(rt_se))
                 dequeue_rt_entity(rt_se, 0);
 }
+#else /* !CONFIG_RT_GROUP_SCHED */
+...
+static inline void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
+{
+        /*对于不是实时组调度的情况，只是简单地关闭 rt_rq->rt_queued = 0，
+          这样 pick_next_task_rt() 的时候 sched_rt_runnable() 就会返回 false*/
+        dequeue_top_rt_rq(rt_rq);
+}
+...
+#endif /* CONFIG_RT_GROUP_SCHED */
 
 static inline int rt_rq_throttled(struct rt_rq *rt_rq)
 {       /*在队列已经被实时限流的仍要检查该队列上是否有需要被提升优先级的任务
@@ -1372,7 +1392,7 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 
 
   ```
-  >cat /proc/self/limits
+  $ cat /proc/self/limits
   Limit                     Soft Limit           Hard Limit           Units     
   Max cpu time              unlimited            unlimited            seconds   
   Max file size             unlimited            unlimited            bytes     
@@ -1705,9 +1725,7 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
         for_each_sched_rt_entity(rt_se) { /*根据 parent 指针自底向上遍历*/
                 struct rt_rq *rt_rq = group_rt_rq(rt_se); /*取得调度实体拥有的调度队列*/
                  /*在组调度场景，如果调度实体还拥有调度队列，该调度实体不能贸然删除，还须把
-                   它加回到实时调度队列，否则它所拥有的调度队列上的任务就无法再被调度了。
-                   如果它没有调度队列，则它不会被放回去，这是真的从调度队列中删除。
-                   但它的父调度实体还是需要被放回父调度实体所在的调度队列的。*/
+                   它的父调度实体所在的调度队列的。*/
                 if (rt_rq && rt_rq->rt_nr_running)
                         __enqueue_rt_entity(rt_se, flags);
         }

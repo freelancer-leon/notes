@@ -900,7 +900,7 @@ void scheduler_tick(void)
 
      switch_count = &prev->nivcsw;
      if (!preempt && prev->state) {
-         /* 如果不是发生内核抢占，且进程状态不是TASK_RUNNING */
+         /* 如果未关闭内核抢占，且进程状态不是TASK_RUNNING */
          if (unlikely(signal_pending_state(prev->state, prev))) {
            /* 当前进程原来处于可中断睡眠状态，现在接收到信号，则需提升为运行进程 */
            prev->state = TASK_RUNNING;

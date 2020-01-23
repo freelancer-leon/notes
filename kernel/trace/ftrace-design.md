@@ -6,7 +6,7 @@
 * Ftrace 采用 GCC 的 profile 特性在所有内核函数的开始部分加入一段 stub 代码，ftrace 重载这段代码来实现 trace 功能。
 * gcc 的 `-pg` 选项将在每个函数入口处加入对 `mcount` 的调用代码。
 * 增加 `-pg` 选项后，gcc 在函数的入口处加入了对 `mcount` 的调用：`call _mcount`。
-* 原本 `mcount` 由 libc 实现，但您知道内核不会连接 libc 库，因此 ftrace 编写了自己的 `mcount` stub 函数，并借此实现 trace 功能。
+* 原本 `mcount` 由 libc 实现，但内核不会连接 libc 库，因此 ftrace 编写了自己的 `mcount` stub 函数，并借此实现 trace 功能。
 * 在每个内核函数入口加入 trace 代码，必然会影响内核的性能，为了减小对内核性能的影响，ftrace 支持动态 trace 功能。
 * 当未 `CONFIG_DYNAMIC_FTRACE` 选中时：
 	* 每个函数调用都会根据不同的体系结构的实现调用`mcount`函数，

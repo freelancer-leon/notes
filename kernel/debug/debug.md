@@ -140,12 +140,22 @@ static int __init loglevel(char *str)
 
 early_param("loglevel", loglevel);
 ```
-* 调整
-```
-# cat /proc/sys/kernel/printk
-4	4	1	7
-# echo 8 > /proc/sys/kernel/printk
-```
+### 调整
+
+* 如果不指定 printk 打印的 log level，那么它缺省的级别是 `DEFAULT_MESSAGE_LOGLEVEL`（通常 "4"=KERN_WARNING）
+* 该缺省值可以通过 `CONFIG_DEFAULT_MESSAGE_LOGLEVEL` kernel config 选项 (make menuconfig-> Kernel Hacking -> Default message log level) 调整。
+* 内核打印消息的时候会比较该消息的 log level 和 `console_loglevel`（一个内核变量），当优先级高于（数值小于）`console_loglevel`，消息才会被打印
+  ```
+  $ cat /proc/sys/kernel/printk
+  	7       4       1       7
+  	current	default	minimum	boot-time-default
+  ```
+  * 第一个数是当前的`console_loglevel`
+  * 第二个数是缺省的 log level
+* 在 console 上打印所有的 kernel message
+  ```
+  # echo 8 > /proc/sys/kernel/printk
+  ```
 ### logbuffer
 ```
 log_buf_len=n[KMG]  Sets the size of the printk ring buffer,
@@ -195,3 +205,6 @@ git bisect bad
 # indicate dir
 git bisect start - arch/x86
 ```
+
+# References
+* [Debugging by printing](https://elinux.org/Debugging_by_printing)
