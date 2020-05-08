@@ -482,7 +482,8 @@ cpus=8
 * [KernelShark](http://rostedt.homelinux.com/kernelshark/)
 * [Using KernelShark to analyze the real-time scheduler](https://lwn.net/Articles/425583/)
 
-## trace_options
+## 跟踪选项
+### trace_options
 * `/sys/kernel/debug/tracing/trace_options`文件
 	```
 	# cat /sys/kernel/debug/tracing/trace_options
@@ -514,6 +515,72 @@ cpus=8
 	function-trace
 	notest_nop_accept
 	notest_nop_refuse
+	```
+* 通过修改`/sys/kernel/debug/tracing/options`下的文件可以使能这些`trace_options`
+
+#### latency-format
+* 该选项会改变 trace 输出。使能的时候，trace 会显示关于延迟的额外的信息
+	```
+	# tracer: irqsoff
+	#
+	# irqsoff latency trace v1.1.5 on 3.8.0-test+
+	# --------------------------------------------------------------------
+	# latency: 259 us, #4/4, CPU#2 | (M:preempt VP:0, KP:0, SP:0 HP:0 #P:4)
+	#    -----------------
+	#    | task: ps-6143 (uid:0 nice:0 policy:0 rt_prio:0)
+	#    -----------------
+	#  => started at: __lock_task_sighand
+	#  => ended at:   _raw_spin_unlock_irqrestore
+	#
+	#
+	#                  _------=> CPU#            
+	#                 / _-----=> irqs-off        
+	#                | / _----=> need-resched    
+	#                || / _---=> hardirq/softirq
+	#                ||| / _--=> preempt-depth   
+	#                |||| /     delay             
+	#  cmd     pid   ||||| time  |   caller      
+	#     \   /      |||||  \    |   /           
+	      ps-6143    2d...    0us!: trace_hardirqs_off <-__lock_task_sighand
+	      ps-6143    2d..1  259us+: trace_hardirqs_on <-_raw_spin_unlock_irqrestore
+	      ps-6143    2d..1  263us+: time_hardirqs_on <-_raw_spin_unlock_irqrestore
+	      ps-6143    2d..1  306us : <stack trace>
+	 => trace_hardirqs_on_caller
+	 => trace_hardirqs_on
+	 => _raw_spin_unlock_irqrestore
+	 => do_task_stat
+	 => proc_tgid_stat
+	 => proc_single_show
+	 => seq_read
+	 => vfs_read
+	 => sys_read
+	 => system_call_fastpath
+	```
+#### stacktrace
+* 当设置该 option 时，任何 **trace event** 的栈跟踪将会被记录下来
+
+### function tracer option
+#### func_stack_trace
+* 如果说设置`function_graph tracer`+`set_graph_function`可以跟踪到一个函数往下的调用路径，那么`function tracer`+`set_ftrace_filter`+`func_stack_trace`则可以跟踪到它往上的调用路径
+* 需使能`CONFIG_STACKTRACE`内核选项
+* 只有当`current_tracer`设置为 **function tracer** 时才会出现
+* 当设置该 option 时，每个函数被记录的时候，它的栈跟踪也会被记录
+* **NOTE:** 在使能该选项时，务必同时设置`set_ftrace_filter`，否则系统性能会严重下降。并且在清除过滤函数的时候记得关闭该选项。
+* Example:
+	```
+	$ echo rtc_timer_enqueue > /sys/kernel/debug/tracing/set_ftrace_filter
+	$ echo function > /sys/kernel/debug/tracing/current_tracer
+	$ echo 1 > /sys/kernel/debug/tracing/options/func_stack_trace
+	$ echo 1 > /sys/kernel/debug/tracing/tracing_on
+	$ cat /sys/kernel/debug/tracing/trace_pipe
+	rtc_test.2029-2902  [001] ....  7694.641987: rtc_timer_enqueue <-rtc_update_irq_enable
+	rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
+	=> rtc_timer_enqueue
+	=> rtc_update_irq_enable
+	=> rtc_dev_ioctl
+	=> do_vfs_ioctl
+	=> SyS_ioctl
+	=> system_call_fastpath
 	```
 
 # Reference
