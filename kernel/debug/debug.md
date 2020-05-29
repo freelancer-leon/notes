@@ -206,5 +206,8 @@ git bisect bad
 git bisect start - arch/x86
 ```
 
+# Dynamic Debug
+* CONFIG_DYNAMIC_DEBUG
+
 # References
 * [Debugging by printing](https://elinux.org/Debugging_by_printing)

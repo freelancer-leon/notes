@@ -743,9 +743,9 @@ static inline void __kunmap_atomic(void *addr)
 # Per-CPU
 
 * 对于给定处理器，Per-CPU的数据是唯一的。
-* 虽然访问Per-CPU数据不需要锁同步，但是禁止内核抢占还是需要的，防止出现伪并发。
+* 虽然访问 Per-CPU 数据不需要锁同步，但是禁止内核抢占还是需要的，防止出现伪并发。
 * `get_cpu()`和`put_cpu()`包含了对内核抢占的禁用和重新激活。
-* 2.6 Per-CPU相关文件：
+* 2.6 Per-CPU 相关文件：
   * include/linux/percpu.h
   * arch/x86/include/asm/percpu.h
   * include/linux/percpu-defs.h
@@ -754,11 +754,11 @@ static inline void __kunmap_atomic(void *addr)
 
 ## 编译时Per-CPU数据
 
-* 声明Per-CPU变量
+* 声明 Per-CPU 变量
   ```c
   DECLARE_PER_CPU(type, name)
   ```
-* 定义Per-CPU变量
+* 定义 Per-CPU 变量
   ```c
   DEFINE_PER_CPU(type, name)
   ```
@@ -785,11 +785,12 @@ static inline void __kunmap_atomic(void *addr)
       (void)&(var);                           \
       preempt_enable();                       \
   } while (0)
+  ...'
   ```
-#### 注意
+### 注意
 * `per_cpu(name, cpu)`既不禁止抢占，也不提供锁保护。
 
-> Another subtle note:These compile-time per-CPU examples **do not work for modules** because the linker actually creates them in a unique executable section (for the curious, `.data.percpu` ). If you need to access per-CPU data from modules, or if you need to create such data dynamically, there is hope.
+  > Another subtle note:These compile-time per-CPU examples **do not work for modules** because the linker actually creates them in a unique executable section (for the curious, `.data.percpu` ). If you need to access per-CPU data from modules, or if you need to create such data dynamically, there is hope.
 
 ## 运行时Per-CPU数据
 
@@ -799,9 +800,9 @@ static inline void __kunmap_atomic(void *addr)
   void *__alloc_percpu(size_t size, size_t align);
   void free_percpu(const void *);
   ```
-* `__alignof__` 是gcc的一个功能，它返回指定类型或lvalue所需的（或建议的，要知道有些古怪的体系结构并没有字节对齐的要求） 对齐 **字节数**。
-  * 如果指定一个lvalue，那么将返回lvalue的最大对齐字节数。
-* 使用运行时的Per-CPU数据
+* `__alignof__` 是gcc的一个功能，它返回指定类型或 lvalue 所需的（或建议的，要知道有些古怪的体系结构并没有字节对齐的要求） 对齐 **字节数**。
+  * 如果指定一个 lvalue，那么将返回 lvalue 的最大对齐字节数。
+* 使用运行时的 Per-CPU 数据
   ```c
   get_cpu_var(ptr); /* return a void pointer to this processor’s copy of ptr */
   put_cpu_var(ptr); /* done; enable kernel preemption */
@@ -816,10 +817,10 @@ static inline void __kunmap_atomic(void *addr)
   * 失效发生在处理器试图使它们的缓存保持同步时。
     * 如果一个处理器操作某个数据，而该数据又存放在其他处理器缓存中，那么存放该数据的那个处理器必须清理或刷新自己的缓存。
     * 持续不断的缓存失效称为 **缓存抖动**。这样对系统性能影响颇大。
-  * 使用Per-CPU将使得缓存影响降至最低，因为理想情况下只会访问自己的数据。
+  * 使用 Per-CPU 将使得缓存影响降至最低，因为理想情况下只会访问自己的数据。
   * *percpu* 接口 **cache-align** 所有数据，以便确保在访问一个处理器的数据时，不会将另一个处理器的数据带入同一个cache line上。
-* 注意：**不能在访问Per-CPU数据过程中睡眠**，否则，醒来可能在其他CPU上。
-* Per-CPU的新接口并不兼容之前的内核。
+* 注意：**不能在访问 Per-CPU 数据过程中睡眠**，否则，醒来可能在其他CPU上。
+* Per-CPU 的新接口并不兼容之前的内核。
 
 
 # 参考资料
@@ -827,3 +828,4 @@ static inline void __kunmap_atomic(void *addr)
 * [/PROC/MEMINFO之谜](http://linuxperf.com/?p=142)
 * [怎样诊断SLAB泄露问题](http://linuxperf.com/?p=148)
 * [Linux内核高端内存](http://ilinuxkernel.com/?p=1013)
+* [Per-CPU variables](https://0xax.gitbooks.io/linux-insides/content/Concepts/linux-cpu-1.html)

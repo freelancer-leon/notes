@@ -349,10 +349,13 @@ static __always_inline int arch_spin_trylock(arch_spinlock_t *lock)
     /* cmpxchg is a full barrier, so nothing can move before it */
     /*cmpxchg族指令实现原子地比较并交换，由于前面插入了lock指令，因此cmpxchg指令
       执行时锁内存总线，别的线程无法更新锁。
-      cmpxchg 比较 old.head_tail 与 lock->head_tail地址里的值：
-      如果相等，将 new.head_tail 的值存入 lock->head_tail地址指向的内存，返回原来 lock->head_tail 地址里的值。
-      故返回值如果等于 old.head_tail 表示成功。执行线程由此获得锁，返回true。
-      此举原子地完成了比较和更新 Next （占用锁）的过程。
+      cmpxchg 比较 old.head_tail 与 lock->head_tail地址里的值，返回原来
+      lock->head_tail 地址里的值：
+      1）如果相等，将 new.head_tail 的值存入 lock->head_tail地址指向的内存。
+         故返回值如果等于 old.head_tail 表示成功。执行线程由此获得锁，返回true。
+         此举原子地完成了比较和更新 Next （占用锁）的过程。
+      2）如果不等，返回 lock->head_tail 地址里的值 == old.head_tail 表达式必然不成立，
+         尝试获取锁失败。
      */
     return cmpxchg(&lock->head_tail, old.head_tail, new.head_tail) == old.head_tail;
 }

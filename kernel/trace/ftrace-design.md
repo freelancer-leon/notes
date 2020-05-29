@@ -382,7 +382,7 @@ preempt_disable()
 ```
 
 ```dot
-engine:dot
+// engine:dot
 digraph G {
 	rankdir="LR";
 	node [shape="record"];

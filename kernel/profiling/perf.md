@@ -1000,4 +1000,3 @@ CPU1                 13365      branch-misses             #    4.69% of all bran
 * [Branch predictor](https://en.wikipedia.org/wiki/Branch_predictor)
 * [Branch misprediction](https://en.wikipedia.org/wiki/Branch_misprediction)
 * [Hardware performance counter](https://en.wikipedia.org/wiki/Hardware_performance_counter)
-* [Superscalar processor](https://en.wikipedia.org/wiki/Superscalar_processor)

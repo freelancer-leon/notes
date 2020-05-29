@@ -218,6 +218,17 @@ EXPORT_SYMBOL(jiffies_to_clock_t);
 * x86主要采用可编程中断时钟（PIT）
 * x86其他时钟资源还包括本地的APIC和时间戳（TSC）等
 
+## HPET
+* 术语：Timer, Event Timer, HPET, MMT and MM (Multimedia) Timer 指的是以下组合：
+  - 计数器 Counter（只有一个）
+  - 比较器 Comparator
+  - 匹配寄存器 Match Register
+
+![pic/hpet_block.png](pic/hpet_block.png)
+* **比较器** 比较 **匹配寄存器** 的内容和独立运行的 **递增计数器** 的值，当递增计数器的输出等于匹配寄存器的值时，将会产生一个中断。
+* IA-PC HPET 架构允许每个计数器最多有 32 个比较/匹配寄存器，这 32 个比较器每个均可输出一个中断。
+*
+
 # 时钟中断处理程序
 可以划分为体系结构相关部分和与体系结构无关部分。1/HZ秒发生一次。
 
@@ -663,7 +674,7 @@ __iter_div_u64_rem(u64 dividend, u32 divisor, u64 *remainder)
     /*商*/
     return ret;
 }
-...
+...```
 ```
 * 系统调用`settimeofday`需要具有`CAP_SYS_TIME`权能。
 
@@ -677,49 +688,49 @@ __iter_div_u64_rem(u64 dividend, u32 divisor, u64 *remainder)
 
 ## 使用定时器
 * 定时器结构
-* include/linux/timer.h
-```c
-struct timer_list {
-    /*
-     * All fields that change during normal runtime grouped to the
-     * same cacheline
-     */
-    struct hlist_node   entry;    /*定时器链表的入口*/
-    unsigned long       expires;  /*以jiffies为单位的定时器值*/
-    void            (*function)(unsigned long); /*定时器处理函数*/
-    unsigned long       data;     /*传给处理函数的长整型参数*/
-    u32         flags;
-    int         slack;
-    ...
-};
-...
-```
+  - include/linux/timer.h
+  ```c
+  struct timer_list {
+      /*
+       * All fields that change during normal runtime grouped to the
+       * same cacheline
+       */
+      struct hlist_node   entry;    /*定时器链表的入口*/
+      unsigned long       expires;  /*以jiffies为单位的定时器值*/
+      void            (*function)(unsigned long); /*定时器处理函数*/
+      unsigned long       data;     /*传给处理函数的长整型参数*/
+      u32         flags;
+      int         slack;
+      ...
+  };
+  ...
+  ```
 * 使用示例
-```c
-struct timer_list my_timer;
-init_timer(&my_timer);
-my_timer.expires = jiffies + delay; /* timer expires in delay ticks */
-my_timer.data = 0;                  /* zero is passed to the timer handler */
-my_timer.function = my_function;    /* function to run when timer expires */
-add_timer(&my_timer);               /*激活定时器*/
-...
-/*更改已激活的定时器的超时时间。
-  如果定时器未激活，该操作会激活它，且设置新的超时时间。
-  如果定时器未被激活，该函数返回 0，否则返回 1。
- */
-mod_timer(&my_timer, jiffies + new_delay);
-...
-/*在定时器超时前停止定时器。
-  如果定时器未被激活，该函数返回 0，否则返回 1。
-  不需要为已超时的定时器调用该函数，因为它们会自动删除。
- */
-del_timer(&my_timer);
-...
-/*在多处理器上定时器中断有可能已经在其他处理上运行了，所以删除操作要等待定时器处理程序都退出。
-  这时应该使用del_timer_sync()。
- */
-del_timer_sync(&my_timer);
-```
+  ```c
+  struct timer_list my_timer;
+  init_timer(&my_timer);
+  my_timer.expires = jiffies + delay; /* timer expires in delay ticks */
+  my_timer.data = 0;                  /* zero is passed to the timer handler */
+  my_timer.function = my_function;    /* function to run when timer expires */
+  add_timer(&my_timer);               /*激活定时器*/
+  ...
+  /*更改已激活的定时器的超时时间。
+    如果定时器未激活，该操作会激活它，且设置新的超时时间。
+    如果定时器未被激活，该函数返回 0，否则返回 1。
+   */
+  mod_timer(&my_timer, jiffies + new_delay);
+  ...
+  /*在定时器超时前停止定时器。
+    如果定时器未被激活，该函数返回 0，否则返回 1。
+    不需要为已超时的定时器调用该函数，因为它们会自动删除。
+   */
+  del_timer(&my_timer);
+  ...
+  /*在多处理器上定时器中断有可能已经在其他处理上运行了，所以删除操作要等待定时器处理程序都退出。
+    这时应该使用del_timer_sync()。
+   */
+  del_timer_sync(&my_timer);
+  ```
 * 一般定时器都在超时后马上执行，但也有可能推迟到下一个tick，所以定时器不能用来实现任何硬实时任务。
 
 ## 定时器竞争条件
@@ -732,15 +743,15 @@ del_timer_sync(&my_timer);
 * 之前在`run_local_timers()`中已经看到了每个tick会调用`raise_softirq(TIMER_SOFTIRQ)`激活定时器softirq。
 * `start_kernel()`会调用`init_timers()`
   * kernel/time/timer.c
-```c
-void __init init_timers(void)
-{
-    init_timer_cpus();
-    init_timer_stats();
-    timer_register_cpu_notifier();
-    open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
-}
-```
+  ```c
+  void __init init_timers(void)
+  {
+      init_timer_cpus();
+      init_timer_stats();
+      timer_register_cpu_notifier();
+      open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+  }
+  ```
 * 定时器softirq的处理函数为`run_timer_softirq()`
   * kernel/time/timer.c
 ```c
@@ -1252,6 +1263,34 @@ EXPORT_SYMBOL(schedule_timeout_idle);
 * 时钟中断处理程序调用profile驱动程序的中断处理函数，根据pc（程序计数器）所在函数的范围，使对应的内部计数器加1。
 * 没有计入花在执行时钟中断处理程序和屏蔽时钟级中断的代码上的时间。
 
+# 时钟源
+* 对于 clock source 抽象的 counter 而言，其 counter value 都是针对 clock 计数的，具体一个 clock 有多少个纳秒是和输入频率相关的。
+* 通过`read`获取当前的 counter value，这个计数值是基于 cycle 的（数据类型是`cycle_t，U64`）。不过，对于用户和其他 driver 而言，cycle 数据是没有意义的，最好统一使用纳秒这样的单位，因此在`struct clocksource`中就有了`mult`和`shift`这两个成员了。我们先看看如何将 A 个 cycles 数转换成纳秒，具体公式如下：
+  ```
+  转换后的纳秒数目 = (A / F) x NSEC_PER_SEC
+  ```
+* 这样的转换公式需要除法，绝大部分的CPU都有乘法器，但是有些处理器是不支持除法，当然，对于不支持硬件除法器的CPU上，toolchain中会提供除法的代码库，虽然我们无法将除法操作的代码编译成一条除法的汇编指令，但是也可以用代码库中的其他运算来取代除法。这样做的坏处就是性能会受影响
+* 使用移位操作，具体可以参考`clocksource_cyc2ns`的操作：
+  ```c
+  /**
+   * clocksource_cyc2ns - converts clocksource cycles to nanoseconds
+   * @cycles:     cycles
+   * @mult:       cycle to nanosecond multiplier
+   * @shift:      cycle to nanosecond divisor (power of two)
+   *
+   * Converts clocksource cycles to nanoseconds, using the given @mult and @shift.
+   * The code is optimized for performance and is not intended to work
+   * with absolute clocksource cycles (as those will easily overflow),
+   * but is only intended to be used with relative (delta) clocksource cycles.
+   *
+   * XXX - This could use some mult_lxl_ll() asm optimization
+   */
+  static inline s64 clocksource_cyc2ns(u64 cycles, u32 mult, u32 shift)
+  {
+          return ((u64) cycles * mult) >> shift;
+  }
+  ```
+
 # Debug
 ## /proc/timer_list
 * 源码 `kernel/time/timer_list.c`
@@ -1377,3 +1416,4 @@ Collection: active
 - [Linux时间子系统之六：高精度定时器（HRTIMER）的原理和实现](http://blog.csdn.net/droidphone/article/details/8074892)
 - [Linux时间子系统之七：定时器的应用--msleep()，hrtimer_nanosleep()](http://blog.csdn.net/DroidPhone/article/details/8104433)
 - [Linux时间子系统之八：动态时钟框架（CONFIG_NO_HZ、tickless）](http://blog.csdn.net/DroidPhone/article/details/8112948)
+- [Linux时间子系统之（十五）：clocksource](http://www.wowotech.net/timer_subsystem/clocksource.html)
