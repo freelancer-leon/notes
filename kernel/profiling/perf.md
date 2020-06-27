@@ -2,11 +2,13 @@
 
 - [Perf的功能](#perf的功能)
 - [概念](#概念)
-	- [CPU cache](#cpu-cache)
+	- [Instruction-Level Parallelism](#instruction-level-parallelism)
 	- [Instruction pipelining](#instruction-pipelining)
 	- [Superscalar processor](#superscalar-processor)
 	- [Out-of-order execution](#out-of-order-execution)
+	- [Pipeline Hazard](#pipeline-hazard)
 	- [Branch predication](#branch-predication)
+	- [CPU cache](#cpu-cache)
 	- [Performance Monitor Unit](#performance-monitor-unit)
 		- [Hardware performance counter](#hardware-performance-counter)
 		- [Model-Specific Registers](#model-specific-registers)
@@ -99,10 +101,8 @@
 
 ## 概念
 
-### CPU cache
-> A **CPU cache** is a hardware cache used by the central processing unit (CPU) of a computer to reduce the average cost (time or energy) to access data from the main memory. A cache is a smaller, faster memory, closer to a processor core, which stores copies of the data from frequently used main memory locations. Most CPUs have different independent caches, including instruction and data caches, where the data cache is usually organized as a hierarchy of more cache levels (L1, L2, etc.).
-
-![https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Cache_operation_diagram.svg/330px-Cache_operation_diagram.svg.png](pic/Cache_operation_diagram.svg)
+### Instruction-Level Parallelism
+![pic/ilp.png](pic/ilp.png)
 
 ### Instruction pipelining
 > **Instruction pipelining** is a technique that implements a form of parallelism called instruction-level parallelism within a single processor. It therefore allows faster CPU throughput (the number of instructions that can be executed in a unit of time) than would otherwise be possible at a given clock rate. The basic instruction cycle is broken up into a series called a pipeline. Rather than processing each instruction sequentially (finishing one instruction before starting the next), each instruction is split up into a sequence of dependent steps so different steps can be executed in parallel and instructions can be processed concurrently (starting one instruction before finishing the previous one).
@@ -124,11 +124,14 @@
 > In computer engineering, **out-of-order execution** (or more formally **dynamic execution**) is a paradigm used in most high-performance microprocessors to make use of instruction cycles that would otherwise be wasted by a certain type of costly delay. In this paradigm, a processor executes instructions in an order governed by the availability of input data, rather than by their original order in a program. In doing so, the processor can avoid being idle while waiting for the preceding instruction to complete to retrieve data for the next instruction in a program, processing instead the next instructions that are able to run immediately and independently.
 
 ![http://renesasrulz.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/00-00-00-00-67/RX_5F00_pipeline_5F00_550.gif](pic/pipeline_out_of_order.gif)
+
+### Pipeline Hazard
 * 数据相关（data dependency)：下一条指令会用到这一条指令计算出的结果
 * 控制相关（control dependency)：一条指令要确定下一条指令的位置，如在执行跳转、调用或返回指令
-* 流水线冒险
-	* 数据冒险（data hazard）
-	* 控制冒险（control hazard）
+#### 流水线冒险（pipeline hazard）
+* **结构冒险（structural hazard）**，硬件不支持多条指令在同一时钟周期执行
+* **数据冒险（data hazard）**，也叫流水线数据冒险，因无法提供指令执行所需要数据而导致指令不能在预定的时钟周期内执行的情况
+* **控制冒险（control hazard）**，因为取到的指令并不是所需要的（或者说指令地址的变化并不是流水线所预期的）而导致指令不能在预定的时钟周期内执行
 * 用流水线停顿（stalling）来避免冒险
 * 用数据转发（data forwarding），有时也称为旁路（bypass）来避免停顿。
 * 加载/使用冒险（load/use hazard）
@@ -138,6 +141,11 @@
 > In computer science, **predication** is an architectural feature that provides an alternative to conditional branch instructions. Predication works by executing instructions from both paths of the branch and only permitting those instructions from the taken path to modify architectural state. The instructions from the taken path are permitted to modify architectural state because they have been associated (predicated) with a predicate, a Boolean value used by the instruction to control whether the instruction is allowed to modify the architectural state or not.
 
 ![pic/branch-predication.png](pic/branch-predication.png)
+
+### CPU cache
+> A **CPU cache** is a hardware cache used by the central processing unit (CPU) of a computer to reduce the average cost (time or energy) to access data from the main memory. A cache is a smaller, faster memory, closer to a processor core, which stores copies of the data from frequently used main memory locations. Most CPUs have different independent caches, including instruction and data caches, where the data cache is usually organized as a hierarchy of more cache levels (L1, L2, etc.).
+
+![https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Cache_operation_diagram.svg/330px-Cache_operation_diagram.svg.png](pic/Cache_operation_diagram.svg)
 
 ### Performance Monitor Unit
 
