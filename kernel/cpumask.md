@@ -37,7 +37,7 @@
   ```
 * `cpu_bit_bitmap`为二维数组，元素类型为`unsigned long`
   - 一维有`65`项，一维第一项为空
-  - 二维由`NR_CPUS`决定，例如 72 核 CPU 二维数组会有 2 个元素，总共有`65 x 2 = 130`个`unsigned long`元素
+  - 二维由`NR_CPUS`决定，例如 256 核 CPU 二维数组会有 4 个元素，总共有`65 x 4 = 260`个`unsigned long`元素
 
 #### 展开`MASK_DECLARE_8(0)`
 * `MASK_DECLARE_8(0)`
@@ -143,3 +143,59 @@
   64 |63 | x | x | x
   * 第一列为一维数组索引，第一行为二维数组索引
   * 中间的数为 cpu 取不同的值在数组中的位置
+
+### _find_next_bit()
+* include/linux/bitmap.h
+  ```c
+  #define BITMAP_FIRST_WORD_MASK(start) (~0UL << ((start) & (BITS_PER_LONG - 1)))
+  ```
+* lib/find_bit.c
+  ```c
+  /*
+   * This is a common helper function for find_next_bit, find_next_zero_bit, and
+   * find_next_and_bit. The differences are:
+   *  - The "invert" argument, which is XORed with each fetched word before
+   *    searching it for one bits.
+   *  - The optional "addr2", which is anded with "addr1" if present.
+   */
+  static inline unsigned long _find_next_bit(const unsigned long *addr1,
+                  const unsigned long *addr2, unsigned long nbits,
+                  unsigned long start, unsigned long invert)
+  {
+          unsigned long tmp;
+          /*健全性检查，超过 cpu 数的起始位置不合法，返回有效 cpu 数表示没有交集*/
+          if (unlikely(start >= nbits))
+                  return nbits;
+          /*addr1 和 addr2 分别指向由多个 unsigned long 元素组成的数组，每个数组元素的一
+            个 bit 代表一个 cpu。
+            那么 addr[start/BITS_PER_LONG] 就是操作起始的第一个数组元素。*/
+          tmp = addr1[start / BITS_PER_LONG];
+          /*得到 addr1 和 addr2 第一个数组元素的交集*/
+          if (addr2)
+                  tmp &= addr2[start / BITS_PER_LONG];
+          /*这里利用二进制与 0 异或，位不变；与 1 异或，位反转。
+            find_next_zero_bit() invert 就是全 1*/
+          tmp ^= invert;
+
+          /* Handle 1st word. */
+          /*然而，start 可能并不是第一个数组元素的第一个位，所以 BITMAP_FIRST_WORD_MASK()
+            把 start 之前的位清零，之后的位构成掩码。
+            至此，第一个元素中的位就处理完了。*/
+          tmp &= BITMAP_FIRST_WORD_MASK(start);
+          start = round_down(start, BITS_PER_LONG); /*start 做下舍入 BITS_PER_LONG*/
+          /*如果第一个元素有交集，则无需之后的寻找。
+            之后的循环处理也是类似的，有交集则退出循环。*/
+          while (!tmp) {
+                  start += BITS_PER_LONG; /*start 移至下一数组元素*/
+                  if (start >= nbits)     /*再次检测越界的可能*/
+                          return nbits;
+                  /*基本上和之前的处理是一样的*/
+                  tmp = addr1[start / BITS_PER_LONG];
+                  if (addr2)
+                          tmp &= addr2[start / BITS_PER_LONG];
+                  tmp ^= invert;
+          }
+          /*__ffs()通常是 arch 相关的实现，比如说有指令来寻找第一个置 1 的位。这就找到了。*/
+          return min(start + __ffs(tmp), nbits);
+  }
+  ```

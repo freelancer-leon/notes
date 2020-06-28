@@ -64,8 +64,8 @@ struct softirq_action
 * 在一个核上，一个软中断不会抢占另外一个软中断
 * 实际上，唯一可以抢占软中断的是中断处理程序
 * 其他软中断（包括同类型的软中断）可以在其他处理器上同时执行
-* **软中断和tasklet都是运行在中断上下文中**，它们与任一进程无关，没有支持的进程完成重新调度。所以软中断和tasklet不能睡眠、不能阻塞，它们的代码中不能含有导致睡眠的动作，如减少信号量、从用户空间拷贝数据或手工分配内存等。
-* 也正是由于它们运行在中断上下文中，所以它们在同一个CPU上的执行是串行的，这样就不利于实时多媒体任务的优先处理。
+* **软中断和 tasklet 都是运行在中断上下文中**，它们与任一进程无关，没有支持的进程完成重新调度。所以软中断和 tasklet 不能睡眠、不能阻塞，它们的代码中不能含有导致睡眠的动作，如减少信号量、从用户空间拷贝数据或手工分配内存等。
+* 也正是由于它们运行在中断上下文中，所以它们在同一个 CPU 上的执行是串行的，这样就不利于实时多媒体任务的优先处理。
 
 
 ## 执行软中断
@@ -76,17 +76,18 @@ struct softirq_action
   * 在那些显式检查和执行待处理软中断的代码中，如网络子系统中（当`ksoftirqd`可运行时不会同步处理软中断）
   * 从一个硬件中断代码处返回时（同上）
   * 在`ksoftirqd`内核线程中
+  * 禁止软中断后再次使能软中断的时候
 * 不管用什么方法唤起，软中断都要在`__do_softirq()`中执行。
 
 ### 直接调用`do_softirq()`处理软中断
 * kernel/softirq.c::`__local_bh_enable_ip()` -> `do_softirq()`
 * net/core/dev.c::`netif_rx_ni()` -> `do_softirq()`
-```
-do_softirq()
- -> do_softirq_own_stack()
-    -> __do_softirq()
-       -> softirq_vec->action()
-```
+  ```c
+  do_softirq()
+   -> do_softirq_own_stack()
+      -> __do_softirq()
+         -> softirq_vec->action()
+  ```
 * kernel/softirq.c
 ```c
 asmlinkage __visible void __softirq_entry __do_softirq(void)
@@ -281,109 +282,109 @@ void irq_exit(void)
 ```
 
 ### `ksoftirqd`中断处理进程
-* 每个CPU一个的辅助处理 softirq（和tasklet）的内核线程
+* 每个CPU一个的辅助处理 softirq（和 tasklet）的内核线程
 * 引入 ksoftirqd 的原因：
   * 在中断处理函数返回时处理 softirq 是最常见的 softirq 处理时机
   * softirq 触发的频率有时很高，而有的 softirq 还会重新触发自己以便得到再次执行
   * 为防止用户空间进程饥饿，作为折中的方案，内核不会立即处理重新触发的 softirq
   * 当大量 softirq 出现时，内核会唤醒一组内核线程来处理这些负载，即 **ksoftirqd**
 * ksoftirqd 每次迭代都会最终调用`schedule()`让其他进程有机会得到处理
-```
-early_initcall(spawn_ksoftirqd)
+  ```c
+  early_initcall(spawn_ksoftirqd)
 
-start_kernel()
- ...
- -> spawn_ksoftirqd()
-    -> smpboot_register_percpu_thread(&softirq_threads)
-       -> smpboot_register_percpu_thread_cpumask()
-          -> __smpboot_create_thread()
-             -> kthread_create_on_cpu(smpboot_thread_fn,...)
+  start_kernel()
+   ...
+   -> spawn_ksoftirqd()
+      -> smpboot_register_percpu_thread(&softirq_threads)
+         -> smpboot_register_percpu_thread_cpumask()
+            -> __smpboot_create_thread()
+               -> kthread_create_on_cpu(smpboot_thread_fn,...)
 
-smpboot_thread_fn()
- -> ht->thread_fn(td->cpu)
-```
+  smpboot_thread_fn()
+   -> ht->thread_fn(td->cpu)
+  ```
 
 * kernel/softirq.c
-```c
-static int ksoftirqd_should_run(unsigned int cpu)
-{
-        return local_softirq_pending();
-}
+  ```c
+  static int ksoftirqd_should_run(unsigned int cpu)
+  {
+          return local_softirq_pending();
+  }
 
-static void run_ksoftirqd(unsigned int cpu)
-{
-        local_irq_disable(); /*先关闭中断，在进入软中断处理函数前一刻才开启它*/
-        if (local_softirq_pending()) { /*如果有软中断挂起*/
-                /*
-                 * We can safely run softirq on inline stack, as we are not deep
-                 * in the task stack here.
-                 */
-                __do_softirq();        /*进行软中断处理*/
-                local_irq_enable();    /*开启之前关闭的中断*/
-                cond_resched_rcu_qs();
-                return;
-        }
-        local_irq_enable(); /*开启之前关闭的中断*/
-}
-...
-static struct smp_hotplug_thread softirq_threads = {
-        .store                  = &ksoftirqd,
-        .thread_should_run      = ksoftirqd_should_run,
-        .thread_fn              = run_ksoftirqd, /*软中断处理进程函数*/
-        .thread_comm            = "ksoftirqd/%u",
-};
+  static void run_ksoftirqd(unsigned int cpu)
+  {
+          local_irq_disable(); /*先关闭中断，在进入软中断处理函数前一刻才开启它*/
+          if (local_softirq_pending()) { /*如果有软中断挂起*/
+                  /*
+                   * We can safely run softirq on inline stack, as we are not deep
+                   * in the task stack here.
+                   */
+                  __do_softirq();        /*进行软中断处理*/
+                  local_irq_enable();    /*开启之前关闭的中断*/
+                  cond_resched_rcu_qs();
+                  return;
+          }
+          local_irq_enable(); /*开启之前关闭的中断*/
+  }
+  ...
+  static struct smp_hotplug_thread softirq_threads = {
+          .store                  = &ksoftirqd,
+          .thread_should_run      = ksoftirqd_should_run,
+          .thread_fn              = run_ksoftirqd, /*软中断处理进程函数*/
+          .thread_comm            = "ksoftirqd/%u",
+  };
 
-static __init int spawn_ksoftirqd(void)
-{
-        cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, "softirq:dead", NULL,
-                                  takeover_tasklets);
-        BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
+  static __init int spawn_ksoftirqd(void)
+  {
+          cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, "softirq:dead", NULL,
+                                    takeover_tasklets);
+          BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
 
-        return 0;
-}
-early_initcall(spawn_ksoftirqd); /*通过 initcall 的方式来注册软中断处理进程函数*/
-...__```
-```
+          return 0;
+  }
+  early_initcall(spawn_ksoftirqd); /*通过 initcall 的方式来注册软中断处理进程函数*/
+  ...__```
+  ```
 
 ## 使用软中断
 
 ### 注册softirq
 
 * kernel/softirq.c
-```c
-void open_softirq(int nr, void (*action)(struct softirq_action *))
-{
-    softirq_vec[nr].action = action;
-}
-```
+  ```c
+  void open_softirq(int nr, void (*action)(struct softirq_action *))
+  {
+      softirq_vec[nr].action = action;
+  }
+  ```
 ### 注册的例子
 * kernel/sched/fair.c
-```c
-__init void init_sched_fair_class(void)
-{
-#ifdef CONFIG_SMP
-    open_softirq(SCHED_SOFTIRQ, run_rebalance_domains);
-...
-#endif /* SMP */
-}
-```
+  ```c
+  __init void init_sched_fair_class(void)
+  {
+  #ifdef CONFIG_SMP
+      open_softirq(SCHED_SOFTIRQ, run_rebalance_domains);
+  ...
+  #endif /* SMP */
+  }
+  ```
 * kernel/softirq.c
-```c
-void __init softirq_init(void)
-{
-    int cpu;
+  ```c
+  void __init softirq_init(void)
+  {
+      int cpu;
 
-    for_each_possible_cpu(cpu) {
-        per_cpu(tasklet_vec, cpu).tail =
-            &per_cpu(tasklet_vec, cpu).head;
-        per_cpu(tasklet_hi_vec, cpu).tail =
-            &per_cpu(tasklet_hi_vec, cpu).head;
-    }
-    /*注意，这里注册了tasklet的softirq处理函数*/
-    open_softirq(TASKLET_SOFTIRQ, tasklet_action);
-    open_softirq(HI_SOFTIRQ, tasklet_hi_action);
-}
-```
+      for_each_possible_cpu(cpu) {
+          per_cpu(tasklet_vec, cpu).tail =
+              &per_cpu(tasklet_vec, cpu).head;
+          per_cpu(tasklet_hi_vec, cpu).tail =
+              &per_cpu(tasklet_hi_vec, cpu).head;
+      }
+      /*注意，这里注册了tasklet的softirq处理函数*/
+      open_softirq(TASKLET_SOFTIRQ, tasklet_action);
+      open_softirq(HI_SOFTIRQ, tasklet_hi_action);
+  }
+  ```
 
 * 软中断处理程序执行时允许响应中断（即开中断），但不能睡眠
 * 在一个处理程序在运行时，当前处理器的软中断被禁止，但其他处理器并不禁止软中断
@@ -394,43 +395,43 @@ void __init softirq_init(void)
 ### 触发softirq
 
 * kernel/softirq.c
-```c
-/*
- * This function must run with irqs disabled!
- */
-inline void raise_softirq_irqoff(unsigned int nr)
-{
-    __raise_softirq_irqoff(nr);
+  ```c
+  /*
+   * This function must run with irqs disabled!
+   */
+  inline void raise_softirq_irqoff(unsigned int nr)
+  {
+      __raise_softirq_irqoff(nr);
 
-    /*
-     * If we're in an interrupt or softirq, we're done
-     * (this also catches softirq-disabled code). We will
-     * actually run the softirq once we return from
-     * the irq or softirq.
-     *
-     * Otherwise we wake up ksoftirqd to make sure we
-     * schedule the softirq soon.
-     */
-    if (!in_interrupt())
-        wakeup_softirqd(); /*唤醒 ksoftirqd 软中断处理进程*/
-}
+      /*
+       * If we're in an interrupt or softirq, we're done
+       * (this also catches softirq-disabled code). We will
+       * actually run the softirq once we return from
+       * the irq or softirq.
+       *
+       * Otherwise we wake up ksoftirqd to make sure we
+       * schedule the softirq soon.
+       */
+      if (!in_interrupt())
+          wakeup_softirqd(); /*唤醒 ksoftirqd 软中断处理进程*/
+  }
 
-void raise_softirq(unsigned int nr)
-{
-    unsigned long flags;
+  void raise_softirq(unsigned int nr)
+  {
+      unsigned long flags;
 
-    local_irq_save(flags);
-    raise_softirq_irqoff(nr);
-    local_irq_restore(flags);
-}       
+      local_irq_save(flags);
+      raise_softirq_irqoff(nr);
+      local_irq_restore(flags);
+  }       
 
-void __raise_softirq_irqoff(unsigned int nr)
-{
-    trace_softirq_raise(nr);
-    or_softirq_pending(1UL << nr);  /*置位*/
-}
-...__```
-```
+  void __raise_softirq_irqoff(unsigned int nr)
+  {
+      trace_softirq_raise(nr);
+      or_softirq_pending(1UL << nr);  /*置位*/
+  }
+  ...__```
+  ```
 
 * 如果知道中断已经被禁，可以直接调`raise_softirq_irqoff()`。
 
@@ -442,38 +443,38 @@ void __raise_softirq_irqoff(unsigned int nr)
 * `count`成员是某个tasklet的引用计数，是关于这个tasklet的开关
 * `state`的`TASKLET_STATE_RUN`则是用来检查当前tasklet是否已经在某个处理器上执行
 * `tasklet_struct`结构
-```c
-struct tasklet_struct
-{
-    struct tasklet_struct *next;
-    unsigned long state;
-    atomic_t count;  /*不为0，被禁止；为0，激活，被设为挂起状态才能执行*/
-    void (*func)(unsigned long);
-    unsigned long data;
-};
-```
+  ```c
+  struct tasklet_struct
+  {
+      struct tasklet_struct *next;
+      unsigned long state;
+      atomic_t count;  /*不为0，被禁止；为0，激活，被设为挂起状态才能执行*/
+      void (*func)(unsigned long);
+      unsigned long data;
+  };
+  ```
 * tasklet state
-```c
-enum
-{
-    TASKLET_STATE_SCHED,    /* Tasklet is scheduled for execution */
-    TASKLET_STATE_RUN   /* Tasklet is running (SMP only) */
-};
-```
+  ```c
+  enum
+  {
+      TASKLET_STATE_SCHED,    /* Tasklet is scheduled for execution */
+      TASKLET_STATE_RUN   /* Tasklet is running (SMP only) */
+  };
+  ```
 * 两个per-CPU链表`tasklet_vec`和`tasklet_hi_vec`
-```c
-/*
- * Tasklets
- */
-struct tasklet_head {
-    struct tasklet_struct *head;
-    struct tasklet_struct **tail;
-};
+  ```c
+  /*
+   * Tasklets
+   */
+  struct tasklet_head {
+      struct tasklet_struct *head;
+      struct tasklet_struct **tail;
+  };
 
-static DEFINE_PER_CPU(struct tasklet_head, tasklet_vec);
-static DEFINE_PER_CPU(struct tasklet_head, tasklet_hi_vec);
+  static DEFINE_PER_CPU(struct tasklet_head, tasklet_vec);
+  static DEFINE_PER_CPU(struct tasklet_head, tasklet_hi_vec);
 
-```
+  ```
 
 ## 调度tasklet
 * `tasklet_schedule(t)`和`tasklet_hi_schedule(t)`
@@ -744,20 +745,20 @@ struct work_struct {
    ```
 5. 创建新的工作队列
 * 创建
-```c
-struct workqueue_struct *create_workqueue(const char *name);
-```
+  ```c
+  struct workqueue_struct *create_workqueue(const char *name);
+  ```
 * 调度
-```c
-int queue_work(struct workqueue_struct *wq, struct work_struct *work);
-int queue_delayed_work(struct workqueue_struct *wq,
-      struct work_struct *work,
-      unsigned long delay);
-```
+  ```c
+  int queue_work(struct workqueue_struct *wq, struct work_struct *work);
+  int queue_delayed_work(struct workqueue_struct *wq,
+        struct work_struct *work,
+        unsigned long delay);
+  ```
 * 刷新
-```c
-void flush_workqueue(struct workqueue_struct *wq);
-```
+  ```c
+  void flush_workqueue(struct workqueue_struct *wq);
+  ```
 
 # 下半部之间加锁
 * 在使用下半部机制时，即使是在单处理器系统下，避免共享数据被同时访问也是置关重要的。

@@ -10,10 +10,10 @@
 * 因为预编的节拍率对内核来说是可知的，所以内核知道连续两次时钟中断的间隔时间，该间隔时间成为 **节拍（tick）**。
 * 节拍 = 1/节拍率 秒，tick = 1/(tick rate) 秒，可见，*节拍是一个时间概念*。
 * 系统定时器频率（节拍率 tick rate）是通过静态预处理定义的，即 **HZ（赫兹）**。
-  * 在系统启动时，按照HZ值对硬件进行设置。
-  * 体系架构不同，HZ的值也不同。
-  * 如x86体系结构中，系统定时器频率默认值为100，时钟中断频率就为100HZ，即该处理器上每秒时钟中断100次（即10ms一次）。
-  * 注意，HZ的值是可调的。不要在代码中hard-coded HZ的值。
+  * 在系统启动时，按照 HZ 值对硬件进行设置。
+  * 体系架构不同，HZ 的值也不同。
+  * 如 x86 体系结构中，系统定时器频率默认值为 100，时钟中断频率就为 100HZ，即该处理器上每秒时钟中断 100 次（即 10ms 一次）。
+  * 注意，HZ的值是可调的。不要在代码中 hard-coded HZ 的值。
 
 # HZ
 
@@ -37,11 +37,11 @@
 * 内核配置选项为`CONFIG_NO_HZ`
 * 动态时钟只有在有些任务需要实际执行时才激活时钟周期。否则会临时禁用时钟周期。
 * 内核如何判定系统无事可做？
-  * 运行队列没有活动进程，内核将选取一个特别的idle进程（调度器类为idle_task）来运行。
-  * 每当选中idle进程运行时，都将禁用周期时钟，直至如下情况再重新启用时钟周期：
+  * 运行队列没有活动进程，内核将选取一个特别的 idle 进程（调度器类为`idle_task`）来运行。
+  * 每当选中 idle 进程运行时，都将禁用周期时钟，直至如下情况再重新启用时钟周期：
     * 下一个定时器即将到器为止
     * 或者有中断发生
-  * 其间CPU进入不受打扰的睡眠状态。
+  * 其间 CPU 进入不受打扰的睡眠状态。
 
 ### 注意以下几点
 * 只有经典定时器需要考虑此用法。高分辨率定时器不绑定到时钟频率，也并非基于周期时钟实现。
@@ -51,106 +51,106 @@
 
 * 全局变量`jiffies`记录自系统启动以来产生的节拍的总数。
   * 启动时初始化为0。
-  * 每次时钟中断处理程序会增加该变量的值（因此可以认为其单位为（次）），意味着时间过去了一个节拍（tick）。
+  * 每次时钟中断处理程序会增加该变量的值（因此可以认为其单位为 **次**），意味着时间过去了一个节拍（tick）。
   * 每秒内`jiffies`的值会增加`HZ`。
   * 系统的运行时间为`jiffies/HZ`秒（`HZ`的单位为（次/秒））。
 
 * include/linux/jiffies.h
-```c
-/* some arch's have a small-data section that can be accessed register-relative
- * but that can only take up to, say, 4-byte variables. jiffies being part of
- * an 8-byte variable may not be correctly accessed unless we force the issue
- */
-#define __jiffy_data  __attribute__((section(".data")))
+  ```c
+  /* some arch's have a small-data section that can be accessed register-relative
+   * but that can only take up to, say, 4-byte variables. jiffies being part of
+   * an 8-byte variable may not be correctly accessed unless we force the issue
+   */
+  #define __jiffy_data  __attribute__((section(".data")))
 
-/*
- * The 64-bit value is not atomic - you MUST NOT read it
- * without sampling the sequence number in jiffies_lock.
- * get_jiffies_64() will do this for you as appropriate.
- */
-extern u64 __jiffy_data jiffies_64;
-extern unsigned long volatile __jiffy_data jiffies;
-/*对32位平台和64位平台，获取jiffies_64的值方法不一样，64位平台直接返回即可*/
-#if (BITS_PER_LONG < 64)
-u64 get_jiffies_64(void);
-#else
-static inline u64 get_jiffies_64(void)
-{
-    return (u64)jiffies;
-}
-#endif
-...
-```
+  /*
+   * The 64-bit value is not atomic - you MUST NOT read it
+   * without sampling the sequence number in jiffies_lock.
+   * get_jiffies_64() will do this for you as appropriate.
+   */
+  extern u64 __jiffy_data jiffies_64;
+  extern unsigned long volatile __jiffy_data jiffies;
+  /*对32位平台和64位平台，获取jiffies_64的值方法不一样，64位平台直接返回即可*/
+  #if (BITS_PER_LONG < 64)
+  u64 get_jiffies_64(void);
+  #else
+  static inline u64 get_jiffies_64(void)
+  {
+      return (u64)jiffies;
+  }
+  #endif
+  ...
+  ```
 
 * kernel/time/jiffies.c
-```c
-__cacheline_aligned_in_smp DEFINE_SEQLOCK(jiffies_lock);
+  ```c
+  __cacheline_aligned_in_smp DEFINE_SEQLOCK(jiffies_lock);
 
-#if (BITS_PER_LONG < 64)
-u64 get_jiffies_64(void)
-{
-    unsigned long seq;
-    u64 ret;
+  #if (BITS_PER_LONG < 64)
+  u64 get_jiffies_64(void)
+  {
+      unsigned long seq;
+      u64 ret;
 
-    do {
-        seq = read_seqbegin(&jiffies_lock);
-        ret = jiffies_64;
-    } while (read_seqretry(&jiffies_lock, seq));
-    return ret;
-}   
-EXPORT_SYMBOL(get_jiffies_64);
-#endif
+      do {
+          seq = read_seqbegin(&jiffies_lock);
+          ret = jiffies_64;
+      } while (read_seqretry(&jiffies_lock, seq));
+      return ret;
+  }   
+  EXPORT_SYMBOL(get_jiffies_64);
+  #endif
 
-EXPORT_SYMBOL(jiffies);
-```
+  EXPORT_SYMBOL(jiffies);
+  ```
 * 32位体系结构不能原子地一次访问64位变量中的两个32位数值。因此在读取`jiffies`时需用seq锁对变量`jiffies`进行锁定。
 * 这里用`jiffies_64`变量的初值覆盖`jiffies`变量
   * arch/x86/kernel/vmlinux.lds.S
-  ```c
-  #ifdef CONFIG_X86_32
-  OUTPUT_ARCH(i386)
-  ENTRY(phys_startup_32)
-  jiffies = jiffies_64;
-  #else
-  OUTPUT_ARCH(i386:x86-64)
-  ENTRY(phys_startup_64)
-  jiffies_64 = jiffies;
-  #endif
-  ```
+    ```c
+    #ifdef CONFIG_X86_32
+    OUTPUT_ARCH(i386)
+    ENTRY(phys_startup_32)
+    jiffies = jiffies_64;
+    #else
+    OUTPUT_ARCH(i386:x86-64)
+    ENTRY(phys_startup_64)
+    jiffies_64 = jiffies;
+    #endif
+    ```
 * `jiffies`取整个64位`jiffies_64`变量的低32位，时间管理代码使用整个64位，来避免整个64位的溢出。
 * 访问`jiffies`的代码仅会读取`jiffies_64`的低32位。通过`get_jiffies_64()`读取整个64位数值。
 
 ## jiffies的回绕
 * `jiffies`有可能会发生回绕（wrap around），最好用提供的宏来进行判断。
 * include/linux/typecheck.h
-```c
-...
-/*
- *  These inlines deal with timer wrapping correctly. You are
- *  strongly encouraged to use them
- *  1. Because people otherwise forget
- *  2. Because if the timer wrap changes in future you won't have to
- *     alter your driver code.
- *                                                                                                                                                 
- * time_after(a,b) returns true if the time a is after time b.
- *
- * Do this with "<0" and ">=0" to only test the sign of the result. A
- * good compiler would generate better code (and a really good compiler
- * wouldn't care). Gcc is currently neither.
- */
-#define time_after(a,b)     \
-    (typecheck(unsigned long, a) && \
-     typecheck(unsigned long, b) && \
-     ((long)((b) - (a)) < 0))
-#define time_before(a,b)    time_after(b,a)
+  ```c
+  ...
+  /*
+   *  These inlines deal with timer wrapping correctly. You are
+   *  strongly encouraged to use them
+   *  1. Because people otherwise forget
+   *  2. Because if the timer wrap changes in future you won't have to
+   *     alter your driver code.
+   *
+   * time_after(a,b) returns true if the time a is after time b.
+   *
+   * Do this with "<0" and ">=0" to only test the sign of the result. A
+   * good compiler would generate better code (and a really good compiler
+   * wouldn't care). Gcc is currently neither.
+   */
+  #define time_after(a,b)     \
+      (typecheck(unsigned long, a) && \
+       typecheck(unsigned long, b) && \
+       ((long)((b) - (a)) < 0))
+  #define time_before(a,b)    time_after(b,a)
 
-#define time_after_eq(a,b)  \
-    (typecheck(unsigned long, a) && \
-     typecheck(unsigned long, b) && \
-     ((long)((a) - (b)) >= 0))
-#define time_before_eq(a,b) time_after_eq(b,a)
-...
-```
+  #define time_after_eq(a,b)  \
+      (typecheck(unsigned long, a) && \
+       typecheck(unsigned long, b) && \
+       ((long)((a) - (b)) >= 0))
+  #define time_before_eq(a,b) time_after_eq(b,a)
+  ...
+  ```
 * 注意，`time_after`和`time_before`并不能完全解决回绕（wrap around）问题：
   * 例如，想用`time_after(a,b)`来判断`a`时间是否在`b`之后，假设，`b`的值是 2<sup>31</sup>-1 = 2147483647，HZ=1000，即一个tick是1ms，则经过 2147483649 个tick之后，`jiffies`回绕，此时`(long)(b-a)>0`，判断结果是`a`在`b`之前，然而事实上`a`确实已经是在`b`之后。
   * 再假如，想用`time_before(a,b)`来判断`a`时间是否在`b`之前，假设，`b`的值是 0，HZ=1000，即一个tick是1ms，则经过 2<sup>31</sup>-1 = 2147483648 个tick之后，`jiffies`回绕，此时`(long)(a-b)<0`，判断结果是`a`在`b`之前，然而事实上`a`确实已经是在`b`之后很久了。
@@ -161,49 +161,49 @@ EXPORT_SYMBOL(jiffies);
 * 内核定义`USER_HZ`来代表用户空间看到的HZ值。
 * 在需要把以节拍数/秒为单位的`jiffies`值导出到用户空间时，需要用`jiffies_to_clock_t()`或`jiffies_64_to_clock_t()`，将一个由`HZ`表示的节拍计数转换成用`USER_HZ`表示的节拍计数：
 * include/linux/jiffies.h
-```c
-/* TICK_NSEC is the time between ticks in nsec assuming SHIFTED_HZ */
-/*TICK_NSEC是两个tick之间逝去的纳秒数。
-  由于整数除法小数点后的数会被截断，这里加上HZ/2是为了四舍五入。
-  整型数除法四舍五入的做法就是被除数加上除数的1/2后再去做除法运算。
-  例如：HZ为60，如果采用浮点数，那么结果是：
-  (1000000000+60/2)/60 = 16666667.166667
-  如果用的整数运算：
-  （1000000000+60/2)/60 = 16666667
-  1000000000/60 = 16666666
- */
-#define TICK_NSEC ((NSEC_PER_SEC+HZ/2)/HZ)
-```
+  ```c
+  /* TICK_NSEC is the time between ticks in nsec assuming SHIFTED_HZ */
+  /*TICK_NSEC是两个tick之间逝去的纳秒数。
+    由于整数除法小数点后的数会被截断，这里加上HZ/2是为了四舍五入。
+    整型数除法四舍五入的做法就是被除数加上除数的1/2后再去做除法运算。
+    例如：HZ为60，如果采用浮点数，那么结果是：
+    (1000000000+60/2)/60 = 16666667.166667
+    如果用的整数运算：
+    （1000000000+60/2)/60 = 16666667
+    1000000000/60 = 16666666
+   */
+  #define TICK_NSEC ((NSEC_PER_SEC+HZ/2)/HZ)
+  ```
 * kernel/time/time.c
-```c
-...
-/*
- * Convert jiffies/jiffies_64 to clock_t and back.
- */
-clock_t jiffies_to_clock_t(unsigned long x)
-{
-/*TICK_NSEC是内核一个tick的纳秒时间，(NSEC_PER_SEC / USER_HZ)是用户空间一个tick的纳秒时间*/
-#if (TICK_NSEC % (NSEC_PER_SEC / USER_HZ)) == 0
-/*当HZ与USER_HZ是整倍数关系时，逝去的时间 T 是一样的，于是有：
-  T = x / HZ = y / USER_HZ
-  则用户空间的节拍计数 y 为：
-  y = x * USER_HZ / HZ*/
-# if HZ < USER_HZ
-    return x * (USER_HZ / HZ);
-# else
-    /*HZ > USER_HZ时，整数除法 USER_HZ / HZ == 0，故需要变换一下方程*/
-    return x / (HZ / USER_HZ);
-# endif
-#else
-    /*用户空间每个tick的时间以ns为单位为：NSEC_PER_SEC*1/USER_HZ，
-      内核在某段时间里的用去的时间以ns为单位为：(u64)x * TICK_NSEC，
-      故二者的商为用户空间在某段时间里的节拍计数。*/
-    return div_u64((u64)x * TICK_NSEC, NSEC_PER_SEC / USER_HZ);
-#endif
-}
-EXPORT_SYMBOL(jiffies_to_clock_t);
-...
-```
+  ```c
+  ...
+  /*
+   * Convert jiffies/jiffies_64 to clock_t and back.
+   */
+  clock_t jiffies_to_clock_t(unsigned long x)
+  {
+  /*TICK_NSEC是内核一个tick的纳秒时间，(NSEC_PER_SEC / USER_HZ)是用户空间一个tick的纳秒时间*/
+  #if (TICK_NSEC % (NSEC_PER_SEC / USER_HZ)) == 0
+  /*当HZ与USER_HZ是整倍数关系时，逝去的时间 T 是一样的，于是有：
+    T = x / HZ = y / USER_HZ
+    则用户空间的节拍计数 y 为：
+    y = x * USER_HZ / HZ*/
+  # if HZ < USER_HZ
+      return x * (USER_HZ / HZ);
+  # else
+      /*HZ > USER_HZ时，整数除法 USER_HZ / HZ == 0，故需要变换一下方程*/
+      return x / (HZ / USER_HZ);
+  # endif
+  #else
+      /*用户空间每个tick的时间以ns为单位为：NSEC_PER_SEC*1/USER_HZ，
+        内核在某段时间里的用去的时间以ns为单位为：(u64)x * TICK_NSEC，
+        故二者的商为用户空间在某段时间里的节拍计数。*/
+      return div_u64((u64)x * TICK_NSEC, NSEC_PER_SEC / USER_HZ);
+  #endif
+  }
+  EXPORT_SYMBOL(jiffies_to_clock_t);
+  ...
+  ```
 
 # 硬时钟和定时器
 
@@ -215,8 +215,8 @@ EXPORT_SYMBOL(jiffies_to_clock_t);
 ## 系统定时器
 * 系统定时器的根本思想——提供一种周期性触发中断机制
 * 对电子晶振进行分频来实现；或者提供一个衰减测量器（decrementer）来实现（设置测量器初始值，该值以固定频率衰减，衰减到0时触发一个中断）
-* x86主要采用可编程中断时钟（PIT）
-* x86其他时钟资源还包括本地的APIC和时间戳（TSC）等
+* x86 主要采用可编程中断时钟（PIT）
+* x86 其他时钟资源还包括 *HPET*，*本地的 APIC* 和 *时间戳（TSC）* 等
 
 ## HPET
 * 术语：Timer, Event Timer, HPET, MMT and MM (Multimedia) Timer 指的是以下组合：
@@ -226,11 +226,30 @@ EXPORT_SYMBOL(jiffies_to_clock_t);
 
 ![pic/hpet_block.png](pic/hpet_block.png)
 * **比较器** 比较 **匹配寄存器** 的内容和独立运行的 **递增计数器** 的值，当递增计数器的输出等于匹配寄存器的值时，将会产生一个中断。
-* IA-PC HPET 架构允许每个计数器最多有 32 个比较/匹配寄存器，这 32 个比较器每个均可输出一个中断。
-*
+* IA-PC HPET 架构最多可扩展为 8 个 block，每个 block 如上图所示
+* 每个计数器（block）最多有 32 个比较/匹配寄存器，这 32 个比较器每个均可输出一个中断
+* 总共就是`8 x 32 = 256`个 timer
+* 对于周期操作模式，实际上实现细节与上图稍有不同
+  * 每次设置周期率的时候，软件需要写 **Timer N 比较器寄存器**，同时还要将 **主计数器** （图中蓝色的寄存器）清零
+  * 读该寄存器的值读到的是下一次 timer 中断触发时的值（图中橙色的寄存器）
+  * 写该寄存器时，编程的是周期率（图中紫色的寄存器）
+
+### 替换传统中断路由选项（LegacyReplacement Interrupt Route）
+* 通用能力与 ID 寄存器（General Capabilities and ID Register）中的`LEG_RT_CAP`位（只读）指明硬件是否支持该功能
+* 通用配置寄存器（General Configuration Register）中的`LEG_RT_CNF`位用来控制是否启用该功能
+* 当`ENABLE_CNF`和`LEG_RT_CNF`位都被置位时，HPET 产生的中断按如下方式路由：
+  * Timer 0 产生的中断被路由至 `IRQ0`（Non-APIC） 或者 `IRQ2`（I/O APIC）
+  * Timer 1 产生的中断被路由至 `IRQ8`（Non-APIC） 或者 `IRQ8`（I/O APIC）
+    * 此时，RTC 产生的 PIE 类型的中断被禁止，由 timer 1 的中断替代
+    * AIE 类型的中断仍然由 RTC 提供，而 UIE 通常是借助 AIE 实现的，因此也还是通过 RTC 的中断来触发
+  * Timer 2-n 产生的中断根据 timer n 的配置寄存器的设置来路由
+* 当`LEG_RT_CNF`位都被置位时，各 timer 的配置寄存器中的 APIC 或 FSB 中断路由不再有效
+* 参看下图中三个开关的位置
+![pic/timer0_cc_diag.png](pic/timer0_cc_diag.png)
+
 
 # 时钟中断处理程序
-可以划分为体系结构相关部分和与体系结构无关部分。1/HZ秒发生一次。
+可以划分为体系结构相关部分和与体系结构无关部分。1/HZ 秒发生一次。
 
 ### 体系结构相关
 * 作为系统定时器的中断处理程序而注册到内核中。
@@ -432,7 +451,19 @@ tick_handle_periodic()
         V
 tick_periodic()
 ```
-
+```c
+apic_timer_interrupt()
+-> smp_apic_timer_interrupt()
+   -> local_apic_timer_interrupt()
+      -> hrtimer_interrupt()
+         -> __run_hrtimer()
+            -> tick_sched_timer()
+               -> tick_sched_handle()
+                  -> update_process_times()
+                    -> scheduler_tick()
+                       -> task_tick_fair()
+                          -> update_curr()
+```
 # 实际时间
 * 追踪一下`sys_gettimeofday`系统调用的实现来看一下实际时间是怎么得到的：
 * kernel/time/time.c
@@ -734,13 +765,13 @@ __iter_div_u64_rem(u64 dividend, u32 divisor, u64 *remainder)
 * 一般定时器都在超时后马上执行，但也有可能推迟到下一个tick，所以定时器不能用来实现任何硬实时任务。
 
 ## 定时器竞争条件
-* 不要尝试删除-修改-添加timer的方式来代替`mod_timer()`，无法在SMP情况下保证安全。
+* 不要尝试删除-修改-添加 timer 的方式来代替`mod_timer()`，无法在 SMP 情况下保证安全。
 * 一般情况下用`del_timer_sync()`，而不是`del_timer()`。
 * 因为内核异步执行中断处理程序，所以要重点保护 *定时器处理程序* 中的共享数据（即中断与软中断间共享了数据）。
 * 注意：和`del_timer()`不同，`del_timer_sync()`不能用于中断上下文，可能导致死锁。
 
 ## 定时器的实现（调用）
-* 之前在`run_local_timers()`中已经看到了每个tick会调用`raise_softirq(TIMER_SOFTIRQ)`激活定时器softirq。
+* 之前在`run_local_timers()`中已经看到了每个 tick 会调用`raise_softirq(TIMER_SOFTIRQ)`激活定时器 softirq。
 * `start_kernel()`会调用`init_timers()`
   * kernel/time/timer.c
   ```c
@@ -783,6 +814,9 @@ struct tvec_base {
     struct tvec tv5;
 } ____cacheline_aligned;
 ...
+```
+
+```c
 static int cascade(struct tvec_base *base, struct tvec *tv, int index)
 {
     /* cascade all the timers from tv up one level */
@@ -959,11 +993,11 @@ config BASE_SMALL
 
 ## 短延迟（Small Delays）
 * 利用忙循环的方式延迟指定的时间。
-```c
-void udelay(unsigned long usecs);
-void ndelay(unsigned long nsecs);
-void mdelay(unsigned long msecs);
-```
+  ```c
+  void udelay(unsigned long usecs);
+  void ndelay(unsigned long nsecs);
+  void mdelay(unsigned long msecs);
+  ```
 * BogoMIPS —— Its name is a contraction of bogus (that is, fake) and MIPS (million of instructions per second)
 * **BogoMIPS** 值记录处理器在给定时间内忙循环执行的次数。
   * 存放在变量`loops_per_jiffy`中。
@@ -1264,12 +1298,14 @@ EXPORT_SYMBOL(schedule_timeout_idle);
 * 没有计入花在执行时钟中断处理程序和屏蔽时钟级中断的代码上的时间。
 
 # 时钟源
+
+* Linux 时钟源是硬件时钟计数器的一个抽象封装数据结构，基本功能是提供相对时间的参考，形成时间基线（time line）
 * 对于 clock source 抽象的 counter 而言，其 counter value 都是针对 clock 计数的，具体一个 clock 有多少个纳秒是和输入频率相关的。
 * 通过`read`获取当前的 counter value，这个计数值是基于 cycle 的（数据类型是`cycle_t，U64`）。不过，对于用户和其他 driver 而言，cycle 数据是没有意义的，最好统一使用纳秒这样的单位，因此在`struct clocksource`中就有了`mult`和`shift`这两个成员了。我们先看看如何将 A 个 cycles 数转换成纳秒，具体公式如下：
   ```
   转换后的纳秒数目 = (A / F) x NSEC_PER_SEC
   ```
-* 这样的转换公式需要除法，绝大部分的CPU都有乘法器，但是有些处理器是不支持除法，当然，对于不支持硬件除法器的CPU上，toolchain中会提供除法的代码库，虽然我们无法将除法操作的代码编译成一条除法的汇编指令，但是也可以用代码库中的其他运算来取代除法。这样做的坏处就是性能会受影响
+* 这样的转换公式需要除法，绝大部分的 CPU 都有乘法器，但是有些处理器是不支持除法，当然，对于不支持硬件除法器的 CPU 上，toolchain 中会提供除法的代码库，虽然我们无法将除法操作的代码编译成一条除法的汇编指令，但是也可以用代码库中的其他运算来取代除法。这样做的坏处就是性能会受影响
 * 使用移位操作，具体可以参考`clocksource_cyc2ns`的操作：
   ```c
   /**
@@ -1289,6 +1325,13 @@ EXPORT_SYMBOL(schedule_timeout_idle);
   {
           return ((u64) cycles * mult) >> shift;
   }
+  ```
+* 当前系统时钟源
+  ```sh
+  $ cat /sys/devices/system/clocksource/clocksource0/available_clocksource
+  tsc hpet acpi_pm
+  $ cat /sys/devices/system/clocksource/clocksource0/current_clocksource
+  tsc
   ```
 
 # Debug

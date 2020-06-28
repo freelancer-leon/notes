@@ -190,18 +190,11 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 ## 撤销内存描述符
 ```c
 do_exit()
-    |
-    V
-exit_mm(tsk)
-    |
-    V
-mmput(mm)
-    |
-    V
-if (atomic_dec_and_test(&mm->mm_users))
-  mmdrop(mm);
-      |
-      V
+-> exit_mm(tsk)
+   -> mmput(mm)
+      if (atomic_dec_and_test(&mm->mm_users))
+          mmdrop(mm);
+          
 if (unlikely(atomic_dec_and_test(&mm->mm_count)))
       __mmdrop(mm);
           |

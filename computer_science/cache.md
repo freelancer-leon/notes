@@ -81,3 +81,6 @@
 ### 歧义（ambiguity）
 ### 别名（alias）
 ## 物理高速缓存
+
+# References
+- [高速缓存与一致性专栏索引](https://zhuanlan.zhihu.com/p/136300660)

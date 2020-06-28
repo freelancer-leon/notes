@@ -25,8 +25,15 @@
 
 * [RFC5944](https://tools.ietf.org/html/rfc5944#section-4.6)
 * [RFC2002](https://tools.ietf.org/html/rfc2002#section-4.6)
+## 特征
+* GARP 可以是 *ARP 请求* 也可以是 *ARP 回复*
+  * 如果 GARP 是以 *ARP 回复* 出现，**ARP 目的硬件地址** 也应设为要更新的 ARP cache 条目的链路层地址，此时，**ARP 发送者硬件地址** 与 **ARP 目的硬件地址** 相同
+  * 如果 GARP 是以 *ARP 请求* 出现，**ARP 目的硬件地址** 不使用
+* 源 IP 地址和目的 IP 地址相同，为要更新的 ARP cache 条目的 IP 地址
+* **ARP 发送者硬件地址** 需设置为要更新的 ARP cache 条目的链路层地址
 
-## sysctl 系统参数
+
+## sysctl 参数
 > **arp_accept** - BOOLEAN
 >
 > Define behavior for gratuitous ARP frames who's IP is not already present in the ARP table:
@@ -36,6 +43,11 @@
 >	Both replies and requests type gratuitous arp will trigger the ARP table to be updated, if this setting is on.
 >
 >	If the ARP table already contains the IP address of the	gratuitous arp frame, the arp table will be updated regardless if this setting is on or off.
+
+> **arp_notify** - BOOLEAN
+	Define mode for notification of address and device changes.
+	0 - (default): do nothing
+	1 - Generate gratuitous arp requests when device is brought up or hardware address changes.
 
 ## 相关处理
 * net/ipv4/arp.c
@@ -74,11 +86,9 @@ static bool arp_is_garp(struct net *net, struct net_device *dev,
 * *源IP* 与 *目的IP* 相同，但是是 ARP request
   * 查询 *源IP* 的地址类型，如果不是单播，即`RTN_UNICAST`，则也不认为是 GARP
 
-
-
-
 # References
 - [RFC5944](https://tools.ietf.org/html/rfc5944)
 - [RFC2002](https://tools.ietf.org/html/rfc2002)
 - [/proc/sys/net/ipv4/* Variables](https://www.kernel.org/doc/Documentation/networking/ip-sysctl.txt)
 - [Gratuitous_ARP - The Wireshark Wiki](https://wiki.wireshark.org/Gratuitous_ARP)
+- [图解ARP协议（五）免费ARP：地址冲突了肿么办？](https://zhuanlan.zhihu.com/p/29011567)

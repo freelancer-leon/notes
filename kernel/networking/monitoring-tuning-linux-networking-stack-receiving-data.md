@@ -572,7 +572,7 @@ $ sudo sysctl -w net.core.flow_limit_table_len=8192
 ### `process_backlog`
 
 ### `__netif_receive_skb_core`递交数据给包taps和协议层
-* `__netif_receive_skb_core`举起递交数据包给协议层的重任。
+* `__netif_receive_skb_core`承担递交数据包给协议层的重任。
 * 在此之前，它需要检查是否安装了任何包taps，以捕捉所有进来的包。
   * 例如，`AF_PACKET`地址族，典型地被[libpcap library](http://www.tcpdump.org/manpages/pcap.3pcap.html)使用。
 * 如果有，则先把数据提交到那儿，再到协议层。
