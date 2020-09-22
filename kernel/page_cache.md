@@ -157,13 +157,13 @@ struct address_space_operations {
   * radix tree即`struct radix_tree_root  page_tree`域。
 
 # The Buffer Cache
-* 独立的磁盘块通过block I/O buffer也要被存入page cache中。
-  * 一个buffer是一个物理磁盘块在内存里的表示，buffer的作用就是映射内存中的page到磁盘块。
-  * 这样page cache在block I/O时也减少了磁盘访问，因为它缓存磁盘块和减少block I/O操作。
-  * 这个缓存通常称为 **缓冲区高速缓存（buffer cache）**，它没有作为独立缓存，而是作为page cache的一部分。
-  * buffer是用page来映射block的，所以它正好在page cache中。
+* 独立的磁盘块通过 block I/O buffer 也要被存入 page cache 中。
+  * 一个 buffer 是一个物理磁盘块在内存里的表示，buffer 的作用就是映射内存中的 page 到磁盘块。
+  * 这样 page cache 在 block I/O 时也减少了磁盘访问，因为它缓存磁盘块和减少 block I/O 操作。
+  * 这个缓存通常称为 **缓冲区高速缓存（buffer cache）**，它没有作为独立缓存，而是作为 page cache 的一部分。
+  * buffer 是用 page 来映射 block 的，所以它正好在 page cache 中。
 
-* 关于buffer和cache，一个能观测到的地方是`free`命令，解释见[此处](http://linuxperf.com/?p=32)：
+* 这里所说的 buffer cache 与`free`命令观测到的`buffers`不同，`free`命令的`buffers`解释见[此处](http://linuxperf.com/?p=32)：
   ```
   >free
                total       used       free     shared    buffers     cached

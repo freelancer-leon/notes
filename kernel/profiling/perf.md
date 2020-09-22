@@ -415,7 +415,7 @@ SYSCALL_DEFINE5(perf_event_open,
 																	f_flags);
 	...
 }
-...*```
+...__```
 ```
 
 ### 性能分析的计数模式
