@@ -139,6 +139,7 @@ static int __init loglevel(char *str)
 }
 
 early_param("loglevel", loglevel);
+...*```
 ```
 ### 调整
 
@@ -169,7 +170,7 @@ log_buf_len=n[KMG]  Sets the size of the printk ring buffer,
 
 ## sysrq
 
-* 开启sysrq特性
+* 开启 sysrq 特性
   ```
   echo 1 > /proc/sys/kernel/sysrq
   ```
@@ -190,6 +191,7 @@ log_buf_len=n[KMG]  Sets the size of the printk ring buffer,
   ...
   Jun  5 16:23:33 hostdomain kernel: [26953.774424] SysRq : HELP : loglevel(0-9) reboot(b) crash(c) terminate-all-tasks(e) memory-full-oom-kill(f) kill-all-tasks(i) thaw-filesystems(j) sak(k) show-backtrace-all-active-cpus(l) show-memory-usage(m) nice-all-RT-tasks(n) poweroff(o) show-registers(p) show-all-timers(q) unraw(r) sync(s) show-task-states(t) unmount(u) force-fb(V) show-blocked-tasks(w) dump-ftrace-buffer(z)
   ```
+* sysrq 的键映射表见 drivers/tty/sysrq.c 的`struct sysrq_key_op *sysrq_key_table[]`数组
 
 ## git二分法查找
 ```

@@ -367,18 +367,22 @@ GLOBAL(return_to_handler)
 	* `irqsoff`跟踪器的 start 点在开启或关闭中断的地方，如 `local_irq_disable()`；
 	* `preemptoff`跟踪器的 start 点在开启或关闭抢占的地方，如 `preempt_disable()`。
 	* 老版本的`preemptoff`跟踪器不会记录 **中断开启期间的函数，尽管抢占计数不为 0**；目前版本（4.9）的`preemptoff`跟踪器不会记录 **中断开启且抢占计数为 0 时的函数**（好像是废话）。
+* 注意：`/sys/kernel/debug/tracing/events/preemptirq/preempt_{enable|disable}`的跟踪事件的调用点在`trace_preempt_off()->trace_preempt_disable_rcuidle()`，结合`stacktrace`选项可以回溯调用路径
 
 #### `preemptoff`跟踪器的开启和关闭
 * 跟踪器触发时函数调用简化流程
 ```
 include/linux/preempt.h
 preempt_disable()
-  -> preempt_count_inc() -> preempt_count_add(1)
-       -> preempt_latency_start()
-            kernel/trace/trace_irqsoff.c
-            -> trace_preempt_off()
-                 -> start_critical_timing()
-                      -> __trace_function()
+  -> preempt_count_inc() => preempt_count_add(1)
+     -> preempt_latency_start()
+          kernel/trace/trace_irqsoff.c
+          -> trace_preempt_off()
+             -> trace_preempt_disable_rcuidle()
+                -> trace_preempt_disable()
+             -> tracer_preempt_off()
+                -> start_critical_timing()
+                   -> __trace_function()
 ```
 
 ```dot
@@ -390,6 +394,7 @@ digraph G {
 	preempt_count_add[label="preempt_count_add(1)"];
   preempt_latency_start[label="<f0> kernel/trace/trace_irqsoff.c | <f1> preempt_latency_start"];
 	trace_preempt_off;
+	tracer_preempt_off;
 	start_critical_timing;
 	__trace_function;
 
@@ -414,7 +419,7 @@ digraph G {
 			edge[arrowhead="none", penwidth=0];
 			s30 -> s31 -> s32 -> __trace_function;
 		}
-		preempt_latency_start:f1 -> trace_preempt_off -> start_critical_timing -> __trace_function;
+		preempt_latency_start:f1 -> trace_preempt_off -> tracer_preempt_off -> start_critical_timing -> __trace_function;
 	}
 }
 ```
@@ -524,19 +529,22 @@ start_critical_timing(unsigned long ip, unsigned long parent_ip)
         atomic_dec(&data->disabled);
 }
 ...
-#ifdef CONFIG_PREEMPT_TRACER
+#ifdef CONFIG_TRACE_PREEMPT_TOGGLE
+
 void trace_preempt_on(unsigned long a0, unsigned long a1)
 {
-        if (preempt_trace() && !irq_trace())
-                stop_critical_timing(a0, a1);
+    if (!in_nmi())
+        trace_preempt_enable_rcuidle(a0, a1);
+    tracer_preempt_on(a0, a1);
 }
 
 void trace_preempt_off(unsigned long a0, unsigned long a1)
 {
-        if (preempt_trace() && !irq_trace())
-                start_critical_timing(a0, a1);
+    if (!in_nmi())
+        trace_preempt_disable_rcuidle(a0, a1);
+    tracer_preempt_off(a0, a1);
 }
-#endif /* CONFIG_PREEMPT_TRACER */
+#endif
 ```
 * include/linux/ftrace.h
 ```c

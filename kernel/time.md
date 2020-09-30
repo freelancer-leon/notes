@@ -1449,6 +1449,14 @@ Collection: active
 254916 total events, 733.159 events/sec
 
 ```
+* v4.11 后该功能已被移除
+  ```
+  commit dfb4357da6ddbdf57d583ba64361c9d792b0e0b1
+  Author: Kees Cook <keescook@chromium.org>
+  Date:   Wed Feb 8 11:26:59 2017 -0800
+
+      time: Remove CONFIG_TIMER_STATS
+  ```
 
 # References
 - [Linux时间子系统之一：clock source（时钟源）](http://blog.csdn.net/droidphone/article/details/7975694)

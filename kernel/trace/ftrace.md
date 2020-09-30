@@ -483,7 +483,7 @@ cpus=8
 * [Using KernelShark to analyze the real-time scheduler](https://lwn.net/Articles/425583/)
 
 ## 跟踪选项
-### trace_options
+### 通用 trace_options
 * `/sys/kernel/debug/tracing/trace_options`文件
 	```
 	# cat /sys/kernel/debug/tracing/trace_options
@@ -556,32 +556,44 @@ cpus=8
 	 => sys_read
 	 => system_call_fastpath
 	```
-#### stacktrace
-* 当设置该 option 时，任何 **trace event** 的栈跟踪将会被记录下来
 
-### function tracer option
+#### function-trace
+* 如果该选项使能（缺省情况），延迟型 tracer 会启用函数跟踪功能
+* 当禁用该选项时，延迟型 tracer 不跟踪函数，从而降低执行延迟测试时的开销
+
+#### stacktrace
+* 当启用该选项时，任何 **trace event** 的栈跟踪将会被记录下来
+
+### function tracer 选项
 #### func_stack_trace
 * 如果说设置`function_graph tracer`+`set_graph_function`可以跟踪到一个函数往下的调用路径，那么`function tracer`+`set_ftrace_filter`+`func_stack_trace`则可以跟踪到它往上的调用路径
 * 需使能`CONFIG_STACKTRACE`内核选项
 * 只有当`current_tracer`设置为 **function tracer** 时才会出现
 * 当设置该 option 时，每个函数被记录的时候，它的栈跟踪也会被记录
 * **NOTE:** 在使能该选项时，务必同时设置`set_ftrace_filter`，否则系统性能会严重下降。并且在清除过滤函数的时候记得关闭该选项。
-* Example:
-	```
-	$ echo rtc_timer_enqueue > /sys/kernel/debug/tracing/set_ftrace_filter
-	$ echo function > /sys/kernel/debug/tracing/current_tracer
-	$ echo 1 > /sys/kernel/debug/tracing/options/func_stack_trace
-	$ echo 1 > /sys/kernel/debug/tracing/tracing_on
-	$ cat /sys/kernel/debug/tracing/trace_pipe
-	rtc_test.2029-2902  [001] ....  7694.641987: rtc_timer_enqueue <-rtc_update_irq_enable
-	rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
-	=> rtc_timer_enqueue
-	=> rtc_update_irq_enable
-	=> rtc_dev_ioctl
-	=> do_vfs_ioctl
-	=> SyS_ioctl
-	=> system_call_fastpath
-	```
+##### Example:
+```
+$ echo rtc_timer_enqueue > /sys/kernel/debug/tracing/set_ftrace_filter
+$ echo function > /sys/kernel/debug/tracing/current_tracer
+$ echo 1 > /sys/kernel/debug/tracing/options/func_stack_trace
+$ echo 1 > /sys/kernel/debug/tracing/tracing_on
+$ cat /sys/kernel/debug/tracing/trace_pipe
+rtc_test.2029-2902  [001] ....  7694.641987: rtc_timer_enqueue <-rtc_update_irq_enable
+rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
+=> rtc_timer_enqueue
+=> rtc_update_irq_enable
+=> rtc_dev_ioctl
+=> do_vfs_ioctl
+=> SyS_ioctl
+=> system_call_fastpath
+```
+##### `function-trace` vs `stacktrace` vs `func_stack_trace`
+* `function-trace`、`stacktrace`、`func_stack_trace`三者都可以用于栈跟踪，但适用场景是不同的
+  * `function-trace`主要用于 **延迟型 tracer**，例如`irqsoff`、`preemptoff`和`preemptirqsoff`
+  * `stacktrace`主要用于 **trace event**，也就是预设好的跟踪点
+  * `func_stack_trace`主要用于 **function tracer**，用于自定义要跟踪的函数（配合`set_ftrace_filter`）
+
+### function_graph tracer 选项
 
 # Reference
 

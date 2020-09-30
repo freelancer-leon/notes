@@ -209,7 +209,7 @@ const struct sched_class rt_sched_class = {
 
 ### 单核视角
 ![http://img.blog.csdn.net/20141103144806234?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvZGEzMTBibG9n/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center](pic/sched_structs.png)
-* 注意：此图尚未引入`struct sched_rt_entity`和`struct rt_prio_array`结构体。
+* 此图显示了引入`struct sched_rt_entity`和`struct rt_prio_array`结构体。
 * 现在内核的实现将原来在`struct task_struct`里的`run_list`成员移到了内嵌在`struct task_struct`结构里的`struct sched_rt_entity rt`成员里。
 * 原来在`struct rt_rq`里的`bitmap`和`queue`成员放到了新的`struct rt_prio_array`结构体中。
 

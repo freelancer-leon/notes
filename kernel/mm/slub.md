@@ -1,7 +1,9 @@
 # slub
 
+![https://hammertux.github.io/img/SLUB-DS.png](pic/SLUB-DS.png)
+
 ## 可回收的slab
-* slab cache是否可回收可查看文件`/sys/kernel/slab/<slab name>/reclaim_account`。
+* slab cache 是否可回收可查看文件`/sys/kernel/slab/<slab name>/reclaim_account`。
 * include/linux/slab.h
 
   ```c
@@ -81,13 +83,13 @@ Possible debug options are
 
 debug option | sysfs debug file	| 功能
 ---|---|---
-F |	sanity_checks |	激活完整性检查功能，在特定的环节比如free的时候增加各种条件判断，验证数据是否完好。
-Z |	red_zone | 用于检测overrun。通过在slub object后面插入一块额外的红色区域（橄榄球术语），一旦进入就表示有错。
-P |	poison | 用于检测use-after-free和use-uninitialised。给slub对象填充特征字符，比如在分配时填充0x5a，在释放时填充0x6b，根据特征字符是否被覆盖来检测是否出错。更多的poison字节定义参见： /lib/modules/$(uname -r)/build/include/linux/poison.h
-U |	store_user | 在slub object后面添加一块额外的空间，记录调用alloc/free的stack trace
-T |	trace |	在slub object alloc/free时，向系统日志中输出相关信息，包括stack trace
+F |	sanity_checks |	激活完整性检查功能，在特定的环节比如 free 的时候增加各种条件判断，验证数据是否完好。
+Z |	red_zone | 用于检测 overrun。通过在 slub object 后面插入一块额外的红色区域（橄榄球术语），一旦进入就表示有错。
+P |	poison | 用于检测 use-after-free 和 use-uninitialised。给 slub 对象填充特征字符，比如在分配时填充`0x5a`，在释放时填充`0x6b`，根据特征字符是否被覆盖来检测是否出错。更多的 poison 字节定义参见：`/lib/modules/$(uname -r)/build/include/linux/poison.h`
+U |	store_user | 在 slub object 后面添加一块额外的空间，记录调用 alloc/free 的 stack trace
+T |	trace |	在 slub object alloc/free 时，向系统日志中输出相关信息，包括 stack trace
 
-* 系统启动后也可以调整slub调试功能，但比较有限。例如，打开某个slab的trace功能：
+* 系统启动后也可以调整slub调试功能，但比较有限。例如，打开某个 slab 的 trace 功能：
   ```
   echo 1 > /sys/kernel/slab/<slab name>/trace
   ```
@@ -405,15 +407,15 @@ unsigned long kmem_cache_flags(unsigned long object_size,
 		return flags;
 }
 ```
-* 之前的`request_sock_TCP` slub的可合并状态就是在这个过程中被改变的。
-* 然而，对于有些slub，这种方式是无效的，比如：
+* 之前的`request_sock_TCP` slub 的可合并状态就是在这个过程中被改变的。
+* 然而，对于有些 slub，这种方式是无效的，比如：
   ```
   slub_debug=P,kmalloc-64
   ```
-* 原因是，`kmalloc-*`一族的slub分配方式比较特殊，基本过程是
+* 原因是，`kmalloc-*`一族的 slub 分配方式比较特殊，基本过程是
   * 先以匿名方式创建一组`kmalloc_caches[]`
-  * 然后在分别给这个数组中的slub分别赋予`kmalloc-*`的名字
-  * 然而`kmem_cache_flags()`函数会在这之前会被调用，当时这些slub还没有名字，当然不会与内核参数里指定的slub匹配。
+  * 然后在分别给这个数组中的 slub 分别赋予`kmalloc-*`的名字
+  * 然而`kmem_cache_flags()`函数会在这之前会被调用，当时这些 slub 还没有名字，当然不会与内核参数里指定的 slub 匹配。
 
 ```c
 start_kernel()
@@ -489,3 +491,4 @@ diff --git a/mm/slab_common.c b/mm/slab_common.c
 - Linux Kernel v4.12
 - [怎样诊断SLAB泄露问题](http://linuxperf.com/?p=148)
 - [如何诊断SLUB问题](http://linuxperf.com/?p=184)
+- [The Slab Allocator in the Linux kernel](https://hammertux.github.io/slab-allocator)

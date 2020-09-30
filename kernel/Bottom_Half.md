@@ -92,9 +92,9 @@ struct softirq_action
 ```c
 asmlinkage __visible void __softirq_entry __do_softirq(void)
 {
-    unsigned long end = jiffies + MAX_SOFTIRQ_TIME;
+    unsigned long end = jiffies + MAX_SOFTIRQ_TIME; /*默认为 2ms*/
     unsigned long old_flags = current->flags;
-    int max_restart = MAX_SOFTIRQ_RESTART;
+    int max_restart = MAX_SOFTIRQ_RESTART; /*默认为 10 次*/
     struct softirq_action *h;
     bool in_hardirq;
     __u32 pending;
@@ -147,13 +147,13 @@ restart:
 
     rcu_bh_qs();
     local_irq_disable(); /*返回之前恢复中断的关闭状态。*/
-
-    pending = local_softirq_pending();
-    if (pending) {
+    /*以上为在软中断上下文中调用软中断处理函数的部分，下面是考虑是否还要继续在软中断上下文中处理软中断*/
+    pending = local_softirq_pending(); /*如果此时还有未处理完的软中断*/
+    if (pending) { /*软中断处理未超过 2ms，且没有进程需要调度，且以上过程未重复执行超过 10次*/
         if (time_before(jiffies, end) && !need_resched() &&
             --max_restart)
-            goto restart;
-
+            goto restart; /*仍然在软中断上下文中执行软中断*/
+        /*否则唤醒 ksoftirqd 去执行剩下的软中断*/
         wakeup_softirqd();
     }
 

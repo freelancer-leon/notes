@@ -1,3 +1,11 @@
+* RCU是基于其原理命名的，Read-Copy Update
+  * **Read** 指的是对于被 RCU 保护的共享数据，reader 可以直接访问，不需要获得任何锁；
+  * **Copy Update** 指的是 writer 修改数据前首先拷贝一个副本，然后在副本上进行修改，修改完毕后向reclaimer(垃圾回收器)注册一个回调函数(callback)，在适当的时机完成真正的修改操作 – 把原数据的指针重新指向新的被修改的数据，
+  * 这里所说的适当的时机就是当既有的reader全都退出临界区的时候，而等待恰当时机的过程被称为 **grace period**。
+* 在RCU机制中，writer 不需要和 reader 竞争任何锁，只在有多个 writer 的情况下它们之间需要某种锁进行同步作，如果写操作频繁的话RCU的性能会严重下降，所以 RCU 只适用于读多写少的情况。
+
+* /sys/module/rcupdate/parameters/rcu_cpu_stall_suppress
+* /sys/module/rcupdate/parameters/rcu_cpu_stall_timeout
 
 # 导致 RCU Warning 的原因
 * CPU 在 RCU read-side 临界区内忙循环

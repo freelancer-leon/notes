@@ -174,8 +174,8 @@
 ## Docker 架构概览
 ![https://bitsn1000bits.files.wordpress.com/2018/05/bits_of_docker.png?w=636](pic/bits_of_docker.png)
 ![pic/docker_arch_overview.png](pic/docker_arch_overview.png)
-* `volumn`和`network`的生命周期都是独立于容器的，与容器一样是 Docker 中的一等公民
-* Docker 用户可以单独增删改查`volumn`和`network`，然后在创建容器的时候根据需要配置给容器
+* `volume`和`network`的生命周期都是独立于容器的，与容器一样是 Docker 中的一等公民
+* Docker 用户可以单独增删改查`volume`和`network`，然后在创建容器的时候根据需要配置给容器
 
 ### 镜像管理
 #### distribution
@@ -194,17 +194,17 @@
 * 负责与镜像层和容器层元数据有关的增删查改
 * 负责将镜像层的增删查改操作映射到实际存储镜像层文件系统的`graphdriver`模块
 
-### execdriver、volumndriver、graphdirver
+### execdriver、volumedriver、graphdriver
 #### execdriver
 * 对 Linux 操作系统的 namespace、cgroups、apparmor、SELinux 等容器需要的 **系统操作** 进行的一层二次封装。
 * `libcontainer`和`LXC`为两种不同的实现。
-#### volumndriver
-* **volumn 数据卷存储操作** 的最终执行者，负责 volumn 的增删改查，屏蔽不同的驱动实现的区别，为上层调用者提供一个同一的接口。
-  * docker 默认的 volumndriver 是`local`，默认将文件存储于 *docker 根目录* 下的`volumn`文件夹里。
-  * 其他的 volumndriver 均通过外部插件实现。
-#### graphdirver
+#### volumedriver
+* **volume 数据卷存储操作** 的最终执行者，负责 volume 的增删改查，屏蔽不同的驱动实现的区别，为上层调用者提供一个同一的接口。
+  * docker 默认的 volumedriver 是`local`，默认将文件存储于 *docker 根目录* 下的`volume`文件夹里。
+  * 其他的 volumedriver 均通过外部插件实现。
+#### graphdriver
 * 所有与 **容器镜像相关操作** 的最终执行者。
-  * graphdirver 会在 docker 工作目录下维护一组与镜像层对应的目录，并记下镜像层之间的关系以及与具体的 graphdriver 实现相关的数据。
+  * graphdriver 会在 docker 工作目录下维护一组与镜像层对应的目录，并记下镜像层之间的关系以及与具体的 graphdriver 实现相关的数据。
   * 用户 *对镜像的操作* 最终会被映射成 *对这些目录文件以及元数据的增删查改*，从而屏蔽掉不同文件存储实现对于上层调用者的影响。
   * 在 Linux 环境下，目前 docker 已经支持的 graphdriver 包括 `aufs`、`btrfs`、`zfs`、`devicemapper`、`overlay`和`vfs`。
 
@@ -266,8 +266,8 @@
   * 包含所有镜像层信息的 rootfs
 * docker 利用 rootfs 中的`diff_id`计算出内容寻址的索引（chainID）来获取 layer 相关的信息，进而获取每一个镜像层的文件内容
 ### layer
-![http://merrigrove.blogspot.com/2015/10/visualizing-docker-containers-and-images.html](pic/layer_1.png)
-![http://merrigrove.blogspot.com/2015/10/visualizing-docker-containers-and-images.html](pic/layer_2.png)
+![http://merrigrove.blogspot.com/2015/10/visualizing-docker-containers-and-images.html](pic/layer_1.png)<br>
+![http://merrigrove.blogspot.com/2015/10/visualizing-docker-containers-and-images.html](pic/layer_2.png)<br>
 ![http://merrigrove.blogspot.com/2015/10/visualizing-docker-containers-and-images.html](pic/layer_3.png)
 * layer（镜像层）是一个 docker 用来管理镜像层的中间概念
   * 镜像是由镜像层组成的
@@ -311,14 +311,155 @@ Docker server 端接收到相应的 HTTP 请求后，需要做的工作如下
 5. Dockerfile 中所有的指令对应的层的集合就是此次 build 后的结果。如果指定了`tag`参数，便给镜像打上对应的 tag。最后一个`commit`生成的镜像 ID 作为最终的镜像 ID 返回
 
 ## Docker 镜像的分发
-### docker save IMAGE
+### docker save/load IMAGE
 * `docker save`命令会创建一个镜像的压缩文件，这个文件能够在另外一个主机的 docker 上使用。
 * 和`export`命令不同，`save`命令为每一个层都保存了它们的元数据。这个命令 **只能对镜像生效**。
   ![http://dockone.io/uploads/article/20190626/70cdbaf975c88bc83423d88be85476b5.png](pic/docker_save.png)
-### docker export CONTAINER
+### docker export/import CONTAINER
 * `docker export`命令创建一个 tar 文件，并且移除了元数据和不必要的层，将多个层整合成了一个层，只保存了当前统一视角看到的内容。
-* `expoxt`后的容器再`import`到 docker 中，通过`docker images --tree`命令只能看到一个镜像；而`save`后的镜像则不同，它能够看到这个镜像的历史镜像。
+* `expoxt`后的容器再`import`到 docker 中，通过`docker images --tree`命令只能看到一个镜像；而`save`后的镜像则不同，它能够看到这个镜像的历史镜像。<br>
   ![http://dockone.io/uploads/article/20190626/1714c3dd524c807bf9c9b4d0fbe4d056.png](pic/docker_export.png)
+
+## Docker 存储管理
+### Docker 镜像元数据管理
+* docker 镜像在设计上将 *镜像元数据* 与 *镜像文件的存储* 完全隔离开。
+* docker 以分层的形式存储镜像，所以 repository 和 image 这两类元数据并无物理上的镜像文件与之对应，而 layer 这种元数据则存在物理上的镜像层文件与之对应。
+* repository 元数据
+  * `/var/lib/docker/image/[graphdriver]/repositories.json`
+* image 元数据
+  * `/var/lib/docker/image/[graphdriver]/imagedb/content/sha256/[image_id]`
+  * docker 会根据元数据中的历史信息和 rootfs 中的`diff_ids`计算出构成该镜像的镜像层的存储索引`chainID`
+* layer 元数据
+  * 镜像层只包含一个具体的 *镜像文件包*。
+  * 用户在 docker 宿主机上下载了某个镜像层后，docker 会在宿主机上基于 *镜像层文件包* 和 *image元数据* 构建本地的 *layer元数据*，包括`diff`、`parent`、`size`。
+  * 当 docker 将在宿主机上产生的新的镜像层上传到 register 时，与新镜像层相关的宿主机上的元数据也不会与镜像层一块打包上传。
+  * docker 中定义了 Layer 和 WRLayer 两种接口，分别用来定义 *只读层* 和 *可读写层* 的一些操作，又定义了 *roLayer* 和 *mountedLayer*，分别实现上述两种接口。
+#### roLayer
+* **roLayer** 用于描述不可改变的 *镜像层*
+* 存储的主要内容
+  * `parent`：父镜像层（从所属 image 元数据中计算得到）
+  * `diff_id`：镜像层的校验码
+    * 采用 SHA256 算法
+    * 基于 *镜像层文件包* 的内容计算得到
+  * `size`：该镜像层的大小等内容（*镜像层包* 计算出来）
+  * `chainID`：索引该镜像层（从所属 image 元数据中计算得到）
+    * 基于内容存储的索引
+    * 根据当前层与所有祖先镜像层`diff_id`计算出来的
+      * 如果该镜像层是最底层（没有父镜像层），该层的`diff_id`便是`chainID`
+      * 该镜像层`chainID`的计算公式为 `chainID(n)=SHA256(chain(n-1) diff_id(n))`
+  * `cachedID`：graphdriver 存储当前镜像层文件的 ID
+    * 在当前 docker 宿主机上随机生成的一个 uuid
+    * 在当前宿主机上于该镜像层一一对应，用于标示并索引 graphdriver 中的镜像层文件
+* 持久化文件位于`/var/lib/docker/image/[graphdriver]/layerdb/sha256/[chainID]`
+  ```sh
+  $ ls /var/lib/docker/image/overlay2/layerdb/sha256/[chainID]
+  cache-id  diff  parent  size  tar-split.json.gz
+  ```
+#### mountedLayer
+* **mountedLayer** 用于描述可读写的 *容器层*
+* 存储的主要内容
+  * 索引某个容器的可读写层（也叫 *容器层*）的 ID（也对应容器的 ID）
+  * `initID`：容器 init 层在 graphdriver 中的 ID
+  * `mountID`：读写层在 graphdriver 中的 ID
+  * `parent`：容器层的父层镜像的`chainID`
+* 持久化文件位于`/var/lib/docker/image/[graphdriver]/layerdb/mounts/[container_id]`
+  ```sh
+  $ ls /var/lib/docker/image/overlay2/layerdb/mounts/[container_id]
+  init-id  mount-id  parent
+  ```
+
+### Docker 存储驱动
+* 为支持镜像分层和写时复制这些特性，docker 提供存储驱动的接口
+* 存储驱动根据操作系统底层的支持提供了针对某种文件系统的初始化操作以及对镜像层的增、删、改、查和差异比较等操作
+* graphdriver 中主要定义了`Driver`和`ProtoDriver`两个接口
+  * 所有的存储驱动通过实现`Driver`接口提供相应的功能
+  * `ProtoDriver`接口则负责 *定义其中的基本功能*
+#### 存储驱动的创建过程
+* 各类存储驱动都需要定义一个属于自己的初始化过程，并且在这个过程中向 graphdriver 注册自己
+* graphdriver 维护了一个 drivers 列表，提供从 *驱动名* 到 *驱动初始化* 方法的映射，这用于将来根据 *驱动名* 查找 *驱动对应的初始化方法*
+* **注册过程** 即 *存储驱动* 通过调用 graphdriver *提供自己的名字和初始化函数* 的方法，让 graphdriver 将驱动名和这个初始化方法保存到 drivers 列表
+* 创建一个存储驱动时，graphdriver 会根据名字从 drivers 中查找到这个驱动对应的初始化方法，然后调用这个初始化函数得到对应的 driver 对象
+#### OverlayFS
+* `upper`和`lower`两个目录被联合挂载到统一视图的挂载点`merged`目录，`work`目录作为辅助
+* 作为`upper`和`lower`被联合挂载的统一视图，当同一路径的两个文件分别存在两个目录中时，位于上层目录`upper`中的文件会屏蔽位于下层`lower`中的文件
+* 如果是同路径的文件夹，下层目录中的文件和文件夹会被合并到上层
+##### docker 的 overlayfs 运用
+* overlay 目录下以 UUID 命名的文件夹下的目录结构分为两种
+  * 只有`root`目录的是镜像层的目录
+  * `<mountID>-init`作为最后一层只读层，存放与容器内的环境息息相关，但不适合被打包作为镜像的（这个容器特有的）文件内容，这些内容又不应该直接修改在宿主机文件上
+  * 有`lower-id`文件、`merged`、`upper`、`work`目录的是容器层（包括 init 层）的目录
+    * `lower-id`文件里记录了该容器层所属容器的镜像最上面镜像层的`cachedID`，docker 使用该`cachedID`找到所依赖镜像层的`root`目录作为下层目录
+    * `upper`、`merged`、`work`目录与 overlayfs 的目录对应
+* 在准备最上层可读写容器层时，会将 init 层的`lower-id`与`upper`目录中的内容全部复制到容器层中。最后为容器准备 rootfs 时，将对应的 4 种文件夹联合挂载即可。
+
+## Docker 数据卷
+* Volume 是 **存在于一个或多个容器中** 的特定文件或文件夹，这个目录以 **独立于联合文件系统的形式在宿主机中** 存在
+* Volume 为数据的共享与持久化提供以下便利
+  * volume 在容器创建时就会初始化，在容器运行时就可以使用其中的文件
+  * volume 能在不同容器之间共享和重用
+  * 对 volume 中数据的操作会马上生效
+  * 对 volume 中数据的操作不会影响到镜像本身
+  * volume 的生存周期独立于容器的生存周期，即使删除容器，volume 仍然会存在，没有任何容器使用的 volume 也不会被 docker 删除
+* docker 提供了 volumedriver 接口，通过实现该接口，我们可以为 docker 容器提供不同的 volume 存储支持
+* 当前官方默认实现了`local`这种 volumedriver，它使用宿主机上的文件系统为 docker 容器提供 volume
+
+### 数据卷的使用方式
+```
+Usage:  docker volume COMMAND
+
+Manage volumes
+
+Commands:
+  create      Create a volume
+  inspect     Display detailed information on one or more volumes
+  ls          List volumes
+  prune       Remove all unused local volumes
+  rm          Remove one or more volumes
+```
+#### 创建 volume
+* 创建一个指定名字的 volume
+  ```
+  docker volume create --name myvolume
+  ```
+* 创建一个随机名字的 volume，并挂载到容器中的`/data`目录下
+  ```
+  docker run -d -v /data ubuntu /bin/bash
+  ```
+* 创建一个指定名字的 volume，并挂载到容器中的`/data`目录下
+  ```
+  docker run -d -v myvolume:/data ubuntu /bin/bash
+  ```
+* 获取 volume 信息
+  ```
+  docker volume inspect myvolume
+  ```
+* volume 宿主机目录：`/var/lib/docker/volume/[volumeID]`，volume 存储的内容在下面的`_data`目录
+#### 挂载 volume
+* 当挂载的 volume 为宿主机上的目录或文件时，必须使用绝对路径
+* 挂载可以用`:z`（默认）指定 volume 可以共享，用`:Z`指定 volume 为私有卷
+* 用`:ro`指定挂载为只读卷
+#### 使用 Dockerfile 添加 volume
+* `VOLUME`指令
+  * `VOLUME /data`
+  * `VOLUME [ "/data1", "/data2" ]`
+* 不能指定文件夹或文件，为了保证 Dockerfile 的可移植性
+* 注意：`VOLUME`指令后尝试对这个 volume 修改的代码不会生效
+  * 与 Dockerfile 执行的机制有关，不断 commit 临时镜像，但 commit 命令并不保存 volume
+* `CMD`和`ENTRYPOINT`指令在容器启动时执行，可以达到对 volume 初始化的目的
+#### 共享 volume（--volumes-from）
+* `--volume-from`标签使得容器与已有容器共享 volume，例如，新容器`vol_user`与容器`vol_provider`共享 volume
+  ```
+  docker run --rm -it --name vol_user --volume-from vol_provider ubuntu /bin/bash
+  ```
+* 可以使用多个`--volume-from`标签，与`-v`类似
+#### 删除 volume
+* 删除 volume 的三种方法
+  1. `docker volume rm <volume_name>`
+  2. `docker rm -v <container_name>`
+  3. 容器运行时用的 `docker run --rm`，`--rm`标签会在容器停止时删除容器以及容器挂载的 volume
+* 方法 2 和 3 只会删除未命名的 volume，对指定名字的 volume 会保留
+
+
 
 # References
 * [RELATIONSHIPS BETWEEN SUBSYSTEMS, HIERARCHIES, CONTROL GROUPS AND TASKS](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/6/html/resource_management_guide/sec-relationships_between_subsystems_hierarchies_control_groups_and_tasks)
