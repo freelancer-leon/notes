@@ -527,8 +527,6 @@ static inline void __kunmap_atomic(void *addr)
 * Per-CPU 的新接口并不兼容之前的内核。
 
 # 参考资料
-* [Linux slab 分配器剖析](https://www.ibm.com/developerworks/cn/linux/l-linux-slab-allocator/)
 * [/PROC/MEMINFO之谜](http://linuxperf.com/?p=142)
-* [怎样诊断SLAB泄露问题](http://linuxperf.com/?p=148)
 * [Linux内核高端内存](http://ilinuxkernel.com/?p=1013)
 * [Per-CPU variables](https://0xax.gitbooks.io/linux-insides/content/Concepts/linux-cpu-1.html)

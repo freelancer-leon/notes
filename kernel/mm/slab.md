@@ -15,12 +15,12 @@
 * 不同对象划分为 **高速缓存组**，其中每个高速缓存组都存放 **不同类型** 的对象。**每种对象类型** 对应一个高速缓存。
 * `kmalloc()`接口建立在slab层之上，使用了一组通用高速缓存。
 * 高速缓存被划分为 **slab**，slab由一个或多个物理上连续的页组成。
-* 一般情况下，slab也就仅仅由一页组成。每个高速缓存可以由多个slab组成。
-* 每个slab都包含一些被缓存的数据结构。
-* 每个slab处于三种状态之一：满，部分满，空。
+* 一般情况下，slab 也就仅仅由一页组成。每个高速缓存可以由多个 slab 组成。
+* 每个 slab 都包含一些被缓存的数据结构。
+* 每个 slab 处于三种状态之一：满，部分使用，空。
 * 当内核某一部分需要一个新对象时：
-  * 先从 *部分满* 的slab中进行分配。
-  * 没有 *部分满*，则从 *空* slab中进行分配。
+  * 先从 *部分使用* 的slab中进行分配。
+  * 没有 *部分使用*，则从 *空* slab中进行分配。
   * 没有 *空* slab，则创建一个slab。
 * 注意 slabs_empty 链表中的 slab 是进行 **回收（reaping）** 的主要备选对象。正是通过此过程，slab 所使用的内存被返回给操作系统供其他用户使用。
 * slab 链表中的每个 slab 都是一个连续的内存块（一个或多个连续页），它们被划分成一个个对象。这些对象是从特定缓存中进行分配和释放的基本元素。
@@ -93,10 +93,252 @@ struct kmem_cache {
 ...__```
 ```
 ### Slab 空闲对象数组
+#### v3.13 前空闲对象数组
 ![https://flylib.com/books/4/454/1/html/2/images/04fig08.jpg](pic/slab_bufctl.jpg)
 * slab cache 在创建的时候会通过`calculate_slab_order() -> cache_estimate()`计算出`cachep->num`，即每个 slab 可存放的 object 数目
 * slab 管理数据除了`struct slab`结构外，还包含一个有`cachep->num`个元素的数组来指示 slab object 的使用情况
+* 数组元素只有对应的对象是空闲时才是有意义的，元素的值记录下一个空闲对象的位置，这就好像一个单向的“链表”，*链表头* 由`slabp->free`来指示
+* 如下以表 2->3->0->1 （先不管最后一列）的顺序释放对象时`slab_bufctl(slabp)`数组的变化（以加粗方式突显每次 put 时变化的元素值）
+
+`slab_bufctl(slabp)[n]`\put | init | 2 | 3 | 0 | 1 | 3
+----------------------------|------|---|---|---|---|---
+`slab_bufctl(slabp)[0]`     |   1  | 1 | 1 | **3** | 3 | 3
+`slab_bufctl(slabp)[1]`     |   2  | 2 | 2 | 2 | **0** | 0
+`slab_bufctl(slabp)[2]`     |   3  | **END** |END|END|END|END
+`slab_bufctl(slabp)[3]`     | END  |END| **2** | 2 | 2 | **1**
+`slabp->free`               | END  | 2 | 3 | 0 | 1 | 3
+
+* 随后分配对象的时候会以 1->0->3->2 的顺序获得对象
+* 这里用数组而不是位图来记录对象的使用情况，原因是要利用 LIFO 来更有效率地使用 CPU cache
+* 但也给了 double free 破坏 slab 管理结构的机会，只要出现 double free，这个“链表”会形成环，这块 slab 就被破坏了
+  * 比如上面的表的最后一列，double free 了第三个对象，形成了 3->1->0->3 的环
+  * 使能`CONFIG_DEBUG_SLAB_LEAK`和`CONFIG_DEBUG_SLAB`会在对象被分配的时候将数组元素设置成`BUFCTL_FREE`，我们可以通过在 free 的时候先检测这个值来补获 double free 的第一现场
 * 这个数组原来放在 `struct slab`结构之后，着色区之前
+#### v3.13 后空闲对象数组组织方式的变化
+* 然而这一切在 v3.13 后改变了，准确地说是以下 commit 之后开始发生一些变化
+  ```
+  commit b1cb0982bdd6f57fed690f796659733350bb2cae
+  Author: Joonsoo Kim <iamjoonsoo.kim@lge.com>
+  Date:   Thu Oct 24 10:07:45 2013 +0900
+
+      slab: change the management method of free objects of the slab
+  ```
+* 简单地说就是，就是把“链表”改成了“栈”，`page->active`指示 *栈顶*
+* 如下以表 2->3->0->1 的顺序释放对象时`page->freelist[]`数组的变化（以加粗方式突显每次 put 时变化的元素值）
+
+`page->freelist[n]`\put | init | 2 | 3 | 0 | 1
+------------------------|------|---|---|---|---
+`page->freelist[0]`   |   0  | 0 | 0 | 0 | **1**
+`page->freelist[1]`   |   1  | 1 | 1 | **0** | 0
+`page->freelist[2]`   |   2  | 2 | **3** | 3 | 3
+`page->freelist[3]`   |   3  | **2** | 2 | 2 | 2
+`page->active`        |   4  | 3 | 2 | 1 | 0
+
+* 随后分配对象的时候会依然是 1->0->3->2 的顺序获得对象
+* 然而，这并没有解决 double free 对 slab 管理结构的破坏
+  * `__free_one()`里对`ac->entry`的检查仅限于连续两次的 free，对于有间隔的 double free 无能为力
+  * 随后`cache_flusharray()->free_block()->slab_put_obj()`里`page->active--`更是有可能让`active`发生下溢
+  * 更严重的是后面`set_free_obj(page, page->active, objnr)`是类似`((freelist_idx_t *)(page->freelist))[page->active] = objnr`的操作，更不知道把`objnr`写到哪里去了！！！
+
+#### v4.6 后空闲对象数组位置的变化
+* v4.6 后，空闲数组的位置也发生了变化，准确地说是以下 commit 之后
+  ```
+  commit b03a017bebc403d40aa53a092e79b3020786537d
+  Author: Joonsoo Kim <iamjoonsoo.kim@lge.com>
+  Date:   Tue Mar 15 14:54:50 2016 -0700
+
+      mm/slab: introduce new slab management type, OBJFREELIST_SLAB
+  ```
+* 这个改变是基于这样的考虑，只有当有空闲对象时才会用到空闲数组，所以我们可以用空闲对象自己来存储这个数组。
+* 此后 slab 的管理类型由以下 4 个逻辑决定：
+1. 如果管理数组的大小 **小于** 对象的大小，且没有构造函数，它属于`OBJFREELIST_SLAB`
+2. 如果管理数组的大小小于 slab 在存放完对象后的剩余空间，它属于`NORMAL_SLAB`，且用剩余空间存储数组
+3. 如果`OFF_SLAB`的方式比方式 4） 节省内存，那么它属于`OFF_SLAB`。这种类型需要从其他 cache 分配内存来存储管理数组，所以会有额外的内存消耗。
+4. 其他的方式属于`NORMAL_SLAB`. 这种方式使用一个 slab 的专门的内部空间作为管理数组，因此也会有额外的内存消耗。
+* 对应的判断在`__kmem_cache_create()`里由`set_objfreelist_slab_cache()`、`set_off_slab_cache()`和`set_on_slab_cache()`决定。
+* 剩余空间`left_over`在`calculate_slab_order()->cache_estimate()`里计算。
+#### 代码解析
+* mm/slab.c
+```c
+/*
+ * Get the memory for a slab management obj.
+ *
+ * For a slab cache when the slab descriptor is off-slab, the
+ * slab descriptor can't come from the same cache which is being created,
+ * Because if it is the case, that means we defer the creation of
+ * the kmalloc_{dma,}_cache of size sizeof(slab descriptor) to this point.
+ * And we eventually call down to __kmem_cache_create(), which
+ * in turn looks up in the kmalloc_{dma,}_caches for the disired-size one.
+ * This is a "chicken-and-egg" problem.
+ *
+ * So the off-slab slab descriptor shall come from the kmalloc_{dma,}_caches,
+ * which are all initialized during kmem_cache_init().
+ */
+static void *alloc_slabmgmt(struct kmem_cache *cachep,
+                   struct page *page, int colour_off,
+                   gfp_t local_flags, int nodeid)
+{
+    void *freelist;
+    void *addr = page_address(page); /*根据 struct page 指针得到该结构所管理的虚拟地址*/
+    /*slab 的管理信息存储在 struct page里*/
+    page->s_mem = addr + colour_off; /*该 slab 里的对象起始地址在着色区之后，由 s_mem 成员指出*/
+    page->active = 0;
+
+    if (OBJFREELIST_SLAB(cachep))
+        /*对于空闲数组在空闲对象里的类型，这里先将空闲数组指针设为空，由后面 cache_init_objs() 处理*/
+        freelist = NULL;
+    else if (OFF_SLAB(cachep)) {
+        /* Slab management obj is off-slab. */
+        freelist = kmem_cache_alloc_node(cachep->freelist_cache,
+                          local_flags, nodeid);
+        if (!freelist)
+            return NULL;
+    } else {
+        /*对于空闲数组大于一个对象大小的类型，从分配的边界往回找到偏移空闲数组大小的地址，作为空闲数组指针*/
+        /* We will use last bytes at the slab for freelist */
+        freelist = addr + (PAGE_SIZE << cachep->gfporder) -
+                cachep->freelist_size;
+    }
+
+    return freelist;
+}
+...
+static void cache_init_objs(struct kmem_cache *cachep,
+                struct page *page)
+{
+    int i;
+    void *objp;
+    bool shuffled;
+
+    cache_init_objs_debug(cachep, page);
+
+    /* Try to randomize the freelist if enabled */
+    shuffled = shuffle_freelist(cachep, page);
+
+    if (!shuffled && OBJFREELIST_SLAB(cachep)) {
+        /*index_to_obj(cachep, page, cachep->num - 1) 为 slab 最后一个对象。
+          obj_offset(cachep) 指向对象的起始地址，在 slab debug 开启时会跳过填充区和警戒区。
+          因此，对于空闲数组在空闲对象里的类型，空闲数组指针指向最后一个对象的起始地址*/
+        page->freelist = index_to_obj(cachep, page, cachep->num - 1) +
+                        obj_offset(cachep);
+    }
+
+    for (i = 0; i < cachep->num; i++) {
+        objp = index_to_obj(cachep, page, i);
+        objp = kasan_init_slab_obj(cachep, objp);
+
+        /* constructor could break poison info */
+        if (DEBUG == 0 && cachep->ctor) {
+            kasan_unpoison_object_data(cachep, objp);
+            cachep->ctor(objp);
+            kasan_poison_object_data(cachep, objp);
+        }
+
+        if (!shuffled)
+            set_free_obj(page, i, i); /*初始化空闲数组*/
+    }
+}
+
+static void *slab_get_obj(struct kmem_cache *cachep, struct page *page)
+{
+    void *objp;
+
+    objp = index_to_obj(cachep, page, get_free_obj(page, page->active));
+    page->active++;
+    /*这里只单纯地返回 object，调整链表的事留给 fixup_slab_list()*/
+    return objp;
+}
+static void slab_put_obj(struct kmem_cache *cachep,
+            struct page *page, void *objp)
+{
+    unsigned int objnr = obj_to_index(cachep, page, objp);
+#if DEBUG
+    unsigned int i;
+
+    /* Verify double free bug */
+    for (i = page->active; i < cachep->num; i++) {
+        if (get_free_obj(page, i) == objnr) {
+            pr_err("slab: double free detected in cache '%s', objp %px\n",
+                   cachep->name, objp);
+            BUG();
+        }
+    }
+#endif
+    page->active--;
+    if (!page->freelist)
+        /*只有 OBJFREELIST_SLAB 类型的 slab 才会有空的 freelist 域，
+          此条件下 objp 指向最后一个空闲对象，所以用来存放空闲数组*/
+        page->freelist = objp + obj_offset(cachep);
+
+    set_free_obj(page, page->active, objnr);
+}
+
+/*
+ * Map pages beginning at addr to the given cache and slab. This is required
+ * for the slab allocator to be able to lookup the cache and slab of a
+ * virtual address for kfree, ksize, and slab debugging.
+ */
+static void slab_map_pages(struct kmem_cache *cache, struct page *page,
+               void *freelist)
+{
+    page->slab_cache = cache;
+    page->freelist = freelist; /*对于 OBJFREELIST_SLAB 类型的 slab，freelist 这里还是空*/
+}
+
+/*
+ * Grow (by 1) the number of slabs within a cache.  This is called by
+ * kmem_cache_alloc() when there are no active objs left in a cache.
+ */
+static struct page *cache_grow_begin(struct kmem_cache *cachep,
+                gfp_t flags, int nodeid)
+{
+    void *freelist;
+    size_t offset;
+    gfp_t local_flags;
+    int page_node;
+    struct kmem_cache_node *n;
+    struct page *page;
+    ...
+    /* Get slab management. */
+    freelist = alloc_slabmgmt(cachep, page, offset,
+            local_flags & ~GFP_CONSTRAINT_MASK, page_node);
+    if (OFF_SLAB(cachep) && !freelist)
+        goto opps1; /*管理数据在外部的 slab，freelist 是额外分配的，为空表示分配不成功*/
+
+    slab_map_pages(cachep, page, freelist);
+
+    cache_init_objs(cachep, page);
+    ...
+    return page;
+
+    opps1:
+    ...
+    return NULL;
+}
+...
+/*slab_get_obj() 往往和 fixup_slab_list() 一起出现，该函数判断 slab 需不需要调整到 full
+ 或者  partial 链表*/
+static inline void fixup_slab_list(struct kmem_cache *cachep,
+                struct kmem_cache_node *n, struct page *page,
+                void **list)
+{
+    /* move slabp to correct slabp list: */
+    list_del(&page->slab_list);
+    if (page->active == cachep->num) {
+        list_add(&page->slab_list, &n->slabs_full);
+        if (OBJFREELIST_SLAB(cachep)) {
+#if DEBUG
+...
+#endif
+            /*OBJFREELIST_SLAB 类型的 slab 在满的时候会把 freelist 域置为空，
+              这就与 slab_put_obj() 那个判断对上了*/
+            page->freelist = NULL;
+        }
+    } else
+        list_add(&page->slab_list, &n->slabs_partial);
+}
+```
+
 ### 三个 slab 链表和 Per-CPU 的 array_cache
 
 * mm/slab.h
@@ -168,7 +410,7 @@ struct kmem_cache_node {
 * slab 层的管理是在每个高速缓存的基础上，通过提供给整个系统一个简单的接口来完成的。通过接口就可以：
   * 创建和撤销新的高速缓存。
   * 在高速缓存内分配和释放对象。
-* 创建一个高速缓存后，slab层所起的作用就像一个专用的分配器，可以为具体的对象类型进行分配。
+* 创建一个高速缓存后，slab 层所起的作用就像一个专用的分配器，可以为具体的对象类型进行分配。
 #### array_cache
 * 每个 slab 会建立一个 Per-CPU 的`array_cache`，`kmem_cache`的`cpu_cache`域指向这个Per-CPU变量
   * 每个 Per-CPU 变量`array_cache`里又含有一个数组，数组有若干条目，指向该 slab 的对象
@@ -328,5 +570,6 @@ static __always_inline void __SetPageSlab(struct page *page)
 * [`slbtop`](http://man7.org/linux/man-pages/man1/slabtop.1.html)
 
 # 参考资料
+* [Linux slab 分配器剖析](https://www.ibm.com/developerworks/cn/linux/l-linux-slab-allocator/)
 * [The Slab Allocator in the Linux kernel](https://hammertux.github.io/slab-allocator)
 * [Section 4.4. Slab Allocator _ The Linux Kernel Primer. A Top-Down Approach for x86 and PowerPC Architectures](https://flylib.com/books/en/4.454.1.55/1/)

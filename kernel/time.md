@@ -211,6 +211,10 @@
 * **RTC**，用来持久存放系统时间的设备，系统关闭后也可靠主板上的微型电池供电，保持系统的计时。
 * PC架构中，RTC与CMOS集成在一起，RTC的运行与BIOS的保存设置都是通过同一电池供电。
 * 系统启动时，内核通过读取RTC来初始化墙上时间，该时间存放在`xtime`变量中。这是它最主要的作用。
+* 可以通过`ioctl`来让 RTC 产生以下几种类型的 RTC 中断
+  * `RTC_AIE_ON` 支持定时器功能的 RTC 在指定时间产生 RTC 中断
+  * `RTC_UIE_ON` 每秒产生一次 RTC 中断
+  * `RTC_PIE_ON` 按指定周期产生 RTC 中断
 
 ## 系统定时器
 * 系统定时器的根本思想——提供一种周期性触发中断机制
@@ -1468,3 +1472,4 @@ Collection: active
 - [Linux时间子系统之七：定时器的应用--msleep()，hrtimer_nanosleep()](http://blog.csdn.net/DroidPhone/article/details/8104433)
 - [Linux时间子系统之八：动态时钟框架（CONFIG_NO_HZ、tickless）](http://blog.csdn.net/DroidPhone/article/details/8112948)
 - [Linux时间子系统之（十五）：clocksource](http://www.wowotech.net/timer_subsystem/clocksource.html)
+- [rtc(4) - Linux manual page](https://man7.org/linux/man-pages/man4/rtc.4.html)
