@@ -1,5 +1,56 @@
 # 调试
 
+# 常用调试选项
+## lib/Kconfig.debug
+```c
+config DEBUG_INFO
+    bool "Compile the kernel with debug info"
+    depends on DEBUG_KERNEL && !COMPILE_TEST
+    help
+      If you say Y here the resulting kernel image will include
+      debugging info resulting in a larger kernel image.
+      This adds debug symbols to the kernel and modules (gcc -g), and
+      is needed if you intend to use kernel crashdump or binary object
+      tools like crash, kgdb, LKCD, gdb, etc on the kernel.
+      Say Y here only if you plan to debug the kernel.
+
+      If unsure, say N.
+config DEBUG_KERNEL
+    bool "Kernel debugging"
+    help
+      Say Y here if you are developing drivers or trying to debug and
+      identify kernel problems.
+
+```
+* 不开启`COINFIG_DEBUG_INFO`无法在反汇编`vmlinux`时内联 C 源代码
+## init/Kconfig
+```c
+config KALLSYMS
+    bool "Load all symbols for debugging/ksymoops" if EXPERT
+    default y
+    help
+      Say Y here to let the kernel print out symbolic crash information and
+      symbolic stack backtraces. This increases the size of the kernel
+      somewhat, as all symbols have to be loaded into the kernel image.
+
+config KALLSYMS_ALL
+    bool "Include all symbols in kallsyms"
+    depends on DEBUG_KERNEL && KALLSYMS
+    help
+      Normally kallsyms only contains the symbols of functions for nicer
+      OOPS messages and backtraces (i.e., symbols from the text and inittext
+      sections). This is sufficient for most cases. And only in very rare
+      cases (e.g., when a debugger is used) all symbols are required (e.g.,
+      names of variables from the data sections, etc).
+
+      This option makes sure that all symbols are loaded into the kernel
+      image (i.e., symbols from all sections) in cost of increased kernel
+      size (depending on the kernel configuration, it may be 300KiB or
+      something like this).
+
+      Say N unless you really need all symbols.
+```
+
 # 打印（print）
 
 ## printk
@@ -13,7 +64,7 @@
   Append ``",keep"`` to not disable it when the real console takes over.
   ```
 
-  ```
+  ```c
   keep_bootcon    [KNL]
           Do not unregister boot console at start. This is only
           useful for debugging when something happens in the window
@@ -28,7 +79,7 @@
     printk(KERN_DEBUG “error=%d\n”, error);
   ```
 * 调整
-  ```
+  ```sh
   echo 5 > /proc/sys/kernel/printk_ratelimit        # Wait sec before re-open printk
   echo 10 > /proc/sys/kernel/printk_ratelimit_burst # Message number before limiting the rate
   ```
@@ -37,7 +88,7 @@
 
 ### loglevel
 
-```
+```c
 loglevel=   All Kernel Messages with a loglevel smaller than the
         console loglevel will be printed to the console. It can
         also be changed with klogd or other programs. The
@@ -141,7 +192,7 @@ static int __init loglevel(char *str)
 early_param("loglevel", loglevel);
 ...*```
 ```
-### 调整
+### 调整 log level
 
 * 如果不指定 printk 打印的 log level，那么它缺省的级别是 `DEFAULT_MESSAGE_LOGLEVEL`（通常 "4"=KERN_WARNING）
 * 该缺省值可以通过 `CONFIG_DEFAULT_MESSAGE_LOGLEVEL` kernel config 选项 (make menuconfig-> Kernel Hacking -> Default message log level) 调整。
@@ -158,7 +209,7 @@ early_param("loglevel", loglevel);
   # echo 8 > /proc/sys/kernel/printk
   ```
 ### logbuffer
-```
+```c
 log_buf_len=n[KMG]  Sets the size of the printk ring buffer,
         in bytes.  n must be a power of two and greater
         than the minimal size. The minimal size is defined
@@ -194,7 +245,7 @@ log_buf_len=n[KMG]  Sets the size of the printk ring buffer,
 * sysrq 的键映射表见 drivers/tty/sysrq.c 的`struct sysrq_key_op *sysrq_key_table[]`数组
 
 ## git二分法查找
-```
+```sh
 git bisect start
 git bisect bad [revision bug on]
 git bisect good [revision no bug]
@@ -209,7 +260,80 @@ git bisect start - arch/x86
 ```
 
 # Dynamic Debug
-* CONFIG_DYNAMIC_DEBUG
+* `CONFIG_DYNAMIC_DEBUG` (lib/Kconfig.debug)
+```c
+config DYNAMIC_DEBUG
+    bool "Enable dynamic printk() support"
+    default n
+    depends on PRINTK
+    depends on (DEBUG_FS || PROC_FS)
+    select DYNAMIC_DEBUG_CORE
+    help
+
+      Compiles debug level messages into the kernel, which would not
+      otherwise be available at runtime. These messages can then be
+      enabled/disabled based on various levels of scope - per source file,
+      function, module, format string, and line number. This mechanism
+      implicitly compiles in all pr_debug() and dev_dbg() calls, which
+      enlarges the kernel text size by about 2%.
+
+      If a source file is compiled with DEBUG flag set, any
+      pr_debug() calls in it are enabled by default, but can be
+      disabled at runtime as below.  Note that DEBUG flag is
+      turned on by many CONFIG_*DEBUG* options.
+
+      Usage:
+
+      Dynamic debugging is controlled via the 'dynamic_debug/control' file,
+      which is contained in the 'debugfs' filesystem or procfs.
+      Thus, the debugfs or procfs filesystem must first be mounted before
+      making use of this feature.
+      We refer the control file as: <debugfs>/dynamic_debug/control. This
+      file contains a list of the debug statements that can be enabled. The
+      format for each line of the file is:
+
+        filename:lineno [module]function flags format
+
+      filename : source file of the debug statement
+      lineno : line number of the debug statement
+      module : module that contains the debug statement
+      function : function that contains the debug statement
+      flags : '=p' means the line is turned 'on' for printing
+      format : the format used for the debug statement
+
+      From a live system:
+
+        nullarbor:~ # cat <debugfs>/dynamic_debug/control
+        # filename:lineno [module]function flags format
+        fs/aio.c:222 [aio]__put_ioctx =_ "__put_ioctx:\040freeing\040%p\012"
+        fs/aio.c:248 [aio]ioctx_alloc =_ "ENOMEM:\040nr_events\040too\040high\012"
+        fs/aio.c:1770 [aio]sys_io_cancel =_ "calling\040cancel\012"
+
+        Example usage:
+
+          // enable the message at line 1603 of file svcsock.c
+          nullarbor:~ # echo -n 'file svcsock.c line 1603 +p' >
+                          <debugfs>/dynamic_debug/control
+
+          // enable all the messages in file svcsock.c
+          nullarbor:~ # echo -n 'file svcsock.c +p' >
+                          <debugfs>/dynamic_debug/control
+
+          // enable all the messages in the NFS server module
+          nullarbor:~ # echo -n 'module nfsd +p' >
+                          <debugfs>/dynamic_debug/control
+
+          // enable all 12 messages in the function svc_process()
+          nullarbor:~ # echo -n 'func svc_process +p' >
+                          <debugfs>/dynamic_debug/control
+
+          // disable all 12 messages in the function svc_process()
+          nullarbor:~ # echo -n 'func svc_process -p' >
+                          <debugfs>/dynamic_debug/control
+
+        See Documentation/admin-guide/dynamic-debug-howto.rst for additional
+        information.
+```
 
 # References
 * [Debugging by printing](https://elinux.org/Debugging_by_printing)

@@ -61,22 +61,22 @@
 * include/linux/fs.h
 ```c
 struct address_space {
-    struct inode        *host;      /* owner: inode, block_device */
+    struct inode        *host;          /* owner: inode, block_device */
     struct radix_tree_root  page_tree;  /* radix tree of all pages */
-    spinlock_t      tree_lock;  /* and lock protecting it */
-    atomic_t        i_mmap_writable;/* count VM_SHARED mappings */
-    struct rb_root      i_mmap;     /* tree of private and shared mappings */
+    spinlock_t          tree_lock;      /* and lock protecting it */
+    atomic_t            i_mmap_writable;/* count VM_SHARED mappings */
+    struct rb_root      i_mmap;         /* tree of private and shared mappings */
     struct rw_semaphore i_mmap_rwsem;   /* protect tree, count, list */
     /* Protected by tree_lock together with the radix tree */
-    unsigned long       nrpages;    /* number of total pages */
+    unsigned long       nrpages;        /* number of total pages */
     /* number of shadow or DAX exceptional entries */
     unsigned long       nrexceptional;
-    pgoff_t         writeback_index;/* writeback starts here */
+    pgoff_t             writeback_index;/* writeback starts here */
     const struct address_space_operations *a_ops;   /* methods */
-    unsigned long       flags;      /* error bits/gfp mask */
-    spinlock_t      private_lock;   /* for use by the address_space */
+    unsigned long       flags;          /* error bits/gfp mask */
+    spinlock_t          private_lock;   /* for use by the address_space */
     struct list_head    private_list;   /* ditto */
-    void            *private_data;  /* ditto */
+    void                *private_data;  /* ditto */
 } __attribute__((aligned(sizeof(long))));
 ```
 * `i_mmap` 一个优先搜索树，它的搜索范围包含了在`address_space`中所有共享的 *私有的* 映射页面。
@@ -150,11 +150,83 @@ struct address_space_operations {
 
 ![page_cache_file_mm_mapping.png](pic/page_cache_file_mm_mapping.png)
 
-## Radix Tree
+## Radix Tree / Xarray
+* 因为任何页 I/O 操作前内核都要检查 page 是否已在 page cache 中，内核通过 **radix tree** 数据结构来快速检索希望得到的 page。
+* 每个`struct address_space`对象的都有唯一的 radix tree。
+  * radix tree 即`struct radix_tree_root  page_tree`域。
+* 在 v4.20 后，radix tree 已被改为 xarray。
+  * include/linux/xarray.h
+  ```c
+  /*
+   * @count is the count of every non-NULL element in the ->slots array
+   * whether that is a value entry, a retry entry, a user pointer,
+   * a sibling entry or a pointer to the next level of the tree.
+   * @nr_values is the count of every element in ->slots which is
+   * either a value entry or a sibling of a value entry.
+   */
+  struct xa_node {
+      unsigned char   shift;      /* Bits remaining in each slot */
+      unsigned char   offset;     /* Slot offset in parent */
+      unsigned char   count;      /* Total entry count */
+      unsigned char   nr_values;  /* Value entry count */
+      struct xa_node __rcu *parent;   /* NULL at top of tree */
+      struct xarray   *array;     /* The array we belong to */
+      union {
+          struct list_head private_list;  /* For tree user */
+          struct rcu_head rcu_head;   /* Used when freeing node */
+      };
+      void __rcu  *slots[XA_CHUNK_SIZE];
+      union {
+          unsigned long   tags[XA_MAX_MARKS][XA_MARK_LONGS];
+          unsigned long   marks[XA_MAX_MARKS][XA_MARK_LONGS];
+      };
+  };
+  ```
+  * `shift` 当前节点的单位
+* slot 里存储的指针的最后两位指示该 node 的类型
+  * `00`：node 为数据指针（叶子节点）
+  * `10`：node 指向下一级 node，老版本为`01`
+  * 老版本为`10`：node 为 exceptional entry，用于存储 shmem/tmpfs 的 swap entries
+  * include/linux/radix-tree.h
+  ```c
+  /*
+   * The bottom two bits of the slot determine how the remaining bits in the
+   * slot are interpreted:
+   *
+   * 00 - data pointer
+   * 10 - internal entry
+   * x1 - value entry
+   *
+   * The internal entry may be a pointer to the next level in the tree, a
+   * sibling entry, or an indicator that the entry in this slot has been moved
+   * to another location in the tree and the lookup should be restarted.  While
+   * NULL fits the 'data pointer' pattern, it means that there is no entry in
+   * the tree for this index (no matter what level of the tree it is found at).
+   * This means that storing a NULL entry in the tree is the same as deleting
+   * the entry from the tree.
+   */
+  #define RADIX_TREE_ENTRY_MASK       3UL
+  #define RADIX_TREE_INTERNAL_NODE    2UL
 
-* 因为任何页I/O操作前内核都要检查page是否已在page cache中，内核通过 **radix tree** 数据结构来快速检索希望得到的page。
-* 每个`struct address_space`对象的都有唯一的radix tree。
-  * radix tree即`struct radix_tree_root  page_tree`域。
+  static inline bool radix_tree_is_internal_node(void *ptr)
+  {
+      return ((unsigned long)ptr & RADIX_TREE_ENTRY_MASK) ==
+                  RADIX_TREE_INTERNAL_NODE;
+  }
+  ```
+* 这样在使用 node 前需要用函数`entry_to_node()`转换一下，存储 entry 前需要做相反的操作
+  * lib/radix-tree.c
+  ```c
+  static inline struct radix_tree_node *entry_to_node(void *ptr)
+  {
+      return (void *)((unsigned long)ptr & ~RADIX_TREE_INTERNAL_NODE);
+  }
+
+  static inline void *node_to_entry(void *ptr)
+  {
+      return (void *)((unsigned long)ptr | RADIX_TREE_INTERNAL_NODE);
+  }
+  ```
 
 # The Buffer Cache
 * 独立的磁盘块通过 block I/O buffer 也要被存入 page cache 中。
@@ -223,3 +295,5 @@ laptop_mode | A Boolean value controlling laptop mode. See the following section
 * [Linux Storage Cache](https://msreekan.com/2015/04/24/linux-storage-cache/)
 * [How Linux Kernel Manages Application Memory](http://techblog.cloudperf.net/2016/07/how-linux-kernel-manages-application_18.html)
 * [FREE命令显示的BUFFERS与CACHED的区别](http://linuxperf.com/?p=32)
+* [The XArray data structure - LWN.net](https://lwn.net/Articles/745073/)
+* [详解Linux内核Radix树算法的实现](http://sourcelink.top/2019/09/26/linux-kernel-radix-tree-analysis/)

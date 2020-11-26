@@ -1244,6 +1244,66 @@ static __init int init_function_trace(void)
 core_initcall(init_function_trace);
 ```
 
+## 栈跟踪
+* 核心函数是`__ftrace_trace_stack()`，`__trace_stack()`对其有一个简单的封装
+
+### func_stack_trace (function tracer)
+```c
+kernel/trace/trace_functions.c
+function_stack_trace_call()
+   kernel/trace/trace.c
+-> trace_function()
+-> __trace_stack()
+   -> __ftrace_trace_stack()
+      kernel/stacktrace.c
+      -> stack_trace_save()
+        stack_trace_consume_fn consume_entry = stack_trace_consume_entry;
+        arch/x86/kernel/stacktrace.c
+        -> arch_stack_walk(consume_entry, &c, current, NULL)
+           -> unwind_start()
+           -> unwind_done()
+           -> unwind_next_frame()
+           -> unwind_get_return_address()
+           -> consume_entry() => stack_trace_consume_entry()
+```
+### stacktrace (tracepoint)
+```c
+kernel/trace/trace_events_trigger.c
+stacktrace_trigger()
+   kernel/trace/trace.c
+-> trace_dump_stack(STACK_SKIP)
+   -> __ftrace_trace_stack()
+```
+### function-trace (latency tracer)
+```c
+kernel/trace/trace_irqsoff.c
+tracer_hardirqs_on()/tracer_preempt_on()
+-> stop_critical_timings()
+   -> check_critical_timing()
+      -> __trace_function()
+      -> __trace_stack()
+```
+
+### ftrace_stacks[4] 和 ftrace_stack[1024] 数组
+```c
+/* Allow 4 levels of nesting: normal, softirq, irq, NMI */
+#define FTRACE_KSTACK_NESTING   4
+
+#define FTRACE_KSTACK_ENTRIES   (PAGE_SIZE / FTRACE_KSTACK_NESTING)
+/*每一级 1024 个条目。对于 64 位系统，占 8192 Byte （2 pages）*/
+struct ftrace_stack {
+    unsigned long       calls[FTRACE_KSTACK_ENTRIES];
+};
+/*每个条目存一个调用函数的地址，故而用的类型是 unsigned long*/
+/*允许 4 级嵌套：normal, softirq, irq, NMI，2*4=8个pages*/
+struct ftrace_stacks {
+    struct ftrace_stack stacks[FTRACE_KSTACK_NESTING];
+};
+/*Per-CPU 变量 ftrace_stacks 占 CPU x 8 个 pages*/
+static DEFINE_PER_CPU(struct ftrace_stacks, ftrace_stacks);
+static DEFINE_PER_CPU(int, ftrace_stack_reserve);
+```
+
 # Reference
 
 * [ftrace 简介](https://www.ibm.com/developerworks/cn/linux/l-cn-ftrace/)
