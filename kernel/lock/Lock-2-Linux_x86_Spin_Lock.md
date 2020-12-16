@@ -296,12 +296,12 @@ static __always_inline void arch_spin_lock(arch_spinlock_t *lock)
     /*TICKET_LOCK_INC为 1，加锁时tail+1，表示下一个获得锁的线程应持有的Ticket*/
     register struct __raw_tickets inc = { .tail = TICKET_LOCK_INC };
 
-    /*xadd将相加后的值存入指定内存地址，并返回指定地址里原来的值。
-      实现时会在之前插入lock 指令，表示lock的下一条指令执行期间锁内存，于是下一条指令就是原子操作。
+    /*xadd 将相加后的值存入指定内存地址，并返回指定地址里原来的值。
+      实现时会在之前插入 lock 指令，表示 lock 的下一条指令执行期间锁内存，于是下一条指令就是原子操作。
       这样，下面一条语句的效果就是：
-      1. 锁的tail域加 1，即更新了 Next（锁的tail域）
-      2. 同时读取 Owner（锁的 head域）
-      3. 本地变量inc 的 tail 域存的是 Ticket，head 域存的是 Owner
+      1. 锁的 tail 域加 1，即更新了 Next（锁的 tail 域）
+      2. 同时读取 Owner（锁的 head 域）
+      3. 本地变量 inc 的 tail 域存的是 Ticket，head 域存的是 Owner
      */
     inc = xadd(&lock->tickets, inc);
     /*如果 Owner 与 Ticket 相等表示获得锁，退出*/
@@ -313,19 +313,19 @@ static __always_inline void arch_spin_lock(arch_spinlock_t *lock)
         unsigned count = SPIN_THRESHOLD;
 
         do {
-            /*不停读取 Owner，即锁对象的 head 域，更新到inc.head*/
+            /*不停读取 Owner，即锁对象的 head 域，更新到 inc.head*/
             inc.head = READ_ONCE(lock->tickets.head);
-            /*Owner 等于 inc.tail存的 Ticket，获得锁，退出*/
+            /*Owner 等于 inc.tail 存的 Ticket，获得锁，退出*/
             if (__tickets_equal(inc.head, inc.tail))
                 goto clear_slowpath;
-            /*让CPU歇一会，后面会详细讲怎么歇*/
+            /*让 CPU 歇一会，后面会详细讲怎么歇*/
             cpu_relax();
         } while (--count);
-        /*未配置CONFIG_PARAVIRT_SPINLOCKS选项，下面函数为空函数*/
+        /*未配置 CONFIG_PARAVIRT_SPINLOCKS 选项，下面函数为空函数*/
         __ticket_lock_spinning(lock, inc.tail);
     }
 clear_slowpath:
-    /*未配置CONFIG_PARAVIRT_SPINLOCKS选项，下面函数啥也不做*/
+    /*未配置 CONFIG_PARAVIRT_SPINLOCKS 选项，下面函数啥也不做*/
     __ticket_check_and_clear_slowpath(lock, inc.head);
 out:
     barrier();  /* make sure nothing creeps before the lock is taken */
@@ -347,15 +347,15 @@ static __always_inline int arch_spin_trylock(arch_spinlock_t *lock)
     new.head_tail &= ~TICKET_SLOWPATH_FLAG;
 
     /* cmpxchg is a full barrier, so nothing can move before it */
-    /*cmpxchg族指令实现原子地比较并交换，由于前面插入了lock指令，因此cmpxchg指令
+    /*cmpxchg 族指令实现原子地比较并交换，由于前面插入了 lock 指令，因此 cmpxchg 指令
       执行时锁内存总线，别的线程无法更新锁。
-      cmpxchg 比较 old.head_tail 与 lock->head_tail地址里的值，返回原来
+      cmpxchg 比较 old.head_tail 与 lock->head_tail 地址里的值，返回原来
       lock->head_tail 地址里的值：
-      1）如果相等，将 new.head_tail 的值存入 lock->head_tail地址指向的内存。
-         故返回值如果等于 old.head_tail 表示成功。执行线程由此获得锁，返回true。
+      1）如果相等，将 new.head_tail 的值存入 lock->head_tail 地址指向的内存。
+         故返回值如果等于 old.head_tail 表示成功。执行线程由此获得锁，返回 true。
          此举原子地完成了比较和更新 Next （占用锁）的过程。
-      2）如果不等，返回 lock->head_tail 地址里的值 == old.head_tail 表达式必然不成立，
-         尝试获取锁失败。
+      2）如果不等，也返回 lock->head_tail 地址里的值。但返回值 == old.head_tail 的表达式
+         必然不成立，尝试获取锁失败。
      */
     return cmpxchg(&lock->head_tail, old.head_tail, new.head_tail) == old.head_tail;
 }

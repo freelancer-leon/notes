@@ -186,7 +186,7 @@ struct address_space_operations {
 * slot 里存储的指针的最后两位指示该 node 的类型
   * `00`：node 为数据指针（叶子节点）
   * `10`：node 指向下一级 node，老版本为`01`
-  * 老版本为`10`：node 为 exceptional entry，用于存储 shmem/tmpfs 的 swap entries
+    * 老版本的`10`：node 为 exceptional entry，用于存储 shmem/tmpfs 的 swap entries
   * include/linux/radix-tree.h
   ```c
   /*
@@ -227,6 +227,28 @@ struct address_space_operations {
       return (void *)((unsigned long)ptr | RADIX_TREE_INTERNAL_NODE);
   }
   ```
+### 清除 tag
+```c
+static void node_tag_clear(struct radix_tree_root *root,
+                struct radix_tree_node *node,
+                unsigned int tag, unsigned int offset)
+{
+    while (node) {
+        if (!tag_get(node, tag, offset)) /*如果当前 node 的第 offset 个 slot 对应的 tag 类型未设置*/
+            return;  /*说明已经清除完成了，返回*/
+        tag_clear(node, tag, offset); /*否则清除位置为 offset 的 slot 对应的 tag*/
+        if (any_tag_set(node, tag)) /*关键在这，如果该 node 的其他 slot 还有该 tag，无需向上清除 tag*/
+            return;
+
+        offset = node->offset; /*记下 node 在父节点中的槽位，因为 node 在下一条语句被覆盖了*/
+        node = node->parent;   /*node 指向父节点*/
+    }
+
+    /* clear the root's tag bit */
+    if (root_tag_get(root, tag)) /*如果向上清除到了根节点，并且根结点的 tag 也设置了*/
+        root_tag_clear(root, tag); /*清除根结点的 tag*/
+}
+```
 
 # The Buffer Cache
 * 独立的磁盘块通过 block I/O buffer 也要被存入 page cache 中。

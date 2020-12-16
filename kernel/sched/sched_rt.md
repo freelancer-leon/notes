@@ -791,16 +791,16 @@ static void update_curr_rt(struct rq *rq)
 }
 ```
 
-### 运行队列rq的rt_avg
+### 运行队列 rq 的 rt_avg
 * `struct rq`的`rt_avg`成员用于统计目前实时任务执行时间的平均值。
 * 通过`update_curr_rt()`中得到的执行时间的增量`delta_exec`，再由`sched_rt_avg_update()`把该值与运行队列的`rt_avg`取平均值，得到新的`rt_avg`。
 * 可以回溯函数调用`scale_rt_capacity() -> update_cpu_capacity() -> update_group_capacity()`看到`rt_avg`与`age_stamp`在负载均衡中的作用。
 
 #### sched_time_avg_ms
 * `sched_time_avg_ms`解释看[这里](https://www.suse.com/documentation/sles-12/book_sle_tuning/data/sec_tuning_taskscheduler_cfs.html#)
-  * 该参数设置计算 *花在运行实时任务的时间的平均值* 的周期。
-  * 这个值协助 CFS 做出负载均衡的决定，并且给出一个有高优先实时任务的CPU有多忙的指征。
-  * 对该值的优化设置高度工作负载相关，且取决于实时任务运行多频繁和运行多长时间。
+  * 该参数设置计算 *用在运行实时任务的时间的平均值* 的周期。
+  * 这个值协助 CFS 做出负载均衡的决定，并且给出一个有高优先实时任务的 CPU 有多忙的指征。
+  * 对该值的优化设置与工作负载高度相关，且取决于实时任务运行多频繁和运行多长时间。
 * 用`sysctl`或`proc`文件系统下参数`sched_time_avg_ms`调节
   ```
   $ cat /proc/sys/kernel/sched_time_avg_ms
@@ -929,7 +929,7 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
                  * Don't actually throttle groups that have no runtime assigned
                  * but accrue some time due to boosting.
                  */
-                /*rt_b 为运行队列 rt_rq 的进程组带宽控制结构体指针，如果 rt_runtime 即
+                /*rt_b 指向运行队列 rt_rq 的进程组带宽控制结构，如果 rt_runtime 即
                   此进程组的任务运行时间额度值有效，则设置 rt_throttled 为 1，表明此队列
                   的实时调度受到限制。
                   对于 runtime 没指定的组，实际上没有限流，因此不需要设置 rt_throttled*/
@@ -1140,7 +1140,11 @@ short int | bit code | unsigned short int | 5 bit maximum = 31
   * 该定时器在内核初始化时，由`sched_init()`根据不同的条件调用`init_rt_bandwidth()`初始化定时器，回调函数为`sched_rt_period_timer()`。
   * 该定时器在该任务组没有进程时并不会工作，通过`/proc/timer_list`无法看到该定时器在排队。
   * 在有进程进入队列时，如果该队列的任务组的周期性定时器尚未启动，则会在此时启动。
-  * 当定时器到期时调用注册的回调函数`sched_rt_period_timer()`进行检查。
+  * 当定时器到期时，调用初始化时注册的回调函数`sched_rt_period_timer()`进行检查。
+* `sched_rt_period_timer()`控制定时器是否需要重启，并且保证定时器不被跳过。
+* `do_sched_rt_period_timer()`完成主要的控制工作
+  * 周期性地减小`rt_time`，因为 timer 每`rt_period`触发一次，从而达到周期性控制实时带宽的目的
+  * 判断是否能够解除限流
 
 ![pic/sched_rt_period_timer.png](pic/sched_rt_period_timer.png)
 
@@ -1228,7 +1232,7 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 {
         struct rt_bandwidth *rt_b =
                 container_of(timer, struct rt_bandwidth, rt_period_timer);
-        int idle = 0;
+        int idle = 0; /*定时器是不是要空闲的 flag*/
         int overrun;
 
         raw_spin_lock(&rt_b->rt_runtime_lock);

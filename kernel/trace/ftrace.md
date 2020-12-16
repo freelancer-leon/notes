@@ -595,6 +595,14 @@ rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
 
 ### function_graph tracer 选项
 
+## 基于 kprobes 的事件跟踪
+* 与基于 tracepoint 的事件跟踪相似，kprobes 事件跟踪是基于 kprobes 点的跟踪
+* 可动态插入和删除 kprobes 跟踪点
+* 需开启`CONFIG_KPROBE_EVENT=y`
+* 无需通过`current_tracer`激活
+* 通过`/sys/kernel/debug/tracing/kprobe_events`添加动态探针
+* 通过`/sys/kernel/debug/tracing/events/kprobes/<EVENT>/enable`使能
+
 # Reference
 
 * [ftrace 简介](https://www.ibm.com/developerworks/cn/linux/l-cn-ftrace/)

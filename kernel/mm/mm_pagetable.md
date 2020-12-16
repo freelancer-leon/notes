@@ -174,6 +174,37 @@ static inline pteval_t pte_flags(pte_t pte)
 * 这里只采用了两级页表。
 
 
+## Dump 页表
+### CONFIG_PTDUMP_DEBUGFS
+```python
+config PTDUMP_DEBUGFS
+    bool "Export kernel pagetable layout to userspace via debugfs"
+    depends on DEBUG_KERNEL
+    depends on DEBUG_FS
+    depends on GENERIC_PTDUMP
+    select PTDUMP_CORE
+    help
+      Say Y here if you want to show the kernel pagetable layout in a
+      debugfs file. This information is only useful for kernel developers
+      who are working in architecture specific areas of the kernel.
+      It is probably not a good idea to enable this feature in a production
+      kernel.
+
+      If in doubt, say N.
+```
+* 启用`CONFIG_PTDUMP_DEBUGFS`可以通过读取`/sys/kernel/debug/page_tables`目录下的`kernel`和`current_kernel`文件 dump 页表
+* 老版本该选项由不同 arch 分别设置
+  * x86 的`CONFIG_X86_PTDUMP`
+  * ARM64 的`CONFIG_ARM64_PTDUMP_DEBUGFS`
+* x86 开启`CONFIG_PAGE_TABLE_ISOLATION`会增加`current_user`文件用于 dump 影子页表
+
+### 参考实现
+#### x86
+* arch/x86/mm/dump_pagetables.c
+#### ARM64
+* arch/arm64/mm/ptdump_debugfs.c
+* arch/arm64/mm/dump.c
+
 # 参考资料
 
 * [Using the Microprocessor MMU for Software Protection in Real-Time Systems](http://www.lynx.com/using-the-microprocessor-mmu-for-software-protection-in-real-time-systems/)

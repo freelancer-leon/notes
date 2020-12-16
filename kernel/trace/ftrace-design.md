@@ -184,6 +184,7 @@ tracing_set_trace_write()
                      -> ftrace_arch_code_modify_prepare()
                         -> set_kernel_text_rw()
                         -> set_all_modules_text_rw()
+                        arch/x86/kernel/ftrace.c
                      -> arch_ftrace_update_code()
                         -> ftrace_modify_all_code()
                      -> ftrace_arch_code_modify_post_process()
@@ -1305,6 +1306,5 @@ static DEFINE_PER_CPU(int, ftrace_stack_reserve);
 ```
 
 # Reference
-
 * [ftrace 简介](https://www.ibm.com/developerworks/cn/linux/l-cn-ftrace/)
 * [Ftrace 实现原理与开发实践](http://tinylab.org/ftrace-principle-and-practice/)

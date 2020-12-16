@@ -100,7 +100,7 @@ struct kmem_cache {
 * 数组元素只有对应的对象是空闲时才是有意义的，元素的值记录下一个空闲对象的位置，这就好像一个单向的“链表”，*链表头* 由`slabp->free`来指示
 * 如下以表 2->3->0->1 （先不管最后一列）的顺序释放对象时`slab_bufctl(slabp)`数组的变化（以加粗方式突显每次 put 时变化的元素值）
 
-`slab_bufctl(slabp)[n]`\put | init | 2 | 3 | 0 | 1 | 3
+`slab_bufctl(slabp)[n]`\put | full | 2 | 3 | 0 | 1 | 3
 ----------------------------|------|---|---|---|---|---
 `slab_bufctl(slabp)[0]`     |   1  | 1 | 1 | **3** | 3 | 3
 `slab_bufctl(slabp)[1]`     |   2  | 2 | 2 | 2 | **0** | 0
@@ -412,14 +412,14 @@ struct kmem_cache_node {
   * 在高速缓存内分配和释放对象。
 * 创建一个高速缓存后，slab 层所起的作用就像一个专用的分配器，可以为具体的对象类型进行分配。
 #### array_cache
-* 每个 slab 会建立一个 Per-CPU 的`array_cache`，`kmem_cache`的`cpu_cache`域指向这个Per-CPU变量
+* 每个 slab 会建立一个 Per-CPU 的`array_cache`，`kmem_cache`的`cpu_cache`域指向这个 Per-CPU 变量
   * 每个 Per-CPU 变量`array_cache`里又含有一个数组，数组有若干条目，指向该 slab 的对象
 * 分配和释放对象都优先在`array_cache`里进行，减小开销和锁的使用
-  * 通常分配会使`ac->avail`会减小
-  * 通常释放会使`ac->avail`会增大
+  * 通常 **分配对象** 会使`ac->avail`会减小
+  * 通常 **释放对象** 会使`ac->avail`会增大
 * 当请求 **分配 slab 对象** 的时候，如果`array_cache`里没有足够的空闲对象时，调用`cache_alloc_refill()`重填`array_cache`
   * 在 *部分使用* 和 *空闲* 链表上找到`batchcount`个对象，把对象的地址填到`array_cache`的数组里
-  * 如果连 *空闲* 链表上都没有空闲对象，调用`cache_grow()`分配新的 shab
+  * 如果连 *空闲* 链表上都没有空闲对象，调用`cache_grow()`分配新的 slab
   * 也就是说，重填完后`array_cache`会有`batchcount-1`个空闲对象可用于下次分配，那减去的一个对象在本次分配返回时被使用
   * `cache_alloc_refill()`完成后`ac->avail`增加了（非通常情况）
 * 当 **释放 slab 对象** 的时候，`array_cache`里的可用条目`ac->avail`比限定的`ac->limit`多（或等于）
