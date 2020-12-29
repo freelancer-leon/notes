@@ -70,17 +70,151 @@ if (!do_kexec_file_syscall)
    |   => image_arm64_probe() // -t Image
    +-> physical_arch() //根据`uname()`的返回结果确定当前系统的 ARCH 的类型
    +-> file_type[i].load(argc, argv, kernel_buf, kernel_size, &info)
-       => image_arm64_load() // -t Image
-          -> arm64_process_image_header()
-             -> arm64_header_check_magic() //检查`kernel_buf`的`magic[4]`是不是`"ARM\x64"`
-             -> arm64_mem.text_offset = arm64_header_text_offset(h)
-             -> arm64_mem.image_size = arm64_header_image_size(h)
-          -> arm64_locate_kernel_segment()
+   |   => image_arm64_load() // -t Image
+   |      -> arm64_process_image_header()
+   |         -> arm64_header_check_magic() //检查`kernel_buf`的`magic[4]`是不是`"ARM\x64"`
+   |         -> arm64_mem.text_offset = arm64_header_text_offset(h) //
+   |         -> arm64_mem.image_size = arm64_header_image_size(h)
+   |      -> arm64_locate_kernel_segment() //定位捕捉内核镜像可以放置的 segment 位置
+   |         -> locate_hole(info, arm64_mem.text_offset + arm64_mem.image_size, MiB(2), 0, ULONG_MAX, 1)
+   |      -> add_segment_phys_virt(info, kernel_buf, kernel_size, kernel_segment + arm64_mem.text_offset, arm64_mem.image_size, 0)
+   |      -> arm64_load_other_segments(info, kernel_segment + arm64_mem.text_offset)
+   |         -> dtb_base = add_buffer_phys_virt()
+   |         -> dbgprintf("dtb: base %lx, size %lxh (%ld)\n", dtb_base, dtb.size, dtb.size);
+   |         -> elf_rel_build_load(info, &info->rhdr, purgatory, purgatory_size, hole_min, hole_max, 1, 0);
+   |            -> build_elf_rel_info() //根据`purgatory`数组的内容填充`info->rhdr`的 ELF header 信息
+   |               -> build_elf_info()
+   |                  -> build_mem_ehdr()
+   |                  -> build_mem_phdrs()
+   |                  -> build_mem_shdrs()
+   |                  -> build_mem_notes()
+   |               -> machine_verify_elf_rel()
+   |            -> elf_rel_load()  //ELF 数据部分的空间分配和填充，产生大量的调试打印
+   |         -> info->entry = (void * )elf_rel_get_addr(&info->rhdr, "purgatory_start"); //这个赋值很关键
+   |         -> elf_rel_set_symbol(&info->rhdr, "arm64_kernel_entry", &image_base, sizeof(image_base));
+   |         -> elf_rel_set_symbol(&info->rhdr, "arm64_dtb_addr", &dtb_base, sizeof(dtb_base));
+   +-> arch_compat_trampoline()
+   +-> for (i = 0; i < info.nr_segments; i++) //验证是否所有的 segments 都加载到了内存中的有效位置
+   |      valid_memory_segment(&info, info.segmen t +i);
+   +-> update_purgatory(&info)
+   +-> if (entry) info.entry = entry; // --entry 参数可以指定`entry`的位置
+   +-> dbgprintf("kexec_load: entry = %p flags = 0x%lx\n", info.entry, info.kexec_flags); //打印重要的调试信息
+   +-> kexec_load(info.entry, info.nr_segments, info.segment, info.kexec_flags);
 -> my_exec()
    -> reboot(LINUX_REBOOT_CMD_KEXEC)
 ```
 * `slurp_fd()`将指定的文件（也可以是字符设备或块设备）读入到新分配的内存里
 * 这个路径上的`get_memory_ranges()`从`/proc/iomem`读取`System RAM`的范围
+* `arm64_process_image_header()`从提供的内核镜像文件的 header 信息中得到文本段的偏移和镜像的大小
+* `add_segment_phys_virt()`分配存放 kernel image 的`info->segment[]`
+* `arm64_load_other_segments()`分配存放 dtb、initrd、purgatory 的`info->segment[]`
+  * 通过参数配置的 kernel 命令行参数借助 dtb 的来传递，kexec 带有解析 dtb 的库，可以用来找到 dtb 中命令行参数的位置
+  * `add_buffer_phys_virt()`分配存放 dtb 的`info->segment[]`
+  * `elf_rel_build_load()`根据`purgatory`数组的内容填充`info->rhdr`的 ELF header 信息，以及 ELF 数据部分的空间分配和填充
+  * 将`info->entry`设置为`purgatory_start`的地址，这个值会作为参数传递给`kexec_load()`系统调用，内核态的`arm64_relocate_new_kernel`会先跳到这里，即`purgatory_start`
+  * 设定符号`arm64_kernel_entry`的地址为`kernel_segment + arm64_mem.text_offset`
+  * 设定符号`arm64_dtb_addr`的地址为上面`add_buffer_phys_virt()`返回的`dtb_base`
+  * `purgatory_start`跳转到真正的内核入口地址`arm64_kernel_entry`，第一个参数为设备树的地址`arm64_dtb_addr`
+* 最终通过`kexec_load()`系统调用将之前所有收集好的用户态的信息和数据传递给内核
+
+### Purgatory
+* 简单说，purgatory 就是一个 bootloader，一个为 kdump 定作的 boot loader
+* 在特定体系架构上编译 kexec 时，purgatory 会从相应特定体系的源码生成。它是一个 ELF 格式的 relocatable 文件
+* 为了使用上的方便，它被一个工具，`bin-to-hex`，翻译成一个数组并放在`kexec/purgatory.c`里。这样 kexec 的代码就可以直接使用它了
+#### ARM64 Purgatory 的生成过程
+* `purgatory/purgatory.c`实现了运行在内核态`purgatory()`函数
+  * purgatory/purgatory.c
+  ```c
+  void purgatory(void)
+  {
+      printf("I'm in purgatory\n");
+      setup_arch();
+      if (verify_sha256_digest()) {
+          for(;;) {
+              /* loop forever */
+          }
+      }
+      post_verification_setup_arch();
+  }
+  ...*```
+  ```
+* `purgatory/Makefile`将`purgatory/purgatory.c`编译最终生成`purgatory/purgatory.ro`
+  * purgatory/Makefile
+  ```makefile
+  PURGATORY = purgatory/purgatory.ro
+  ...
+  $(PURGATORY): $(PURGATORY_OBJS)
+      $(MKDIR) -p $(@D)
+      $(CC) $(CFLAGS) $(LDFLAGS) -o $@.sym $^
+  #   $(LD) $(LDFLAGS) $(EXTRA_LDFLAGS) --no-undefined -e purgatory_start -r -o $@ $(PURGATORY_OBJS) $(UTIL_LIB)
+      $(STRIP) --strip-debug -o $@ $@.sym
+  ```
+* `util/Makefile`将`util/bin-to-hex.c`编译成`bin/bin-to-hex`
+  * util/Makefile
+  ```makefile
+  BIN_TO_HEX:= bin/bin-to-hex
+
+  $(BIN_TO_HEX): $(srcdir)/util/bin-to-hex.c
+      @$(MKDIR) -p $(@D)
+      $(LINK.o) $(CFLAGS) -o $@ $^
+  ```
+* `bin/bin-to-hex`将`purgatory/purgatory.ro`作为输入，输出到`kexec/purgatory.c`文件，内容是名为`purgatory`的字符数组（数组作为参数指定）和名为`purgatory_size`的全局变量
+  * kexec/Makefile
+  ```makefile
+  PURGATORY_HEX_C = kexec/purgatory.c
+
+  $(PURGATORY_HEX_C): $(PURGATORY) $(BIN_TO_HEX)
+      $(MKDIR) -p $(@D)
+      $(BIN_TO_HEX) purgatory < $(PURGATORY) > $@
+  ...
+  ```
+  * kexec/purgatory.c
+  ```c
+  #include <stddef.h>
+  const char purgatory[] = {
+  0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x01, 0x00, 0xb7, 0x00, 0x01, 0x00, 0x00, 0x00, 0x80, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  ...
+  };
+  size_t purgatory_size = sizeof(purgatory);
+  ```
+* `kexec/purgatory.c`文件会被编译成目标文件并链接进`kexec`可执行程序
+* `purgatory`数组和`purgatory_size`的变量在`arm64_load_other_segments()`中作为`elf_rel_build_load()`的参数，构建一个内存中的 ELF 文件
+* `purgatory/arch/arm64/entry.S`会被编译成`purgatory/arch/arm64/entry.o`并最终链接到`purgatory/purgatory.ro.sym`
+  * purgatory/arch/arm64/entry.S
+  ```nasm
+  /*
+   * ARM64 purgatory.
+   */
+
+  .macro  size, sym:req    ;计算符号大小的汇编宏
+      .size \sym, . - \sym ;“.”为当前位置，“\sym”替换为符号，即符号的起始位置，它们的差值即为符号大小
+  .endm
+
+  .text
+
+  .globl purgatory_start
+  purgatory_start:
+
+      adr x19, .Lstack
+      mov sp, x19
+
+      bl  purgatory
+
+      /* Start new image. */
+      ldr x17, arm64_kernel_entry
+      ldr x0, arm64_dtb_addr
+      mov x1, xzr
+      mov x2, xzr
+      mov x3, xzr
+      br  x17     ;跳转到 arm64_kernel_entry，第一个参数为 arm64_dtb_addr
+
+  size purgatory_start
+  ```
+  * 内核态的`arm64_relocate_new_kernel`例程届时会先跳到`purgatory_start`
+  * `purgatory_start`先调用`purgatory`
+  * 再跳转到真正的内核入口地址`arm64_kernel_entry`，第一个参数为设备树的地址`arm64_dtb_addr`
+  * 剩下三个参数寄存器被填充为 0
 
 #### 内核态 kexec
 
@@ -206,7 +340,7 @@ SYSCALL_DEFINE4(reboot,...)
   * `arm64_relocate_new_kernel`的主要工作是
     * 设置 dtb 的地址为`x0`，即第一个参数
     * 跳转到`kimage->start`，记得在`kexec_alloc_init()`时`kexec_image->start`设为`entry`
-  * 最后跳转到`entry`，一直往前追溯，`entry`为`kexec_load()`用户态传入的地址，在 kexec-tools 中被设置为 `purgatory_start`的地址
+  * 最后跳转到`entry`，一直往前追溯，`entry`为`kexec_load()`用户态传入的地址，在 kexec-tools 中被设置为`purgatory_start`的地址
 
 * arch/arm64/kernel/cpu-reset.h
   ```c
@@ -231,41 +365,6 @@ SYSCALL_DEFINE4(reboot,...)
 * **恒等映射** 这里与常说的 *一致映射、线性映射、直接映射* 不是一个概念。
 * 恒等映射的特点是虚拟地址和物理地址相同，是为了在开始处理器的 MMU 的一瞬间能够平滑过渡。
 * 恒等映射是为恒等映射代码节（`.idmap.text`）创建的映射，`idmap_pg_dir`是恒等映射的页全局目录（即第一级页表，pgd）的起始地址（当然是物理地址）。
-
-### Purgatory
-* purgatory/arch/arm64/entry.S
-  ```nasm
-  /*
-   * ARM64 purgatory.
-   */
-
-  .macro  size, sym:req    ;计算符号大小的汇编宏
-      .size \sym, . - \sym ;“.”为当前位置，“\sym”替换为符号，即符号的起始位置，它们的差值即为符号大小
-  .endm
-
-  .text
-
-  .globl purgatory_start
-  purgatory_start:
-
-      adr x19, .Lstack
-      mov sp, x19
-
-      bl  purgatory
-
-      /* Start new image. */
-      ldr x17, arm64_kernel_entry
-      ldr x0, arm64_dtb_addr
-      mov x1, xzr
-      mov x2, xzr
-      mov x3, xzr
-      br  x17     ;跳转到 arm64_kernel_entry，第一个参数为 arm64_dtb_addr
-
-  size purgatory_start
-  ```
-  * `purgatory_start`先调用`purgatory`
-  * 再跳转到真正的内核入口地址`arm64_kernel_entry`，第一个参数为设备树的地址`arm64_dtb_addr`
-  * 剩下三个参数寄存器被填充为 0
 
 # References
 - [深入探索 Kdump，第 1 部分：带你走进 Kdump 的世界](https://www.ibm.com/developerworks/cn/linux/l-cn-kdump1/index.html)

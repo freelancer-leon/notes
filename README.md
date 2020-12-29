@@ -15,6 +15,7 @@
 - [Linux 图形](https://github.com/freelancer-leon/notes/blob/master/kernel/graphic/Linux-Graphic.md)
 - [中断](https://github.com/freelancer-leon/notes/blob/master/kernel/irq.md)
 - [NMI](https://github.com/freelancer-leon/notes/blob/master/kernel/nmi)
+- [Kdump和Kexec](https://github.com/freelancer-leon/notes/blob/master/kernel/kdump_kexec.md)
 
 ## 锁
 - [锁的基本知识](https://github.com/freelancer-leon/notes/blob/master/kernel/lock/Lock-1.md)
