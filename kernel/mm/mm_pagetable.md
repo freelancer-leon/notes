@@ -214,3 +214,4 @@ config PTDUMP_DEBUGFS
 * [Linux内核追踪[4.14] X86的5级页表管理](http://blog.csdn.net/lovelycheng/article/details/78545502)
 * [lwn: Five-level page tables](https://lwn.net/Articles/717293/)
 * [lwn: x86: 5-level paging enabling for v4.12](https://lwn.net/Articles/716916/)
+* [x86 Paging Tutorial](https://cirosantilli.com/x86-paging)

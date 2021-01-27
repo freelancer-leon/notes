@@ -337,3 +337,5 @@ config DYNAMIC_DEBUG
 
 # References
 * [Debugging by printing](https://elinux.org/Debugging_by_printing)
+* [[console] early printk实现流程](https://blog.csdn.net/ooonebook/article/details/52654120)
+* [[console] earlycon实现流程](https://blog.csdn.net/ooonebook/article/details/52654191)

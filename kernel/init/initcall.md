@@ -109,20 +109,20 @@ start_kernel()
   +-----------------------+
   |  /*in a new kernel thread*/
   +-> kernel_init()
-        -> kernel_init_freeable()
-             |
-             +-> do_pre_smp_initcalls()
-             |     -> for (fn = __initcall_start; fn < __initcall0_start; fn++)
-             +           do_one_initcall(*fn);
-             +
-             +  /*some other function initializes*/
-             |
-             +-> do_basic_setup()
-                  -> do_initcalls()
-                        -> for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++)
-                              do_initcall_level(level);
-                                -> for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
-                                      do_one_initcall(*fn);
+      -> kernel_init_freeable()
+         |
+         +-> do_pre_smp_initcalls()
+         |   -> for (fn = __initcall_start; fn < __initcall0_start; fn++)
+         +         do_one_initcall(*fn);
+         +
+         +  /*some other function initializes*/
+         |
+         +-> do_basic_setup()
+             -> do_initcalls()
+                -> for (level = 0; level < ARRAY_SIZE(initcall_levels) - 1; level++)
+                      do_initcall_level(level);
+                      -> for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
+                            do_one_initcall(*fn);
 ```
 
 ## 调用过程
