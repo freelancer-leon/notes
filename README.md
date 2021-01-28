@@ -1,9 +1,9 @@
 # Notes
 ***
 # Computer Science
-- [Cache](https://github.com/freelancer-leon/notes/blob/master/computer_science/cache.md)
-- [TLB](https://github.com/freelancer-leon/notes/blob/master/computer_science/tlb.md)
-- [浮点数](https://github.com/freelancer-leon/notes/blob/master/computer_science/float.md)
+- [Cache](computer_science/cache.md)
+- [TLB](computer_science/tlb.md)
+- [浮点数](computer_science/float.md)
 
 # Kernel
 - [Bottom Half 下半部](https://github.com/freelancer-leon/notes/blob/master/kernel/Bottom_Half.md)
@@ -15,7 +15,8 @@
 - [Linux 图形](https://github.com/freelancer-leon/notes/blob/master/kernel/graphic/Linux-Graphic.md)
 - [中断](https://github.com/freelancer-leon/notes/blob/master/kernel/irq.md)
 - [NMI](https://github.com/freelancer-leon/notes/blob/master/kernel/nmi)
-- [Kdump和Kexec](https://github.com/freelancer-leon/notes/blob/master/kernel/kdump_kexec.md)
+- [Kexec](kernel/kexec.md)
+- [Kdump](kernel/kdump.md)
 
 ## 锁
 - [锁的基本知识](https://github.com/freelancer-leon/notes/blob/master/kernel/lock/Lock-1.md)

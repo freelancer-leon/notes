@@ -661,7 +661,179 @@ endif
   static const uint64_t arm64_image_flag_placement = (1UL << 3);
   ```
 ## 运行时的例子
-### kexec 加载内核
+
+### 例1：观察恒等映射
+#### 查看虚拟地址的内容
+* 观察处于恒等映射节的例程`__cpu_soft_restart`
+```c
+crash> p __cpu_soft_restart
+__cpu_soft_restart = $1 =
+ {<text variable, no debug info>} 0xffffff80088842f0 <__cpu_soft_restart>
+```
+* 此例中，例程`__cpu_soft_restart`有虚拟地址`0xffffff80088842f0`，熟悉 AArch64 的知道这是内核代码段的一个地址
+```c
+crash> vtop 0xffffff80088842f0
+VIRTUAL           PHYSICAL
+ffffff80088842f0  8842f0
+
+PAGE DIRECTORY: ffffff8008d61000
+   PGD: ffffff8008d61000 => 3ffffe803
+   PMD: ffffffc3ffffe220 => 3ffffc803
+   PTE: ffffffc3ffffc420 => d0000000884f93
+  PAGE: 884000
+
+     PTE        PHYSICAL  FLAGS
+d0000000884f93   884000   (VALID|RDONLY|SHARED|AF|NG|UXN|DIRTY)
+
+      PAGE               PHYSICAL      MAPPING       INDEX CNT FLAGS
+ffffffbf00022100           884000                0        0  1 800 reserved
+```
+* 根据寄存器`TTBR1_EL1`的指引，查看其物理地址为`0x8842f0`
+* 看看其内容与上面的源码是否一致
+```nasm
+crash> dis 0xffffff80088842f0
+0xffffff80088842f0 <__cpu_soft_restart>:        mrs     x12, sctlr_el1
+0xffffff80088842f4 <__cpu_soft_restart+4>:      ldr     x13, 0xffffff8008884328
+0xffffff80088842f8 <__cpu_soft_restart+8>:      bic     x12, x12, x13
+0xffffff80088842fc <__cpu_soft_restart+12>:     isb
+0xffffff8008884300 <__cpu_soft_restart+16>:     msr     sctlr_el1, x12
+0xffffff8008884304 <__cpu_soft_restart+20>:     isb
+0xffffff8008884308 <__cpu_soft_restart+24>:     cbz     x0, 0xffffff8008884314 <__cpu_soft_restart+36>
+0xffffff800888430c <__cpu_soft_restart+28>:     mov     x0, #0x1                        // #1
+0xffffff8008884310 <__cpu_soft_restart+32>:     hvc     #0x0
+0xffffff8008884314 <__cpu_soft_restart+36>:     mov     x18, x1
+0xffffff8008884318 <__cpu_soft_restart+40>:     mov     x0, x2
+0xffffff800888431c <__cpu_soft_restart+44>:     mov     x1, x3
+0xffffff8008884320 <__cpu_soft_restart+48>:     mov     x2, x4
+0xffffff8008884324 <__cpu_soft_restart+52>:     br      x18
+```
+* dump 该内存区的内容用于后面的比较
+```
+crash> rd -64 0xffffff80088842f0 32
+ffffff80088842f0:  580001add538100c d5033fdf8a2d018c   ..8....X..-..?..
+ffffff8008884300:  d5033fdfd518100c d2800020b4000060   .....?..`... ...
+ffffff8008884310:  aa0103f2d4000002 aa0303e1aa0203e0   ................
+ffffff8008884320:  d61f0240aa0403e2 000000000020100f   ....@..... .....
+ffffff8008884330:  a9411404a9400c02 a9432809a9422006   ..@...A.. B..(C.
+ffffff8008884340:  a945380da944300b d51bd063d51bd042   .0D..8E.B...c...
+ffffff8008884350:  d5181046d518d024 b34014e8d5382047   $...F...G 8...@.
+ffffff8008884360:  d518c009d5182048 d510024ad5034fdf   H .......O..J...
+ffffff8008884370:  d518d08dd518100c d5101385d518410e   .........A......
+ffffff8008884380:  d510108bd341056b 93482c00d5380500   k.A.......8..,H.
+ffffff8008884390:  5400004bf100041f d503201fd51b9e1f   ....K..T..... ..
+ffffff80088843a0:  d65f03c0d5033fdf d5034fdfd53b4222   .?...._."B;..O..
+ffffff80088843b0:  aa0103e3f0002421 d5033fdfd5182023   !$......# ...?..
+ffffff80088843c0:  d503379fd508871f aa0003e3d5033fdf   .....7...?......
+ffffff80088843d0:  d5033fdfd5182023 d65f03c0d51b4222   # ...?.."B...._.
+ffffff80088843e0:  d538202300000000 350008c010ffffc4   ....# 8........5
+```
+#### dump 内核页表
+* 先看看页表映射
+```sh
+$ cat sys/kernel/debug/kernel_page_tables
+...
+---[ Linear Mapping ]---
+0xffffffc000000000-0xffffffc000080000         512K PTE       RW NX SHD AF NG CON     UXN MEM/NORMAL
+0xffffffc000080000-0xffffffc000200000        1536K PTE       ro NX SHD AF NG         UXN MEM/NORMAL
+0xffffffc000200000-0xffffffc000a00000           8M PMD       ro NX SHD AF NG     BLK UXN MEM/NORMAL
+0xffffffc000a00000-0xffffffc000ad0000         832K PTE       ro NX SHD AF NG         UXN MEM/NORMAL
+0xffffffc000ad0000-0xffffffc000c00000        1216K PTE       RW NX SHD AF NG CON     UXN MEM/NORMAL
+0xffffffc000c00000-0xffffffc002000000          20M PMD       RW NX SHD AF NG     BLK UXN MEM/NORMAL
+0xffffffc003000000-0xffffffc004000000          16M PMD       RW NX SHD AF NG     BLK UXN MEM/NORMAL
+0xffffffc004000000-0xffffffc030000000         704M PMD       RW NX SHD AF NG CON BLK UXN MEM/NORMAL
+0xffffffc030020000-0xffffffc030200000        1920K PTE       RW NX SHD AF NG CON     UXN MEM/NORMAL
+0xffffffc030200000-0xffffffc032000000          30M PMD       RW NX SHD AF NG     BLK UXN MEM/NORMAL
+0xffffffc032000000-0xffffffc040000000         224M PMD       RW NX SHD AF NG CON BLK UXN MEM/NORMAL
+0xffffffc040000000-0xffffffc400000000          15G PGD       RW NX SHD AF NG     BLK UXN MEM/NORMAL
+---[ Linear Mapping ]---
+0x0000000000800000-0x0000000000a00000           2M PMD       RW x  SHD AF        BLK MEM/NORMAL
+```
+* 最下面两行是我经过修改定制的，打印`idmap_pg_dir`的页表映射
+  * 可见它只映射了从虚拟地址`0x800000`开始的 2M 的内容
+  * 我们要查看的物理地址`0x8842f0`也在映射范围内
+
+#### 观察恒等映射的地址转换
+* 对于虚拟地址`0x8842f0`
+
+PGD | PMD | PTE | Page offset
+----|-----|-----|-----
+9 | 9 | 9 | 12
+000 0000 00 | 00 0000 100 | 0 1000 0010 | 0010 1111 0000
+
+* 我们无法让`idmap_pg_dir`加载到`TTBR0_EL1`，但我们可以通过查看其内容追溯这一过程
+* 先看看`idmap_pg_dir`的页表项
+```c
+crash> p -x idmap_pg_dir
+idmap_pg_dir = $1 =
+ {{
+    pgd = 0xd5e003
+  }, {
+    pgd = 0x0
+  }, {
+    pgd = 0x0
+  }, {
+    ...
+ }}
+```
+* 虚拟地址`0x8842f0` PGD 索引为`000 0000 00`，对应的 PGD 级的第一个页表项指向物理地址`0xd5e003`
+* 查看 PMD 级的页表项内容，同样先得到它的虚拟地址
+```c
+crash> ptov 0xd5e003
+VIRTUAL           PHYSICAL
+ffffffc000d5e003  d5e003
+crash>
+```
+* 再通过 dump 虚拟地址`0xffffffc000d5e003`的内容来查看，由于低 12 位是标志位，要去掉，所以查看的是`0xffffffc000d5e000`
+```
+crash> rd -64 0xffffffc000d5e000 512
+ffffffc000d5e000:  0000000000000000 0000000000000000   ................
+ffffffc000d5e010:  0000000000000000 0000000000000000   ................
+ffffffc000d5e020:  0000000000800711 0000000000000000   ................
+ffffffc000d5e030:  0000000000000000 0000000000000000   ................
+ffffffc000d5e040:  0000000000000000 0000000000000000   ................
+ffffffc000d5e050:  0000000000000000 0000000000000000   ................
+...
+crash> ptov 0000000000800000
+VIRTUAL           PHYSICAL
+ffffffc000800000  800000
+```
+* 虚拟地址`0x8842f0` PMD 索引为`00 0000 100`，故 PMD 级第四项是我们要找的，`0x711`是标志位，所以二级页表的物理地址是`0x800000`
+* 后面的 21 个 bit 构成偏移，基址是物理地址`0x800000`
+* 由此可见，`idmap_pg_dir`加载到`TTBR0_EL1`后，对虚拟地址`0x800000`会转换为对物理地址`0x800000`的访问
+
+#### 查看物理地址的内容
+* 由于 MMU 已开启，我们无法绕过 MMU 直接查看物理地址的内容。好在`0x8842f0`这一物理地址处于线性映射的范围
+* 我们可以找到`0x8842f0`线性映射的虚拟地址`0xffffffc0008842f0`
+```c
+crash> ptov 8842f0
+VIRTUAL           PHYSICL
+ffffffc0008842f0  8842f0
+```
+* 从而得到它物理地址的内容
+```
+crash> rd -64 ffffffc0008842f0 32
+ffffffc0008842f0:  580001add538100c d5033fdf8a2d018c   ..8....X..-..?..
+ffffffc000884300:  d5033fdfd518100c d2800020b4000060   .....?..`... ...
+ffffffc000884310:  aa0103f2d4000002 aa0303e1aa0203e0   ................
+ffffffc000884320:  d61f0240aa0403e2 000000000020100f   ....@..... .....
+ffffffc000884330:  a9411404a9400c02 a9432809a9422006   ..@...A.. B..(C.
+ffffffc000884340:  a945380da944300b d51bd063d51bd042   .0D..8E.B...c...
+ffffffc000884350:  d5181046d518d024 b34014e8d5382047   $...F...G 8...@.
+ffffffc000884360:  d518c009d5182048 d510024ad5034fdf   H .......O..J...
+ffffffc000884370:  d518d08dd518100c d5101385d518410e   .........A......
+ffffffc000884380:  d510108bd341056b 93482c00d5380500   k.A.......8..,H.
+ffffffc000884390:  5400004bf100041f d503201fd51b9e1f   ....K..T..... ..
+ffffffc0008843a0:  d65f03c0d5033fdf d5034fdfd53b4222   .?...._."B;..O..
+ffffffc0008843b0:  aa0103e3f0002421 d5033fdfd5182023   !$......# ...?..
+ffffffc0008843c0:  d503379fd508871f aa0003e3d5033fdf   .....7...?......
+ffffffc0008843d0:  d5033fdfd5182023 d65f03c0d51b4222   # ...?.."B...._.
+ffffffc0008843e0:  d538202300000000 350008c010ffffc4   ....# 8........5
+```
+* 显然，内容和上面 dump 的结果一致
+
+
+### 例2：观察跳转到内核镜像 Image
+#### kexec 加载内核
 ```sh
 # kexec -d -c -t Image -l /root/Image --reuse-cmdline
 arch_process_options:154: command_line: root=/dev/vda rw rootfstype=ext4 earlycon earlyprintk crashkernel=384M@0
@@ -711,7 +883,7 @@ segment[2].memsz = 0x4000
 ```
 * `__cpu_soft_restart`会跳转到`0x000000023393d000`，`arm64_relocate_new_kernel`例程的拷贝
 
-### 跳转到内核镜像
+#### 跳转到内核镜像
 * 看看运行时怎么跳到内核镜像`Image`的这一过程
 * 加载`idmap_pg_dir`到`TTBR0_EL1`后就可以跳转到恒等映射的`__cpu_soft_restart`例程了，往后一直运行
 * 现在已经运行到了`purgatory_start`的最后阶段，`purgatory`例程已经执行过了
@@ -860,6 +1032,18 @@ segment[2].memsz = 0x4000
      0x40b40078:  mov     x7, #0x711                      // #1809
      0x40b4007c:  adrp    x0, 0x40d5e000
   (gdb)
+  ```
+
+# Troubleshooting
+## 导出运行时设备树
+* 有一些 u-boot 可能会在 dtb 中动态插入一些关键的节点，导致用编译出来的 dtb 作为`kexec --dtb=`参数时，捕获内核用该 dtb 无法正常启动
+* 这种情况你需要的是真正的 dtb，一个简单的办法是导出运行时 dtb
+  ```sh
+  dtc -I fs -O dtb -o runtime.dtb /proc/device-tree
+  ```
+* 可以用内核编译目录的`dtc`来反编译 dtb 来检查一下：
+  ```sh
+  scripts/dtc/dtc -I dtb -O dts -o runtime.dts runtime.dtb
   ```
 
 # References

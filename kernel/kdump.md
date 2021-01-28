@@ -178,6 +178,7 @@ panic()
 #### vmcoreinfo
 * `makedumpfile`根据`vmcoreinfo`的信息，在生成`vmcore`时根据使用情况而去除不必要的页
 * 提取自系统内核的`vmlinux`
+* `vmcoreinfo`会被放到`/proc/vmcore`里
 
 # References
 - [linuxperf - KDUMP简介](http://linuxperf.com/?p=172)
