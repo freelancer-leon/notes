@@ -598,10 +598,71 @@ rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
 ## 基于 kprobes 的事件跟踪
 * 与基于 tracepoint 的事件跟踪相似，kprobes 事件跟踪是基于 kprobes 点的跟踪
 * 可动态插入和删除 kprobes 跟踪点
-* 需开启`CONFIG_KPROBE_EVENT=y`
+* 需开启`CONFIG_KPROBE_EVENT=y`和`CONFIG_DYNAMIC_FTRACE=y`
 * 无需通过`current_tracer`激活
 * 通过`/sys/kernel/debug/tracing/kprobe_events`添加动态探针
 * 通过`/sys/kernel/debug/tracing/events/kprobes/<EVENT>/enable`使能
+### kprobes事件语法参数定义
+参数 | 定义
+----|-----
+GRP   | 组名，如忽略会采用用缺省值`kprobes`
+EVENT | 事件名，如忽略会基于`SYMBOL[+offs]`或`MEMADDR`生成
+
+#### 例子1：probe do_fork
+##### probe 命令
+```sh
+echo 'p:doforkprobe _do_fork clone_flags=%di stack_start=%si stack_size=%dx rsp=%sp rbp=%bp' \
+> /sys/kernel/debug/tracing/kprobe_events
+echo 1 > /sys/kernel/debug/tracing/events/kprobes/doforkprobe/enable
+```
+##### 查看结果
+```sh
+$ cat /sys/kernel/debug/tracing/trace
+# cat trace
+# tracer: nop
+#
+# entries-in-buffer/entries-written: 79/79   #P:2
+#
+#                              _-----=> irqs-off
+#                             / _----=> need-resched
+#                            | / _---=> hardirq/softirq
+#                            || / _--=> preempt-depth
+#                            ||| /     delay
+#           TASK-PID   CPU#  ||||    TIMESTAMP  FUNCTION
+#              | |       |   ||||       |         |
+         systemd-1     [000] ...2 938618.752964: doforkprobe: (_do_fork+0x0/0x3d0) clone_flags=0x1200011 stack_start=0x0 stack_size=0x0 rsp=0xffffa8d480643f20 rbp=0xffffa8d480643f28
+              sh-1140  [001] ...2 938621.996818: doforkprobe: (_do_fork+0x0/0x3d0) clone_flags=0x1200011 stack_start=0x0 stack_size=0x0 rsp=0xffffa8d480c93f20 rbp=0xffffa8d480c93f28
+        kthreadd-2     [000] ...2 938638.790374: doforkprobe: (_do_fork+0x0/0x3d0) clone_flags=0x800711 stack_start=0xffffffffa9096370 stack_size=0xffff8abe09841240 rsp=0xffffa8d48064bf08 rbp=0xffffa8d48064bf10
+```
+* 因为探针加在函数的入口，且`_do_fork()`的调用者没有用到栈，所以`%rbp + 8 = %rsp`，`8`是`call`指令压入的函数返回地址的长度（x86-64）
+##### 关停 probe
+```sh
+echo 0 > /sys/kernel/debug/tracing/events/kprobes/doforkprobe/enable
+echo -:kprobes/doforkprobe > /sys/kernel/debug/tracing/kprobe_events
+```
+### 例子2：probe do_sys_open
+```sh
+echo 'p:dosysopen do_sys_open dfd=%di filename=+0(%si):string flags=%dx mode=%cx rsp=%sp stack=$stack' > /sys/kernel/debug/tracing/kprobe_events
+echo 1 > /sys/kernel/debug/tracing/events/kprobes/dosysopen/enable
+cat /sys/kernel/debug/tracing/trace
+# tracer: nop
+#
+# entries-in-buffer/entries-written: 3/3   #P:2
+#
+#                              _-----=> irqs-off
+#                             / _----=> need-resched
+#                            | / _---=> hardirq/softirq
+#                            || / _--=> preempt-depth
+#                            ||| /     delay
+#           TASK-PID   CPU#  ||||    TIMESTAMP  FUNCTION
+#              | |       |   ||||       |         |
+             cat-19056 [001] ...2 943499.874842: dosysopen: (do_sys_open+0x0/0x220) dfd=0xffffff9c filename="/etc/ld.so.cache" flags=0x88000 mode=0x0 rsp=0xffffa8d48095bf20 stack=0xffffa8d48095bf20
+             cat-19056 [001] ...2 943499.874892: dosysopen: (do_sys_open+0x0/0x220) dfd=0xffffff9c filename="/lib64/libc.so.6" flags=0x88000 mode=0x0 rsp=0xffffa8d48095bf20 stack=0xffffa8d48095bf20
+             cat-19056 [001] ...2 943499.875658: dosysopen: (do_sys_open+0x0/0x220) dfd=0xffffff9c filename="/sys/kernel/debug/tracing/trace" flags=0x8000 mode=0x0 rsp=0xffffa8d48095bf20 stack=0xffffa8d48095bf20
+echo '-:dosysopen' > /sys/kernel/debug/tracing/kprobe_events
+```
+* `%rsp`与`$stack`是相同的
+* 无法对寄存器直接取字符串内容，需借助`+|-[u]OFFS(%REG)`的格式来获得，可以看上面取`filename`的例子
 
 # Reference
 

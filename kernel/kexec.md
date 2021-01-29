@@ -804,6 +804,7 @@ ffffffc000800000  800000
 #### 查看物理地址的内容
 * 由于 MMU 已开启，我们无法绕过 MMU 直接查看物理地址的内容。好在`0x8842f0`这一物理地址处于线性映射的范围
 * 我们可以找到`0x8842f0`线性映射的虚拟地址`0xffffffc0008842f0`
+  * 在这个例子里`memstart_addr`恰好是 0，所以`PHYS_OFFSET`也为 0
 ```c
 crash> ptov 8842f0
 VIRTUAL           PHYSICL

@@ -175,10 +175,15 @@ panic()
 #### elfcorehdr
 * *捕捉内核* 根据`elfcorehdr`提供的信息创建`/proc/vmcore`，提供给`crash`或`gdb`等调试工具使用
 * 多个来源
+* 重点看怎么使用和拷贝`elfcorehdr`的
+  ```c
+  vmcore_init()
+  -> parse_crash_elf_headers()
+     -> parse_crash_elf64_headers()
+  ```
 #### vmcoreinfo
 * `makedumpfile`根据`vmcoreinfo`的信息，在生成`vmcore`时根据使用情况而去除不必要的页
 * 提取自系统内核的`vmlinux`
-* `vmcoreinfo`会被放到`/proc/vmcore`里
 
 # References
 - [linuxperf - KDUMP简介](http://linuxperf.com/?p=172)

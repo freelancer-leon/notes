@@ -45,7 +45,7 @@ Page address range | VA[11:0]=PA[11:0] | VA[13:0]=PA[13:0] | VA[15:0]=PA[15:0] |
   = 0xffff_ffc0_0000_0000
   ```
 * `PHYS_OFFSET`是内存起始的物理地址，由启动时选定，不同系统选定的起始地址可能不同
-  * 可以通过`/proc/iomem`简单地查看，一般是第一条`System RAM`类型的起始地址
+  * `memstart_addr`可以通过`/proc/iomem`简单地查看，一般是第一条`System RAM`类型的起始地址
 
 # References
 - [ARM64的启动过程之（一）：内核第一个脚印](http://www.wowotech.net/armv8a_arch/arm64_initialize_1.html)
