@@ -482,8 +482,8 @@ cpus=8
 * [KernelShark](http://rostedt.homelinux.com/kernelshark/)
 * [Using KernelShark to analyze the real-time scheduler](https://lwn.net/Articles/425583/)
 
-## 跟踪选项
-### 通用 trace_options
+# 跟踪选项
+## 通用 trace_options
 * `/sys/kernel/debug/tracing/trace_options`文件
 	```
 	# cat /sys/kernel/debug/tracing/trace_options
@@ -518,7 +518,7 @@ cpus=8
 	```
 * 通过修改`/sys/kernel/debug/tracing/options`下的文件可以使能这些`trace_options`
 
-#### latency-format
+### latency-format
 * 该选项会改变 trace 输出。使能的时候，trace 会显示关于延迟的额外的信息
 	```
 	# tracer: irqsoff
@@ -557,21 +557,21 @@ cpus=8
 	 => system_call_fastpath
 	```
 
-#### function-trace
+### function-trace
 * 如果该选项使能（缺省情况），延迟型 tracer 会启用函数跟踪功能
 * 当禁用该选项时，延迟型 tracer 不跟踪函数，从而降低执行延迟测试时的开销
 
-#### stacktrace
+### stacktrace
 * 当启用该选项时，任何 **trace event** 的栈跟踪将会被记录下来
 
-### function tracer 选项
-#### func_stack_trace
+## function tracer 选项
+### func_stack_trace
 * 如果说设置`function_graph tracer`+`set_graph_function`可以跟踪到一个函数往下的调用路径，那么`function tracer`+`set_ftrace_filter`+`func_stack_trace`则可以跟踪到它往上的调用路径
 * 需使能`CONFIG_STACKTRACE`内核选项
 * 只有当`current_tracer`设置为 **function tracer** 时才会出现
 * 当设置该 option 时，每个函数被记录的时候，它的栈跟踪也会被记录
 * **NOTE:** 在使能该选项时，务必同时设置`set_ftrace_filter`，否则系统性能会严重下降。并且在清除过滤函数的时候记得关闭该选项。
-##### Example:
+#### Example:
 ```
 $ echo rtc_timer_enqueue > /sys/kernel/debug/tracing/set_ftrace_filter
 $ echo function > /sys/kernel/debug/tracing/current_tracer
@@ -587,37 +587,93 @@ rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
 => SyS_ioctl
 => system_call_fastpath
 ```
-##### `function-trace` vs `stacktrace` vs `func_stack_trace`
+#### `function-trace` vs `stacktrace` vs `func_stack_trace`
 * `function-trace`、`stacktrace`、`func_stack_trace`三者都可以用于栈跟踪，但适用场景是不同的
   * `function-trace`主要用于 **延迟型 tracer**，例如`irqsoff`、`preemptoff`和`preemptirqsoff`
   * `stacktrace`主要用于 **trace event**，也就是预设好的跟踪点
   * `func_stack_trace`主要用于 **function tracer**，用于自定义要跟踪的函数（配合`set_ftrace_filter`）
 
-### function_graph tracer 选项
+## function_graph tracer 选项
 
-## 基于 kprobes 的事件跟踪
+# 基于 kprobes 的事件跟踪
 * 与基于 tracepoint 的事件跟踪相似，kprobes 事件跟踪是基于 kprobes 点的跟踪
 * 可动态插入和删除 kprobes 跟踪点
 * 需开启`CONFIG_KPROBE_EVENT=y`和`CONFIG_DYNAMIC_FTRACE=y`
 * 无需通过`current_tracer`激活
 * 通过`/sys/kernel/debug/tracing/kprobe_events`添加动态探针
 * 通过`/sys/kernel/debug/tracing/events/kprobes/<EVENT>/enable`使能
-### kprobes事件语法参数定义
-参数 | 定义
-----|-----
-GRP   | 组名，如忽略会采用用缺省值`kprobes`
-EVENT | 事件名，如忽略会基于`SYMBOL[+offs]`或`MEMADDR`生成
+* 移除所有的探针`echo > /sys/kernel/debug/tracing/kprobe_events`
 
-#### 例子1：probe do_fork
-##### probe 命令
-```sh
-echo 'p:doforkprobe _do_fork clone_flags=%di stack_start=%si stack_size=%dx rsp=%sp rbp=%bp' \
-> /sys/kernel/debug/tracing/kprobe_events
-echo 1 > /sys/kernel/debug/tracing/events/kprobes/doforkprobe/enable
+## 内核启动参数
+* 可以在内核启动时插入 kprobes event
+* 格式为`kprobe_event=`
+* events 之间用分号（semicolon）`;`隔开
+* event 的参数之间用逗号（comma）`,`隔开
+
+## kprobes事件语法参数定义
+```c
+p[:[GRP/]EVENT] [MOD:]SYM[+offs]|MEMADDR [FETCHARGS]  : 设置一个探针
+r[MAXACTIVE][:[GRP/]EVENT] [MOD:]SYM[+0] [FETCHARGS]  : 设置一个返回探针
+p:[GRP/]EVENT] [MOD:]SYM[+0]%return [FETCHARGS]       : 设置一个返回探针
+-:[GRP/]EVENT                                         : 清除一个探针
 ```
-##### 查看结果
+
+参数      | 定义
+----------|-----
+GRP       | 组名，如忽略会采用用缺省值`kprobes`
+EVENT     | 事件名，如忽略会基于`SYMBOL[+offs]`或`MEMADDR`生成
+MOD       | 含有欲跟踪符号`SYM`的模块名
+SYM[+offs]| 在 *符号+偏移* 处插入探针
+SYM%return| 在 *符号的返回地址* 处插入探针
+MEMADDR   | 在地址`MEMADDR`处插入探针
+MAXACTIVE | 可以同时探测的指定函数的最大实例数，否则为缺省值 0，见 [Documentation/trace/kprobes.rst](https://www.kernel.org/doc/html/latest/trace/kprobes.html) section 1.3.1
+FETCHARGS | 探测点的参数，每个探测点可以有最多 128 个参数
+
+### 探测点参数 FETCHARGS 的格式
+参数           | 定义
+---------------|-----
+`%REG`         | 获取寄存器`REG`的值
+`@ADDR`        | 获取内存地址`ADDR`处的值（`ADDR`应处于内核地址空间）
+`@SYM[+|-offs]`| 获取符号偏移`SYM +|- offs`的值（`SYM`应为数据符号）
+`$stackN`      | 获取栈上的第 N 个条目（N >= 0）
+`$stack`       | 获取栈顶的地址
+`$argN`        | 获取函数的第 N 个参数（仅用于安置在函数上的探针）
+`$retval`      | 获取函数的返回值（仅用于 *返回探针*）
+`$comm`        | 获取当前进程的名字
+`+|-[u]OFFS(FETCHARG)`| 获取 FETCHARG 偏移 `+|- OFFS` 地址处的值（可用于获取数据结构的域；`u`表示用户空间的解引用）
+`\IMM`         | 将立即数存入参数
+`NAME=FETCHARG`| 将`NAME`设置为 FETCHARG 的参数名
+`FETCHARG:TYPE`| 将 FETCHARG 的类型设置为`TYPE`
+
+#### FETCHARG 类型
+* fetch-args 支持几种类型，Kprobe tracer 会按给定的类型访问内存。
+* 类型的前缀`s`和`u`用来指明类型是 *有符号的* 还是 *无符号的*。trace 打印时以十进制的方式显示。
+* 前缀`x`暗示该类型是无符号的。trace 打印时以十六进制的方式显示。
+* 这些类型也可以是数组，添加`[N]`（N 为确切的数字，小于 64）到基本类型来记录数组数据。
+  * 例如，`x16[4]`表示一个有 4 个元素的`x16`（2 字节 16 进制）的数组。
+* 注意：数组可以被用于内存地址类型的 fetchargs，不能用于寄存器/栈类型的条目。
+  * 例如，`$stack1:x8[8]`是错误的，但`+8($stack):x8[8]`是正确的。
+* **字符串类型** 是一种特殊的类型，它从内核地址空间获取一个 null 结尾的字符串。这意味着如果存放该字符串的容器被 pageed-out 了，会导致取值失败并且得到 NULL。
+* `ustring` 类型是另一种形式的字符串类型，用于用户空间。
+* **字符串数组类型** 和其他类型有一些不同：
+  * 对于其他基本类型，`<base-type>[1]`等于`<base-type>`（例如`+0(%di):x32[1]`和`+0(%di):x32`）相同。
+  * 但`string[1]`不等于`string`。字符串类型本身表示 **“char array”**，字符串数组类型表示 **“char * array”**。
+  * 例如：`+0(%di):string[1]`等于`+0(+0(%di)):string`。
+* **位域（Bitfield）类型** 是另一个特殊类型，有 *位宽（bit-width）*,*位偏移（bit-offset）* 和 *容器大小（container-size）*（通常是 32）三个参数。
+  * 语法为：`b<bit-width>@<bit-offset>/<container-size>`
+* **符号类型（symbol）** 是`u32`或`u64`（取决于`BITS_PER_LONG`）类型的别名，将给定的指针显示为`symbol+offset`的风格。
+* 对于`$comm`缺省类型是`string`；任何其他的类型都是非法的。
+
+## 例子1：probe do_fork
+* 该例演示一个简单的 kprobes event 运用
+### 插入探针
 ```sh
-$ cat /sys/kernel/debug/tracing/trace
+echo 'p:doforkprobe _do_fork clone_flags=%di stack_start=%si stack_size=%dx rsp=%sp rbp=%bp'> /sys/kernel/debug/tracing/kprobe_events
+echo 1 > /sys/kernel/debug/tracing/events/kprobes/doforkprobe/enable
+cat /sys/kernel/debug/tracing/trace
+```
+### 查看结果
+```sh
 # cat trace
 # tracer: nop
 #
@@ -635,16 +691,22 @@ $ cat /sys/kernel/debug/tracing/trace
         kthreadd-2     [000] ...2 938638.790374: doforkprobe: (_do_fork+0x0/0x3d0) clone_flags=0x800711 stack_start=0xffffffffa9096370 stack_size=0xffff8abe09841240 rsp=0xffffa8d48064bf08 rbp=0xffffa8d48064bf10
 ```
 * 因为探针加在函数的入口，且`_do_fork()`的调用者没有用到栈，所以`%rbp + 8 = %rsp`，`8`是`call`指令压入的函数返回地址的长度（x86-64）
-##### 关停 probe
+### 移除探针
 ```sh
 echo 0 > /sys/kernel/debug/tracing/events/kprobes/doforkprobe/enable
-echo -:kprobes/doforkprobe > /sys/kernel/debug/tracing/kprobe_events
+echo '-:kprobes/doforkprobe' > /sys/kernel/debug/tracing/kprobe_events
 ```
-### 例子2：probe do_sys_open
+## 例子2：probe do_sys_open
+* 该例演示一个 kprobes event 结合`stacktrace`选项运用
+### 插入探针
 ```sh
-echo 'p:dosysopen do_sys_open dfd=%di filename=+0(%si):string flags=%dx mode=%cx rsp=%sp stack=$stack' > /sys/kernel/debug/tracing/kprobe_events
+echo 'p:dosysopen do_sys_open+6 dfd=%di filename=+0(%si):string flags=%dx mode=%cx rbp=%bp stack=$stack' > /sys/kernel/debug/tracing/kprobe_events
+echo 1 > /sys/kernel/debug/tracing/options/stacktrace
 echo 1 > /sys/kernel/debug/tracing/events/kprobes/dosysopen/enable
 cat /sys/kernel/debug/tracing/trace
+```
+### 查看结果
+```sh
 # tracer: nop
 #
 # entries-in-buffer/entries-written: 3/3   #P:2
@@ -656,13 +718,75 @@ cat /sys/kernel/debug/tracing/trace
 #                            ||| /     delay
 #           TASK-PID   CPU#  ||||    TIMESTAMP  FUNCTION
 #              | |       |   ||||       |         |
-             cat-19056 [001] ...2 943499.874842: dosysopen: (do_sys_open+0x0/0x220) dfd=0xffffff9c filename="/etc/ld.so.cache" flags=0x88000 mode=0x0 rsp=0xffffa8d48095bf20 stack=0xffffa8d48095bf20
-             cat-19056 [001] ...2 943499.874892: dosysopen: (do_sys_open+0x0/0x220) dfd=0xffffff9c filename="/lib64/libc.so.6" flags=0x88000 mode=0x0 rsp=0xffffa8d48095bf20 stack=0xffffa8d48095bf20
-             cat-19056 [001] ...2 943499.875658: dosysopen: (do_sys_open+0x0/0x220) dfd=0xffffff9c filename="/sys/kernel/debug/tracing/trace" flags=0x8000 mode=0x0 rsp=0xffffa8d48095bf20 stack=0xffffa8d48095bf20
+             cat-14096 [000] ...1 1198740.336139: dosysopen: (do_sys_open+0x6/0x220) dfd=0xffffff9c filename="/etc/ld.so.cache" flags=0x88000 mode=0x0 rbp=0xffffa8d48382bf28 stack=0xffffa8d48382bf18
+             cat-14096 [000] ...1 1198740.336154: <stack trace>
+=> do_sys_open
+=> do_syscall_64
+=> entry_SYSCALL_64_after_hwframe
+             cat-14096 [000] ...1 1198740.336200: dosysopen: (do_sys_open+0x6/0x220) dfd=0xffffff9c filename="/lib64/libc.so.6" flags=0x88000 mode=0x0 rbp=0xffffa8d48382bf28 stack=0xffffa8d48382bf18
+             cat-14096 [000] ...1 1198740.336203: <stack trace>
+=> do_sys_open
+=> do_syscall_64
+=> entry_SYSCALL_64_after_hwframe
+             cat-14096 [000] ...1 1198740.336971: dosysopen: (do_sys_open+0x6/0x220) dfd=0xffffff9c filename="/sys/kernel/debug/tracing/trace" flags=0x8000 mode=0x0 rbp=0xffffa8d48382bf28 stack=0xffffa8d48382bf18
+             cat-14096 [000] ...1 1198740.336977: <stack trace>
+=> do_sys_open
+=> do_syscall_64
+=> entry_SYSCALL_64_after_hwframe
+```
+* 无法对寄存器直接取字符串内容，需借助`+|-[u]OFFS(%REG)`的格式来获得，可以看上面取`filename`的例子
+* 动态插入的`kprobe_events`可以配合`/sys/kernel/debug/tracing/options/stacktrace`选项查看调用栈
+### 移除探针
+```sh
+echo 0 > /sys/kernel/debug/tracing/events/kprobes/dosysopen/enable
+echo 0 > /sys/kernel/debug/tracing/options/stacktrace
 echo '-:dosysopen' > /sys/kernel/debug/tracing/kprobe_events
 ```
-* `%rsp`与`$stack`是相同的
-* 无法对寄存器直接取字符串内容，需借助`+|-[u]OFFS(%REG)`的格式来获得，可以看上面取`filename`的例子
+
+## 例子3：多个探针
+* 该例演示多个 kprobes events 观察寄存器变化的运用，可以仿照出动态观测本地变量的变化的实际运用
+### 插入探针
+```sh
+echo 'p:dosysopen1 do_sys_open+6 dfd=%di filename=+0(%si):string flags=%dx mode=%cx rbp=%bp $ stack=$stack' > /sys/kernel/debug/tracing/kprobe_events
+echo 'p:dosysopen2 do_sys_open+17 dfd=%di filename=+0(%si):string flags=%dx mode=%cx rbp=%bp stack=$stack' >> /sys/kernel/debug/tracing/kprobe_events
+echo 1 > /sys/kernel/debug/tracing/events/kprobes/dosysopen1/enable
+echo 1 > /sys/kernel/debug/tracing/events/kprobes/dosysopen2/enable
+cat /sys/kernel/debug/tracing/trace
+```
+### 查看结果
+```sh
+<...>-23028 [001] ...1 1281675.534643: dosysopen1: (do_sys_open+0x6/0x220) dfd=0xffffff9c filename="/etc/ld.so.cache" flags=0x88000 mode=0x0 rbp=0xffffa8d488c4bf28 stack=0xffffa8d488c4bf18
+<...>-23028 [001] ...1 1281675.534685: dosysopen2: (do_sys_open+0x11/0x220) dfd=0xffffff9c filename="/etc/ld.so.cache" flags=0x88000 mode=0x0 rbp=0xffffa8d488c4bf18 stack=0xffffa8d488c4bef8
+<...>-23028 [001] ...1 1281675.534733: dosysopen1: (do_sys_open+0x6/0x220) dfd=0xffffff9c filename="/lib64/libc.so.6" flags=0x88000 mode=0x0 rbp=0xffffa8d488c4bf28 stack=0xffffa8d488c4bf18
+<...>-23028 [001] ...1 1281675.534736: dosysopen2: (do_sys_open+0x11/0x220) dfd=0xffffff9c filename="/lib64/libc.so.6" flags=0x88000 mode=0x0 rbp=0xffffa8d488c4bf18 stack=0xffffa8d488c4bef8
+<...>-23028 [001] ...1 1281675.535445: dosysopen1: (do_sys_open+0x6/0x220) dfd=0xffffff9c filename="trace" flags=0x8000 mode=0x0 rbp=0xffffa8d488c4bf28 stack=0xffffa8d488c4bf18
+<...>-23028 [001] ...1 1281675.535448: dosysopen2: (do_sys_open+0x11/0x220) dfd=0xffffff9c filename="trace" flags=0x8000 mode=0x0 rbp=0xffffa8d488c4bf18 stack=0xffffa8d488c4bef8
+```
+* 对于`do_sys_open()`反汇编代码
+	```nasm
+	0000000000002100 <do_sys_open>:
+	do_sys_open():
+	/usr/src/kernel/fs/open.c:1095
+	    2100:   e8 00 00 00 00          callq  2105 <do_sys_open+0x5>
+	    2105:   55                      push   %rbp   
+	    2106:   48 89 e5                mov    %rsp,%rbp  ;<-dosysopen1 pokes here
+	    2109:   41 57                   push   %r15
+	    210b:   41 56                   push   %r14
+	    210d:   41 55                   push   %r13
+	    210f:   41 54                   push   %r12
+	    2111:   41 89 d4                mov    %edx,%r12d ;<-dosysopen2 pokes here
+	```
+  * `%rsp`与`$stack`是相同的
+  * 我们可以看到`do_sys_open+5 = 2105`的地方有个`push %rbp`，所以加在`do_sys_open+6 = 2106`的探针运行到时，栈上除了`call`指令压入的函数返回地址，还有上一条指令压入的上一帧的`%rbp`，因此我们看到探针 dosysopen1 的`rbp + 16 = stack`（x86-64）
+  * `do_sys_open+6`的`mov %rsp,%rbp`改变了`%rbp`的值，探针 dosysopen2 位置的`%rbp`随即发生了变化，变为旧`%rsp`/`stack`的值`0xffffa8d488c4bf18`
+  * `2109 ~ 210f`连续四个压栈操作，所以加在`do_sys_open+17 = 2111`的探针 dosysopen2 运行到时，`rsp = 0xffffa8d488c4bf18 - 0x8 x 4 = 0xffffa8d488c4bef8`
+### 移除探针
+```sh
+echo 0 > /sys/kernel/debug/tracing/events/kprobes/dosysopen1/enable
+echo 0 > /sys/kernel/debug/tracing/events/kprobes/dosysopen2/enable
+echo '-:dosysopen2' > /sys/kernel/debug/tracing/kprobe_events
+echo '-:dosysopen1' > /sys/kernel/debug/tracing/kprobe_events
+```
 
 # Reference
 
@@ -673,3 +797,5 @@ echo '-:dosysopen' > /sys/kernel/debug/tracing/kprobe_events
 * [Debugging the kernel using Ftrace - part 1](https://lwn.net/Articles/365835/)
 * [Debugging the kernel using Ftrace - part 2](https://lwn.net/Articles/366796/)
 * [Secrets of the Ftrace function tracer](https://lwn.net/Articles/370423/)
+* [Kprobe-based Event Tracing — The Linux Kernel documentation](https://www.kernel.org/doc/html/latest/trace/kprobetrace.html)
+* [Kernel Probes (Kprobes) — The Linux Kernel documentation](https://www.kernel.org/doc/html/latest/trace/kprobes.html)

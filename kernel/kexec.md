@@ -40,6 +40,8 @@
   CONFIG_CRASH_DUMP=y
   # Exports the dump image of crashed kernel in ELF format.
   CONFIG_PROC_VMCORE=y
+  # Device Hardware/Firmware Log Collection
+  CONFIG_PROC_VMCORE_DEVICE_DUMP
   ```
 * /etc/sysconfig/kdump
   ```
