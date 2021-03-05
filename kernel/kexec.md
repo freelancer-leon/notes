@@ -454,7 +454,7 @@ SYSCALL_DEFINE4(reboot,...)
   * 因为传递的`entry = reboot_code_buffer_phys`，这是物理地址，所以对新拷贝的`arm64_relocate_new_kernel`代码内容并不需要恒等映射
   * 关闭 MMU 后，第一段要执行的 routine 是`arm64_relocate_new_kernel`，但不是在原来的代码段上，而是数据段`reboot_code_buffer`的新`arm64_relocate_new_kernel`
   * `arm64_relocate_new_kernel`的主要工作是
-    * 跳转到`kimage->start`，记得在`kexec_alloc_init()`时`kexec_image->start`设为`entry`
+    * 跳转到`kimage->start`，回忆前面在`kexec_alloc_init()`时`kexec_image->start`设为`entry`
     * 在 commit`4c9e7e649a3f291e1b939299458e6844c16afe70`**arm64: kexec_file: invoke the kernel without purgatory** 之后，ARM64 不再借助 purgatory 跳转到 capture kernel，而是直接跳转到新内核入口点，因此此处需设置 dtb 的地址为`x0`，即第一个参数
   * 最后跳转到`entry`，一直往前追溯，`entry`为`kexec_load()`用户态传入的地址，在 kexec-tools 中被设置为`purgatory_start`的地址
 
@@ -626,7 +626,8 @@ endif
       b   __primary_switch
   ENDPROC(stext)
   ```
-
+* `adrp`指令可以将符号地址变成运行时地址（通过 PC relative offset 形式），因此，当运行的 MMU OFF mode 下，通过`adrp`指令可以获取符号的物理地址。
+* 不过`adrp`是 page 对齐的（`adrp`中的`p`就是 page 的意思），当符号会是 page size 对齐的时，不能直接使用`adrp`，而是使用`adr_l`这个宏进行处理。
 * kexec/arch/arm64/image-header.h
   ```c
   /**
@@ -1048,6 +1049,96 @@ segment[2].memsz = 0x4000
   ```sh
   scripts/dtc/dtc -I dtb -O dts -o runtime.dts runtime.dtb
   ```
+## 捕捉内核无法 reboot
+* 有的 BSP 在切换到捕捉内核后执行`reboot`命令无法重启系统，跟踪到最后发现，执行`smc`指令时挂死
+```c
+SYSCALL_DEFINE4(reboot,...)
+-> kernel_restart(NULL)
+   -> migrate_to_reboot_cpu()
+   -> machine_restart(cmd)
+      -> if (arm_pm_restart)
+         -> arm_pm_restart(reboot_mode, cmd)
+         => axxia_pm_restart()
+            -> initiate_retention_reset()
+               -> saved_arm_pm_restart(0, NULL);
+               => psci_sys_reset()
+                  -> invoke_psci_fn(PSCI_0_2_FN_SYSTEM_RESET, 0, 0, 0);
+                  => __invoke_psci_fn_smc() /*根据设备树中的 soc.psci.method 的信息在 get_set_conduit_method() -> set_conduit() 中设定*/
+                     -> arm_smccc_smc(function_id, arg0, arg1, arg2, 0, 0, 0, 0, &res);
+                     => __arm_smccc_smc(__VA_ARGS__, NULL) /*宏定义*/
+                        arch/arm64/kernel/smccc-call.S
+                        -> SMCCC   smc /*SMC Call Convention*/
+                           -> .macro SMCCC instr
+                              -> \instr  #0 /*即 smc #0*/
+```
+* 该挂死是由于一些特殊硬件平台的限制导致的，有的硬件平台仅允许 CPU `MPIDR`为 0 的 CPU 发送 psci 命令
+* arch/arm64/include/asm/cputype.h
+  ```c
+  /*
+   * The CPU ID never changes at run time, so we might as well tell the
+   * compiler that it's constant.  Use this function to read the CPU ID
+   * rather than directly reading processor_id or read_cpuid() directly.
+   */
+  static inline u32 __attribute_const__ read_cpuid_id(void)
+  {
+      return read_cpuid(MIDR_EL1);
+  }
+
+  static inline u64 __attribute_const__ read_cpuid_mpidr(void)
+  {
+      return read_cpuid(MPIDR_EL1);
+  }
+  ```
+  * `MIDR`读出来的内容对于每个核都一样，是按一定规范组织的，例如厂商信息
+  * `MPIDR`读出来的内容对于每个核则是不同的
+* 通常情况下，CPU `MPIDR`与逻辑 ID 是一一对应的，所以重启时，`migrate_to_reboot_cpu()`会将执行`reboot`命令的任务迁移到`reboot_cpu`（可通过`reboot=`参数去设定）上去执行，而`reboot_cpu`缺省值通常为 0，所以没有问题
+  * 可以将 CPU0 offline 来证实这一点，CPU0 offline 后 reboot 也会挂死
+* 问题在于，当发生 panic 时，不一定就发生在 CPU0，而且 panic 时会有 CPU offline 操作，因此切换到捕捉内核后，逻辑 CPU0 是发生 panic 前的 CPU，之后各 CPU 重新 online，这样会导致 CPU `MPIDR`与逻辑 ID 不再是一一对应的。问题就来了，如果发生 panic 发生在 `MPIDR`不为 0 的 CPU，在捕捉内核的系统中 reboot 就会挂死
+### 解决方案
+1. 重启时将任务迁移到 `MPIDR`为 0 的 CPU 上去执行
+```diff
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -218,9 +225,18 @@ void migrate_to_reboot_cpu(void)
+        int cpu = reboot_cpu;
+
+        cpu_hotplug_disable();
+-
++#if defined(CONFIG_CRASH_DUMP)
++       /* For XXXX Aarch64 only the CPU which MPIDR is 0 can reboot system */
++       if (!arch_match_cpu_phys_id(cpu, CPU_MPIDR_0)) {
++               cpu = get_logical_index(CPU_MPIDR_0);
++               pr_warn("The MPIDR of reboot_cpu(%d) is not 0,"
++                       "migrates to CPU%d\n", reboot_cpu, cpu);
++       }
+        /* Make certain the cpu I'm about to reboot on is online */
++       if (cpu == -EINVAL || !cpu_online(cpu))
++#else
+        if (!cpu_online(cpu))
++#endif
+                cpu = cpumask_first(cpu_online_mask);
+
+        /* Prevent races with other tasks migrating this task */
+```
+2. 这有个前提，就是不能再给捕捉内核传递`maxcpus=`选项了，因为你无法保证`MPIDR`为 0 的 CPU 在 online CPU 中
+3. 这又引入一个新问题，看 SMP CPU 启动的过程，
+```c
+smp_init()
+-> for_each_present_cpu(cpu)
+   -> cpu_up(cpu)
+      arch/arm64/kernel/smp.c
+      -> __cpu_up()
+         -> boot_secondary(cpu, idle);
+            -> cpu_ops[cpu]->cpu_boot(cpu);
+            arch/arm64/kernel/psci.c
+            => cpu_psci_cpu_boot()
+               -> psci_ops.cpu_on(cpu_logical_map(cpu), __pa_symbol(secondary_entry))
+               => psci_cpu_on(unsigned long cpuid, unsigned long entry_point)
+                  -> invoke_psci_fn(fn, cpuid, entry_point, 0)
+```
+* 注意，最后发送`PSCI_FN_CPU_ON`PSCI 命令时传递的起始地址是`secondary_entry`。但偏偏有的 BSP 又限制了起始地址的范围必须在物理地址的 1GB 以内，ATF 中会有相应的检查。如果 capture kernel 放置的物理地址不在允许的范围内，其他核会因此无法 online，也还是会造成以上 patch 和配置失效。
+  * 为了解决这个问题，我们可以借助`crashkernel=size@offset`参数设定 reserved memory 的物理地址偏移，从而保证 capture kernel 被放在允许的物理地址范围内。
 
 # References
 - [深入探索 Kdump，第 1 部分：带你走进 Kdump 的世界](https://www.ibm.com/developerworks/cn/linux/l-cn-kdump1/index.html)

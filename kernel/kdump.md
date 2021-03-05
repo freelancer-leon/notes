@@ -6,7 +6,7 @@
   * 实现见 kernel/crash_dump.c 的源代码，`early_param("elfcorehdr", setup_elfcorehdr)`
 * 对于 ARM64 来说作法有些特殊
   * kexec 在`load_crashdump_segments()`构造用于捕捉内核的`/proc/vmcore`的 ELF core header
-  * 在 `setup_2nd_dtb()` 这个步骤通过修改 dtb 传递捕捉内核的命令行参数，此时会添加一个`linux,elfcorehdr`的 dtb 节点用于描述 ELF core header
+  * 在 `setup_2nd_dtb()` 这个步骤通过修改 dtb 传递捕捉内核的命令行参数，添加一个`linux,elfcorehdr`的 dtb 节点用于描述 ELF core header
   ```c
   main()
   -> my_load()
