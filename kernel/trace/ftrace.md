@@ -777,7 +777,7 @@ cat /sys/kernel/debug/tracing/trace
 	    2111:   41 89 d4                mov    %edx,%r12d ;<-dosysopen2 pokes here
 	```
   * `%rsp`与`$stack`是相同的
-  * 我们可以看到`do_sys_open+5 = 2105`的地方有个`push %rbp`，所以加在`do_sys_open+6 = 2106`的探针运行到时，栈上除了`call`指令压入的函数返回地址，还有上一条指令压入的上一帧的`%rbp`，因此我们看到探针 dosysopen1 的`rbp + 16 = stack`（x86-64）
+  * 我们可以看到`do_sys_open+5 = 2105`的地方有个`push %rbp`，所以加在`do_sys_open+6 = 2106`的探针运行到时，栈上除了`call`指令压入的函数返回地址，还有上一条指令压入的上一帧的`%rbp`，因此我们看到探针 dosysopen1 的`rbp - 16 = stack`（x86-64）
   * `do_sys_open+6`的`mov %rsp,%rbp`改变了`%rbp`的值，探针 dosysopen2 位置的`%rbp`随即发生了变化，变为旧`%rsp`/`stack`的值`0xffffa8d488c4bf18`
   * `2109 ~ 210f`连续四个压栈操作，所以加在`do_sys_open+17 = 2111`的探针 dosysopen2 运行到时，`rsp = 0xffffa8d488c4bf18 - 0x8 x 4 = 0xffffa8d488c4bef8`
 ### 移除探针
@@ -787,6 +787,17 @@ echo 0 > /sys/kernel/debug/tracing/events/kprobes/dosysopen2/enable
 echo '-:dosysopen2' > /sys/kernel/debug/tracing/kprobe_events
 echo '-:dosysopen1' > /sys/kernel/debug/tracing/kprobe_events
 ```
+
+# 快照 Snapshot
+* `CONFIG_TRACER_SNAPSHOT`提供了快照功能，可用于所有非延迟类型 tracer
+* 延迟型 tracer，例如`irqsoff`和`wakeup`，无法使用快照功能，因为它们的内部实现已经使用了该功能
+* 控制文件为`/sys/kernel/debug/tracing/snapshot`
+
+# 实例 Instances
+* 实例的 buffer 是独立于主 buffer 的
+* 实例目前仅支持事件，不支持 tracer
+* `trace_options`目前的影响是全局的，将来可能会支持实例独立的`trace_options`
+* 控制目录为`/sys/kernel/debug/tracing/instances`，创建文件会相应地创建 buffer
 
 # Reference
 

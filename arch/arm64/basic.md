@@ -1,3 +1,25 @@
+# 寄存器
+## 通用寄存器
+* 提供 31 个`64 bit`的通用寄存器
+* 每个通用寄存器，用 **x** 表示`64`位宽，**w** 表示`32`位宽
+
+# ABI
+![pic/arm64_gp_reg_abi.png](pic/arm64_gp_reg_abi.png)
+* 参数寄存器（**X0-X7**）：8 个寄存器可用于传递参数
+  * 用作临时寄存器
+  * 可以保存函数内 *调用者保存的寄存器变量* 的中间值，调用其他函数之间的值
+* 调用者保存（Caller-saved）的临时寄存器（**X9-X15**）： 如果调用者要求在任何这些寄存器中保留值调用另一个函数，调用者必须将受影响的寄存器保存在自己的堆栈帧中。它们可以通过被调用的子程序进行修改，而无需保存并在返回调用者之前恢复它们。
+* 被调用者保存（Callee-saved）的寄存器（**X19-X29**）： 这些寄存器保存在被调用者帧中。它们可以被被调用者修改子程序，只要它们在返回之前保存并恢复。
+* 特殊用途寄存器（**X8，X16-X18，X29，X30**）：
+  * **X8**： 是间接结果寄存器，用于保存子程序返回地址，尽量不使用
+  * **X16** 和 **X17**： 程序内调用临时寄存器
+  * **X18**： 平台寄存器，保留用于平台 ABI，尽量不使用
+  * **X29**： 帧指针寄存器（**FP**）
+  * **X30**： 链接寄存器（**LR**）
+  * **X31**： 堆栈指针寄存器 **SP** 或零寄存器 **ZXR**
+
+![pic/arm64_stack_frame.png](pic/arm64_stack_frame.png)
+
 # 异常
 * 对于 ARM64 而言，exception 是指 CPU 的某些异常状态或者一些系统的事件（可能来自外部，也可能来自内部），这些状态或者事件可以导致 CPU 去执行一些预先设定的，具有更高执行权利的软件（也叫 exception handler）
 * 执行 exception handler 可以进行异常的处理，从而让系统平滑的运行。exception handler 执行完毕之后，需要返回发生异常的现场。
@@ -116,7 +138,7 @@ Page size | 4KB | 16KB | 64KB | -
 Page address range | VA[11:0]=PA[11:0] | VA[13:0]=PA[13:0] | VA[15:0]=PA[15:0] | 2<sup>12</sup>=4K, 2<sup>14</sup>=16K, 2<sup>16</sup>=64K
 
 ## 虚拟地址支持
-* 64 位虚拟地址中，并不是所有位都用上，除了高 16 位用于区分内核空间和用户空间外，有效位的配置可以是：36, 39, 42, 48。
+* 64 位虚拟地址中，并不是所有位都用上，除了高 16 位用于区分内核空间和用户空间外，有效位的配置可以是：36，39，42，47，48。
 * 对于 4KB 页，有 3 级`pgd(pud)-->pmd-->pte`或 4 级页表`pgd-->pud-->pmd-->pte`，允许 39 位或 48 位虚拟地址
 ```c
 +--------+--------+--------+--------+--------+--------+--------+--------+
@@ -141,7 +163,7 @@ Page address range | VA[11:0]=PA[11:0] | VA[13:0]=PA[13:0] | VA[15:0]=PA[15:0] |
 # 地址空间布局
 * 查看 [Memory Layout on AArch64 Linux](https://www.kernel.org/doc/html/latest/arm64/memory.html)
 * 内核源码目录也由 Documentation/arm64/memory.rst
-* AArch64 Linux memory layout with 4KB pages + 4 levels (48-bit):
+  * AArch64 Linux memory layout with 4KB pages + 4 levels (48-bit):
   ```c
   Start                 End                     Size            Use
   -----------------------------------------------------------------------
@@ -158,7 +180,7 @@ Page address range | VA[11:0]=PA[11:0] | VA[13:0]=PA[13:0] | VA[15:0]=PA[15:0] |
   fffffc0000000000      fffffdffffffffff           2TB          vmemmap
   fffffe0000000000      ffffffffffffffff           2TB          [guard region]
   ```
-* arch/arm64/include/asm/memory.h
+  * arch/arm64/include/asm/memory.h
   ```c
   /*
    * VMEMMAP_SIZE - allows the whole linear region to be covered by
@@ -208,6 +230,51 @@ Page address range | VA[11:0]=PA[11:0] | VA[13:0]=PA[13:0] | VA[15:0]=PA[15:0] |
   #define KERNEL_END      _end
   ..._
   ```
+## 内核起始地址
+* `KIMAGE_VADDR`：为内核的起始虚拟地址，但内核镜像并不一定就放这里
+* `TEXT_OFFSET` bootloader 会把内核镜像从外设拷贝到 RAM 中，那么具体拷贝到什么位置呢？从 RAM 的起始地址开始吗？
+  * 实际上是从`TEXT_OFFSET`开始的，偏移这么一小段内存估计是为了 bootloader 和 kernel 之间传递一些信息。
+  * 所以，这里`TEXT`是指 kernel text segment，而`OFFSET`是相对于 RAM 的首地址而言的。
+  * `TEXT_OFFSET`必须要 *4K 对齐* 并且`TEXT_OFFSET`的大小不能大于 2M
+* `PAGE_OFFSET`：线性映射的起始地址，这里用`PAGE`确实很容易误导
+* arch/arm64/kernel/vmlinux.lds.S
+  ```c
+  ...
+  . = KIMAGE_VADDR + TEXT_OFFSET;
+
+  .head.text : {
+      _text = .;
+      HEAD_TEXT
+  }
+  .text : {           /* Real text segment        */
+      _stext = .;     /* Text and read-only data  */
+          __exception_text_start = .;
+          *(.exception.text)
+          __exception_text_end = .;
+          IRQENTRY_TEXT
+          SOFTIRQENTRY_TEXT
+          ENTRY_TEXT
+          TEXT_TEXT
+          SCHED_TEXT
+          CPUIDLE_TEXT
+          LOCK_TEXT
+          KPROBES_TEXT
+          HYPERVISOR_TEXT
+          IDMAP_TEXT
+          HIBERNATE_TEXT
+          TRAMP_TEXT
+          *(.fixup)
+          *(.gnu.warning)
+      . = ALIGN(16);
+      *(.got)         /* Global offset table      */
+  }
+  ..._```
+  ```
+* 文本段的入口点`stext`会放到 section `.head.text`
+  * `#define __HEAD      .section    ".head.text","ax"`
+* 链接器脚本把`HEAD_TEXT`放到了`_text`
+  * `#define HEAD_TEXT  KEEP(*(.head.text))`
+* 这样`_text`就是内核镜像的起始地址了，启动内核的时候要跳转到这执行内核的第一条指令，即`stext`例程
 
 # 代码转换地址
 ## 物理地址转虚拟地址
@@ -229,14 +296,16 @@ Page address range | VA[11:0]=PA[11:0] | VA[13:0]=PA[13:0] | VA[15:0]=PA[15:0] |
   = 0xffffffffffffffff - 0x4000000000 + 1
   = 0xffff_ffc0_0000_0000
   ```
-* `PHYS_OFFSET`是内存起始的物理地址，由启动时选定，不同系统选定的起始地址可能不同
+* `PHYS_OFFSET`是内存起始的物理地址，在系统初始化的过程中，会把`PHYS_OFFSET`开始的物理内存映射到`PAGE_OFFSET`的虚拟内存上去。不同系统选定的起始地址可能不同
   * `memstart_addr`可以通过`/proc/iomem`简单地查看，一般是第一条`System RAM`类型的起始地址
 
 # References
+- ARM Cortex -A Series - Programmer’s Guide for ARMv8-A
 - [ARM64的启动过程之（一）：内核第一个脚印](http://www.wowotech.net/armv8a_arch/arm64_initialize_1.html)
 - [ARM64的启动过程之（二）：创建启动阶段的页表](http://www.wowotech.net/armv8a_arch/create_page_tables.html)
 - [ARM64的启动过程之（三）：为打开MMU而进行的CPU初始化](http://www.wowotech.net/armv8a_arch/arm64_initialize_1.html)
 - [ARM64的启动过程之（四）：打开MMU](http://www.wowotech.net/armv8a_arch/turn-on-mmu.html)
+- [ARM64的启动过程之（五）：UEFI](http://www.wowotech.net/armv8a_arch/UEFI.html)
 - [ARM64的启动过程之（六）：异常向量表的设定](http://www.wowotech.net/armv8a_arch/238.html)
 - [（一）ARMv8 MMU及Linux页表映射](https://www.cnblogs.com/LoyenWang/p/11406693.html)
 - [armv8 memory translation](https://www.cnblogs.com/-9-8/p/8406345.html)

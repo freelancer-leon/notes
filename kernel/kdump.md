@@ -184,6 +184,7 @@ panic()
 #### vmcoreinfo
 * `makedumpfile`根据`vmcoreinfo`的信息，在生成`vmcore`时根据使用情况而去除不必要的页
 * 提取自系统内核的`vmlinux`
+* 新版本的内核已经不需要专门生成`vmcoreinfo`，而是将其包含在`/proc/vmcore`中，即`makedumpfile`生成 dump 文件时不再需要`-x`或`-i`了
 
 # References
 - [linuxperf - KDUMP简介](http://linuxperf.com/?p=172)

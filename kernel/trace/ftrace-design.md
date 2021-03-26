@@ -1305,6 +1305,82 @@ static DEFINE_PER_CPU(struct ftrace_stacks, ftrace_stacks);
 static DEFINE_PER_CPU(int, ftrace_stack_reserve);
 ```
 
+# Ring Buffer
+## Ring Buffer 的内存空间分配
+* Ring buffer 的分配接口为`ring_buffer_alloc()`
+* Trace buffers 的分配接口为`allocate_trace_buffers()`，它会调用`ring_buffer_alloc()`来分配 ring buffer
+```c
+init/main.c
+start_kernel()
+   kernel/trace/trace.c
+-> early_trace_init()
+   -> tracer_alloc_buffers()
+      -> cpuhp_setup_state_multi(CPUHP_TRACE_RB_PREPARE, "trace/RB:preapre", trace_rb_cpu_prepare, NULL);
+            kernel/cpu.c
+         -> __cpuhp_setup_state(state, name, false, startup, teardown, true);
+            -> __cpuhp_setup_state_cpuslocked(state, name, invoke, startup, teardown, multi_instance)
+               -> cpuhp_store_callbacks()
+                  sp->startup.single = startup; //trace_rb_cpu_prepare
+                  for_each_present_cpu(cpu)
+                  -> cpuhp_issue_call()
+                     -> cpuhp_invoke_ap_callback()
+                        -> cpuhp_invoke_callback()
+      -> temp_buffer = ring_buffer_alloc(PAGE_SIZE, RB_FL_OVERWRITE);
+      -> allocate_trace_buffers()
+         -> allocate_trace_buffer()
+            -> buf->buffer = ring_buffer_alloc(size, rb_flags);
+               kernel/trace/ring_buffer.c
+               __ring_buffer_alloc()
+               -> buffer = kzalloc(ALIGN(sizeof(*buffer), cache_line_size()), GFP_KERNEL);
+               -> buffer->buffers[cpu] = rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
+                  -> rb_allocate_pages()
+                     -> __rb_allocate_pages()
+               -> cpuhp_state_add_instance(CPUHP_TRACE_RB_PREPARE, &buffer->node)
+                     kernel/cpu.c
+                  -> __cpuhp_state_add_instance(state, node, true)
+                     -> __cpuhp_state_add_instance_cpuslocked(state, node, invoke)
+                         for_each_present_cpu(cpu)
+                         -> cpuhp_issue_call()
+                            -> cpuhp_invoke_ap_callback()
+                              -> cpuhp_invoke_callback()
+            -> buf->data = alloc_percpu(struct trace_array_cpu);
+```
+* 注意，这个路径上先初始化了一个 CPU 使用的 buffer，即`buffer->buffers[cpu] = rb_allocate_cpu_buffer(buffer, nr_pages, cpu)`
+* 其他 CPU 使用的 buffer 会根据当前 online CPU 的情况动态分配
+```c
+cpuhp_invoke_callback()
+-> cb = bringup ? step->startup.single : step->teardown.single;
+-> cb(cpu)
+-> cbm = bringup ? step->startup.multi : step->teardown.multi;
+-> cbm(cpu, node)
+=> trace_rb_cpu_prepare(unsigned int cpu, struct hlist_node *node)
+      buffer = container_of(node, struct ring_buffer, node);
+   -> buffer->buffers[cpu] = rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
+```
+* `single`和`multi`是同一个联合体的成员
+* 在`tracer_alloc_buffers()`已经初始化了`cpuhp_step->startup.single`为`trace_rb_cpu_prepare()`
+* 因为`cpuhp_setup_state_multi()`设定好了回调函数`trace_rb_cpu_prepare()`，随后有 CPU 热插的时候仍然是通过`rb_allocate_cpu_buffer()`接口初始化其他 CPU 的 ring buffer
+
+* `ring_buffer_alloc()`这个宏很关键，能让每个调用它的地方有一个与之绑定的`struct lock_class_key __key`
+	* include/linux/ring_buffer.h
+	```c
+	/*
+	 * Because the ring buffer is generic, if other users of the ring buffer get
+	 * traced by ftrace, it can produce lockdep warnings. We need to keep each
+	 * ring buffer's lock class separate.
+	 */
+	#define ring_buffer_alloc(size, flags)          \
+	({                          \
+	    static struct lock_class_key __key;     \
+	    __ring_buffer_alloc((size), (flags), &__key);   \
+	})
+	...__
+	```
+  * 比如说，tracer 的 ring buffer 和 instances 的 ring buffer 都认为是同一个类
+### Instances
+* Instances 功能的 ring buffer 也是通过`allocate_trace_buffers()`来分配的（见`create_trace_instances()`、`instance_mkdir()`等函数），所以 instance 的 ring buffer 是独立的
+* 因为`cpuhp_setup_state_multi(CPUHP_TRACE_RB_PREPARE, "trace/RB:preapre", trace_rb_cpu_prepare, NULL)`这里将`CPUHP_TRACE_RB_PREPARE`类型的回调函数设定为`trace_rb_cpu_prepare()`，所以当`instance_mkdir()`调用`allocate_trace_buffers()`去分配 ring buffers 的时候，最终也会通过`trace_rb_cpu_prepare()`这个接口来分配其他 CPU 的 instances ring buffer，只需要传递不同的`node`就可以了
+
 # Reference
 * [ftrace 简介](https://www.ibm.com/developerworks/cn/linux/l-cn-ftrace/)
 * [Ftrace 实现原理与开发实践](http://tinylab.org/ftrace-principle-and-practice/)

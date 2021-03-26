@@ -1,4 +1,13 @@
 # Kprobes
+* Kprobes debugfs 接口
+  * `/sys/kernel/debug/kprobes`
+* kprobes sysctl 接口
+  * `/proc/sys/debug/kprobes-optimization`：打开或关闭 kprobes 优化
+
+## 一些需要注意的地方
+* 如果在内联函数中安装探针，则 Kprobes 不会尝试追查该函数的所有内联实例并在那里安装探针。而 gcc 可能会内联一个函数而不会被询问，因此如果您没有看到预期的探测结果，请记住这一点。
+* Kprobes 不会尝试阻止探针处理程序彼此踩踏-例如，先探测`printk()`然后从探针处理程序中调用`printk()`。如果探针处理程序击中了探针，则该第二个探针的处理程序将不会在该实例中运行，并且第二个探针的`kprobe.nmissed`成员将递增。
+* 探针处理程序在 **禁用抢占** 或 **禁用中断** 的情况下运行，这取决于体系结构和优化状态。（例如，kretprobe 处理程序和优化的 kprobe 处理程序在 x86/x86-64 上运行时没有禁用中断）。在任何情况下，您的处理程序都不应放弃 CPU（例如，尝试获取信号量或等待I /O）。
 
 # kprobes
 
@@ -56,23 +65,28 @@ struct kprobe {
 ```
 
 ## 注册`kprobes`探针
+```c
+kernel/kprobes.c
+register_kprobe()
+-> prepare_kprobe()
+   arch/x86/kernel/kprobes/core.c
+   -> arch_prepare_kprobe()
+      -> arch_copy_kprobe()
+         -> text_poke()
+            -> __text_poke()
+```
 
 ## 激活`kprobe`探针
-```
+```c
 arch/x86/entry/entry_64.S
 idtentry int3           do_int3         has_error_code=0    paranoid=1 shift_ist=DEBUG_STACK
-  |
-  +-> arch/x86/kernel/traps.c
-      do_int3()
-        |
-        +-> kprobe_int3_handler()
-              |
-              +-> if (!p->pre_handler || !p->pre_handler(p, regs))
-              |       |
-              |       +-> setup_singlestep()
-              +-> if (p->break_handler && p->break_handler(p, regs))
-                      |
-                      +-> setup_singlestep()
+  arch/x86/kernel/traps.c
+  -> do_int3()
+     -> kprobe_int3_handler()
+        +-> if (!p->pre_handler || !p->pre_handler(p, regs))
+        |      setup_singlestep()
+        +-> if (p->break_handler && p->break_handler(p, regs))
+               setup_singlestep()
 ```
 
 # kretprobes
@@ -103,33 +117,28 @@ struct kretprobe {
 
 ## 注册`kretprobes`探针
 * kernel/kprobes.c
-```
+```c
 register_kretprobes()
-  |
-  +-> register_kretprobe(struct kretprobe *rp)
-        |
-        +-> rp->kp.pre_handler = pre_handler_kretprobe;
-        |
-        +-> register_kprobe(&rp->kp)
+-> register_kretprobe(struct kretprobe *rp)
+   -> rp->kp.pre_handler = pre_handler_kretprobe;
+   -> register_kprobe(&rp->kp)
 ```
 * 实际上这里还是利用了`kprobe`完成指令替换。
 * 注意给`kprobe`探针的`pre_handler`成员的赋指，这样在探针插入的指令执行前，会先调用`pre_handler_kretprobe()`。
 
 ## 修改函数返回地址
-* 调用`kprobe`探针的`pre_handler`回调的时机就是修改函数返回地址的时机，这之前的过程之前列过。
+* 调用`kprobe`探针的`pre_handler`回调的时机就是修改函数返回地址的时机，这之前的过程列过。
 * 之前`pre_handler`回调赋值为`pre_handler_kretprobe()`
 * 函数`pre_handler_kretprobe()`的主要任务是：
   * 调用`kretprobe`的`entry_handler`
   * 修改探针所在函数的返回地址为`kretprobe_trampoline()`
   * 保存探针所在函数的返回地址
 * kernel/kprobes.c
-```
+```c
 pre_handler_kretprobe()
-  |
-  +-> rp->entry_handler()
-  |
-  +-> arch/x86/kernel/kprobes/core.c
-      arch_prepare_kretprobe()
+-> rp->entry_handler()
+-> arch/x86/kernel/kprobes/core.c
+   arch_prepare_kretprobe()
 ```
 * `arch_prepare_kretprobe()`由不同体系结构各自实现
 * arch/x86/kernel/kprobes/core.c
@@ -314,5 +323,3 @@ __visible __used void *trampoline_handler(struct pt_regs *regs)
 NOKPROBE_SYMBOL(trampoline_handler);
 
 ```
-
-# jprobes
