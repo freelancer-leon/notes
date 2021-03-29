@@ -1312,38 +1312,37 @@ static DEFINE_PER_CPU(int, ftrace_stack_reserve);
 ```c
 init/main.c
 start_kernel()
-   kernel/trace/trace.c
+   //kernel/trace/trace.c
 -> early_trace_init()
    -> tracer_alloc_buffers()
-      -> cpuhp_setup_state_multi(CPUHP_TRACE_RB_PREPARE, "trace/RB:preapre", trace_rb_cpu_prepare, NULL);
-            kernel/cpu.c
-         -> __cpuhp_setup_state(state, name, false, startup, teardown, true);
-            -> __cpuhp_setup_state_cpuslocked(state, name, invoke, startup, teardown, multi_instance)
-               -> cpuhp_store_callbacks()
-                  sp->startup.single = startup; //trace_rb_cpu_prepare
-                  for_each_present_cpu(cpu)
-                  -> cpuhp_issue_call()
-                     -> cpuhp_invoke_ap_callback()
-                        -> cpuhp_invoke_callback()
-      -> temp_buffer = ring_buffer_alloc(PAGE_SIZE, RB_FL_OVERWRITE);
-      -> allocate_trace_buffers()
+      +-> cpuhp_setup_state_multi(CPUHP_TRACE_RB_PREPARE, "trace/RB:preapre", trace_rb_cpu_prepare, NULL);
+      |      //kernel/cpu.c
+      |   -> __cpuhp_setup_state(state, name, false, startup, teardown, true);
+      |      -> __cpuhp_setup_state_cpuslocked(state, name, invoke, startup, teardown, multi_instance)
+      |         -> cpuhp_store_callbacks()
+      |            sp->startup.single = startup; //startup 即 trace_rb_cpu_prepare()
+      |         if (ret || !invoke || !startup) goto out; //invoke 是 false，所以初始化时以下调用并不会发生
+      |            //for_each_present_cpu(cpu)
+      |            //-> cpuhp_issue_call()
+      +-> temp_buffer = ring_buffer_alloc(PAGE_SIZE, RB_FL_OVERWRITE);
+      +-> allocate_trace_buffers()
          -> allocate_trace_buffer()
-            -> buf->buffer = ring_buffer_alloc(size, rb_flags);
-               kernel/trace/ring_buffer.c
-               __ring_buffer_alloc()
-               -> buffer = kzalloc(ALIGN(sizeof(*buffer), cache_line_size()), GFP_KERNEL);
-               -> buffer->buffers[cpu] = rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
-                  -> rb_allocate_pages()
-                     -> __rb_allocate_pages()
-               -> cpuhp_state_add_instance(CPUHP_TRACE_RB_PREPARE, &buffer->node)
-                     kernel/cpu.c
-                  -> __cpuhp_state_add_instance(state, node, true)
-                     -> __cpuhp_state_add_instance_cpuslocked(state, node, invoke)
-                         for_each_present_cpu(cpu)
-                         -> cpuhp_issue_call()
-                            -> cpuhp_invoke_ap_callback()
-                              -> cpuhp_invoke_callback()
-            -> buf->data = alloc_percpu(struct trace_array_cpu);
+            +-> buf->buffer = ring_buffer_alloc(size, rb_flags);
+            |   //kernel/trace/ring_buffer.c
+            |   __ring_buffer_alloc()
+            |   -> buffer = kzalloc(ALIGN(sizeof(*buffer), cache_line_size()), GFP_KERNEL);
+            |   -> buffer->buffers[cpu] = rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
+            |      -> rb_allocate_pages()
+            |         -> __rb_allocate_pages()
+            |   -> cpuhp_state_add_instance(CPUHP_TRACE_RB_PREPARE, &buffer->node)
+            |         //kernel/cpu.c
+            |      -> __cpuhp_state_add_instance(state, node, true)
+            |         -> __cpuhp_state_add_instance_cpuslocked(state, node, invoke)
+            |             for_each_present_cpu(cpu)
+            |             -> cpuhp_issue_call()
+            |                -> cpuhp_invoke_ap_callback()
+            |                  -> cpuhp_invoke_callback()
+            +-> buf->data = alloc_percpu(struct trace_array_cpu);
 ```
 * 注意，这个路径上先初始化了一个 CPU 使用的 buffer，即`buffer->buffers[cpu] = rb_allocate_cpu_buffer(buffer, nr_pages, cpu)`
 * 其他 CPU 使用的 buffer 会根据当前 online CPU 的情况动态分配

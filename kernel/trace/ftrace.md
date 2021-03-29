@@ -594,6 +594,12 @@ rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
   * `func_stack_trace`主要用于 **function tracer**，用于自定义要跟踪的函数（配合`set_ftrace_filter`）
 
 ## function_graph tracer 选项
+### funcgraph-proc
+* `funcgraph-proc`：function_graph tracer 缺省不显示进程名，只有在进程切换时才显示。使能这个选项可以总是显示进程名。
+### funcgraph-irqs
+* `funcgraph-irqs`：当禁用时，发生在中断上下文的函数不会被跟踪
+### sleep-time
+* `sleep-time`：当使能时，会把任务被调度出去的时间也算作函数调用的一部份。
 
 # 基于 kprobes 的事件跟踪
 * 与基于 tracepoint 的事件跟踪相似，kprobes 事件跟踪是基于 kprobes 点的跟踪
