@@ -354,8 +354,9 @@ static __always_inline int arch_spin_trylock(arch_spinlock_t *lock)
       1）如果相等，将 new.head_tail 的值存入 lock->head_tail 地址指向的内存。
          故返回值如果等于 old.head_tail 表示成功。执行线程由此获得锁，返回 true。
          此举原子地完成了比较和更新 Next （占用锁）的过程。
-      2）如果不等，也返回 lock->head_tail 地址里的值。但返回值 == old.head_tail 的表达式
-         必然不成立，尝试获取锁失败。
+      2）如果不等，说明有其他核更新了 lock->head_tail 地址里的值，但这种情况也返回此时
+         lock->head_tail 地址里的值。此时，返回值 == old.head_tail 的表达式必然不成立，
+         尝试获取锁失败。
      */
     return cmpxchg(&lock->head_tail, old.head_tail, new.head_tail) == old.head_tail;
 }

@@ -803,6 +803,10 @@ ffffffc000800000  800000
 * 虚拟地址`0x8842f0` PMD 索引为`00 0000 100`，故 PMD 级第四项是我们要找的，`0x711`是标志位，所以二级页表的物理地址是`0x800000`
 * 后面的 21 个 bit 构成偏移，基址是物理地址`0x800000`
 * 由此可见，`idmap_pg_dir`加载到`TTBR0_EL1`后，对虚拟地址`0x800000`会转换为对物理地址`0x800000`的访问
+##### 为什么这里只到映射到 PMD 这一级？
+* 对于采用 39 位有效虚拟地址的内核页表有三级`pgd(pud)-->pmd-->pte`
+* 对于 kernel image 这样的 big block memory region，使用 4K 的 page 来 mapping 有点得不偿失，在这种情况下，可以考虑让 PMD 的 Translation table entry 指向一个 2M 的 memory region，而不是下一级的 Translation table
+* 所谓的 section map 就是指使用 2M 的为单位进行映射。此时，PMD 的内容不是下一级的 table descriptor，而是基于 2M block 的 mapping（或者说 PMD 中 的描述符是 block descriptor），PTE 这一级映射就不需要了
 
 #### 查看物理地址的内容
 * 由于 MMU 已开启，我们无法绕过 MMU 直接查看物理地址的内容。好在`0x8842f0`这一物理地址处于线性映射的范围

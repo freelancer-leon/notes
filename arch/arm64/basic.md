@@ -169,7 +169,7 @@ Page address range | VA[11:0]=PA[11:0] | VA[13:0]=PA[13:0] | VA[15:0]=PA[15:0] |
   -----------------------------------------------------------------------
   0000000000000000      0000ffffffffffff         256TB          user
   ffff000000000000      ffff7fffffffffff         128TB          kernel logical memory map
-  [ffff600000000000      ffff7fffffffffff]         32TB          [kasan shadow region]
+  [ffff600000000000     ffff7fffffffffff]         32TB          [kasan shadow region]
   ffff800000000000      ffff800007ffffff         128MB          bpf jit region
   ffff800008000000      ffff80000fffffff         128MB          modules
   ffff800010000000      fffffbffefffffff         124TB          vmalloc
@@ -290,12 +290,13 @@ Page address range | VA[11:0]=PA[11:0] | VA[13:0]=PA[13:0] | VA[15:0]=PA[15:0] |
   #define __va(x)         ((void *)__phys_to_virt((phys_addr_t)(x)))
   ...*
   ```
-* 对于`CONFIG_ARM64_VA_BITS`为 39，`VA_BITS` 就是 (39)，此时`PAGE_OFFSET`
+* 对于`CONFIG_ARM64_VA_BITS`为 **39**，`VA_BITS` 就是 (39)，此时`PAGE_OFFSET`
   ```c
   = 0xffffffffffffffff - (1 << (VA_BITS - 1)) + 1
   = 0xffffffffffffffff - 0x4000000000 + 1
   = 0xffff_ffc0_0000_0000
   ```
+* 对于`CONFIG_ARM64_VA_BITS`为 **48**，`PAGE_OFFSET`为`0xffff_8000_0000_0000`
 * `PHYS_OFFSET`是内存起始的物理地址，在系统初始化的过程中，会把`PHYS_OFFSET`开始的物理内存映射到`PAGE_OFFSET`的虚拟内存上去。不同系统选定的起始地址可能不同
   * `memstart_addr`可以通过`/proc/iomem`简单地查看，一般是第一条`System RAM`类型的起始地址
 

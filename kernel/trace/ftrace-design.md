@@ -1310,7 +1310,7 @@ static DEFINE_PER_CPU(int, ftrace_stack_reserve);
 * Ring buffer 的分配接口为`ring_buffer_alloc()`
 * Trace buffers 的分配接口为`allocate_trace_buffers()`，它会调用`ring_buffer_alloc()`来分配 ring buffer
 ```c
-init/main.c
+//init/main.c
 start_kernel()
    //kernel/trace/trace.c
 -> early_trace_init()

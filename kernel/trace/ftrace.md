@@ -669,6 +669,7 @@ FETCHARGS | 探测点的参数，每个探测点可以有最多 128 个参数
   * 语法为：`b<bit-width>@<bit-offset>/<container-size>`
 * **符号类型（symbol）** 是`u32`或`u64`（取决于`BITS_PER_LONG`）类型的别名，将给定的指针显示为`symbol+offset`的风格。
 * 对于`$comm`缺省类型是`string`；任何其他的类型都是非法的。
+* `$argN`由 commit `a1303af5d79eb13a658633a9fb0ce3aed0f7decf tracing: probeevent: Add $argN for accessing function args`在`v4.20`引入，需要使能`CONFIG_HAVE_FUNCTION_ARG_ACCESS_API`选项。
 
 ## 例子1：probe do_fork
 * 该例演示一个简单的 kprobes event 运用
@@ -753,7 +754,7 @@ echo '-:dosysopen' > /sys/kernel/debug/tracing/kprobe_events
 * 该例演示多个 kprobes events 观察寄存器变化的运用，可以仿照出动态观测本地变量的变化的实际运用
 ### 插入探针
 ```sh
-echo 'p:dosysopen1 do_sys_open+6 dfd=%di filename=+0(%si):string flags=%dx mode=%cx rbp=%bp $ stack=$stack' > /sys/kernel/debug/tracing/kprobe_events
+echo 'p:dosysopen1 do_sys_open+6 dfd=%di filename=+0(%si):string flags=%dx mode=%cx rbp=%bp stack=$stack' > /sys/kernel/debug/tracing/kprobe_events
 echo 'p:dosysopen2 do_sys_open+17 dfd=%di filename=+0(%si):string flags=%dx mode=%cx rbp=%bp stack=$stack' >> /sys/kernel/debug/tracing/kprobe_events
 echo 1 > /sys/kernel/debug/tracing/events/kprobes/dosysopen1/enable
 echo 1 > /sys/kernel/debug/tracing/events/kprobes/dosysopen2/enable
