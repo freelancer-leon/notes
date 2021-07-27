@@ -319,3 +319,5 @@ laptop_mode | A Boolean value controlling laptop mode. See the following section
 * [FREE命令显示的BUFFERS与CACHED的区别](http://linuxperf.com/?p=32)
 * [The XArray data structure - LWN.net](https://lwn.net/Articles/745073/)
 * [详解Linux内核Radix树算法的实现](http://sourcelink.top/2019/09/26/linux-kernel-radix-tree-analysis/)
+* [LWN 495543: 一种更好的平衡 active/inactive 链表长度的算法（Refault Distance 算法）](http://tinylab.org/lwn-495543/)
+* [LWN 712467: 页缓存（page cache）的未来](http://tinylab.org/lwn-712467/)

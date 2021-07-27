@@ -126,7 +126,7 @@ END(function_hook)
 ### 开启`CONFIG_DYNAMIC_FTRACE`
 * 最初`mcount`的作用是直接从函数返回。
 * arch/x86/kernel/mcount_64.S
-```assembly
+```nasm
 ENTRY(function_hook)
         retq
 END(function_hook)

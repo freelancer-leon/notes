@@ -249,7 +249,7 @@ Buffer page
 +---------+ <--- tail pointer
 
 When the first writer commits::
-
+第一个写者再提交时：
 Buffer page
 +---------+
 |written  |
@@ -358,3 +358,148 @@ Overwrite mode:
 ```
 Note, the reader page will still point to the previous head page. But when a swap takes place, it will use the most recent head page.
 请注意，读者 page 仍将指向上一个 head page。但是当交换发生时，它将使用最新的 head page。
+
+# 让 ring buffer 无锁
+The main idea behind the lockless algorithm is to combine the moving of the head_page pointer with the swapping of pages with the reader. State flags are placed inside the pointer to the page. To do this, each page must be aligned in memory by 4 bytes. This will allow the 2 least significant bits of the address to be used as flags, since they will always be zero for the address. To get the address, simply mask out the flags:
+
+无锁算法背后的主要思想是将 *head_page 指针的移动* 与 *读者的页面交换* 结合在一起。状态标志放置在指向页面的指针内。为此，每个页面必须在内存中对齐 4 个字节。这将允许将地址的 2 个最低有效位用作标志位，因为它们用于表示为地址时始终为零。要获取地址时，只需掩盖标志位即可：
+```
+MASK = ~3
+address & MASK
+```
+Two flags will be kept by these two bits:
+这两个位将被用于以下两个标志：
+
+**HEADER**
+* 该页面（指针）指向一个 head page
+
+**UPDATE**
+* 指向的页面正在被写者更新，并且曾经是或即将成为 head page。
+
+```
+  reader page
+      |
+      v
+    +---+
+    |   |------+
+    +---+      |
+               |
+               v
+    +---+    +---+    +---+    +---+
+<---|   |--->|   |-H->|   |--->|   |--->
+--->|   |<---|   |<---|   |<---|   |<---
+    +---+    +---+    +---+    +---+
+```
+The above pointer “-H->” would have the HEADER flag set. That is the next page is the next page to be swapped out by the reader. This pointer means the next page is the head page.
+上面的指针 ”-H->” 将设置`HEADER`标志。那就是即要被读者换出的下一页。该指针表示下一页是 head page。
+
+When the tail page meets the head pointer, it will use cmpxchg to change the pointer to the UPDATE state:
+当 tail page 遇到 head 指针时，它将使用`cmpxchg`将指针更改为`UPDATE`状态：
+
+```
+            tail page
+               |
+               v
+    +---+    +---+    +---+    +---+
+<---|   |--->|   |-H->|   |--->|   |--->
+--->|   |<---|   |<---|   |<---|   |<---
+    +---+    +---+    +---+    +---+
+
+            tail page
+               |
+               v
+    +---+    +---+    +---+    +---+
+<---|   |--->|   |-U->|   |--->|   |--->
+--->|   |<---|   |<---|   |<---|   |<---
+    +---+    +---+    +---+    +---+
+```
+“-U->” represents a pointer in the UPDATE state.
+“ -U->”表示处于`UPDATE`状态的指针。
+
+Any access to the reader will need to take some sort of lock to serialize the readers. But the writers will never take a lock to write to the ring buffer. This means we only need to worry about a single reader, and writes only preempt in “stack” formation.
+对读者的任何访问都需要某种锁定才能序列化读者。但是，写者永远不会为了写入 ring buffer 而去占有一把锁。这意味着我们只需要担心一个读者就够了，而对于写，只是以抢占的形式“入栈”。
+
+When the reader tries to swap the page with the ring buffer, it will also use cmpxchg. If the flag bit in the pointer to the head page does not have the HEADER flag set, the compare will fail and the reader will need to look for the new head page and try again. Note, the flags UPDATE and HEADER are never set at the same time.
+当读者尝试用 ring buffer 交换页面时也会使用`cmpxchg`。如果指向 head page 的指针中的`HEADER`标志位未设置，则比较失败，读者需要寻找新的 head page 并重试。注意，标志位`UPDATE`和`HEADER`永远不会同时设置。
+
+The reader swaps the reader page as follows:
+读者交换读者页面如下：
+```
++------+
+|reader|          RING BUFFER
+|page  |
++------+
+                +---+    +---+    +---+
+                |   |--->|   |--->|   |
+                |   |<---|   |<---|   |
+                +---+    +---+    +---+
+                 ^ |               ^ |
+                 | +---------------+ |
+                 +-----H-------------+
+```
+The reader sets the reader page next pointer as HEADER to the page after the head page:
+读者设置读者页面`next`指针的`HEADER`标志位，并指向 head page 的下一个页面：
+```
++------+
+|reader|          RING BUFFER
+|page  |-------H-----------+
++------+                   v
+  |             +---+    +---+    +---+
+  |             |   |--->|   |--->|   |
+  |             |   |<---|   |<---|   |<-+
+  |             +---+    +---+    +---+  |
+  |              ^ |               ^ |   |
+  |              | +---------------+ |   |
+  |              +-----H-------------+   |
+  +--------------------------------------+
+```
+It does a cmpxchg with the pointer to the previous head page to make it point to the reader page. Note that the new pointer does not have the HEADER flag set. This action atomically moves the head page forward:
+它使用指向前一个 head page 的指针进行`cmpxchg`使其指向读者页面。请注意，新指针未设置`HEADER`标志。此操作原子地将向前移动：
+```
++------+
+|reader|          RING BUFFER
+|page  |-------H-----------+
++------+                   v
+  |  ^          +---+   +---+   +---+
+  |  |          |   |-->|   |-->|   |
+  |  |          |   |<--|   |<--|   |<-+
+  |  |          +---+   +---+   +---+  |
+  |  |             |             ^ |   |
+  |  |             +-------------+ |   |
+  |  +-----------------------------+   |
+  +------------------------------------+
+```
+After the new head page is set, the previous pointer of the head page is updated to the reader page:
+在新的 head page 设置后，更新 head page 的`previous`指针，指向读者页面：
+```
++------+
+|reader|          RING BUFFER
+|page  |-------H-----------+
++------+ <---------------+ v
+  |  ^          +---+   +---+   +---+
+  |  |          |   |-->|   |-->|   |
+  |  |          |   |   |   |<--|   |<-+
+  |  |          +---+   +---+   +---+  |
+  |  |             |             ^ |   |
+  |  |             +-------------+ |   |
+  |  +-----------------------------+   |
+  +------------------------------------+
+
++------+
+|buffer|          RING BUFFER
+|page  |-------H-----------+  <--- New head page
++------+ <---------------+ v
+  |  ^          +---+   +---+   +---+
+  |  |          |   |   |   |-->|   |
+  |  |  New     |   |   |   |<--|   |<-+
+  |  | Reader   +---+   +---+   +---+  |
+  |  |  page ----^                 |   |
+  |  |                             |   |
+  |  +-----------------------------+   |
+  +------------------------------------+
+```
+Another important point: The page that the reader page points back to by its previous pointer (the one that now points to the new head page) never points back to the reader page. That is because the reader page is not part of the ring buffer. Traversing the ring buffer via the next pointers will always stay in the ring buffer. Traversing the ring buffer via the prev pointers may not.
+另一个重点：由读者页面的`previous`指针指向的页面（现在指向新 head page 的页面）永远不会指向读者页面。那是因为读者页面不是 ring buffer 的一部分。通过`next`指针遍历 ring buffer 将始终保持在 ring buffer 中。不能通过`prev`指针遍历 ring buffer。
+
+Note, the way to determine a reader page is simply by examining the previous pointer of the page. If the next pointer of the previous page does not point back to the original page, then the original page is a reader page:
+注意，确定页面是否是 *读者页面* 的一个简单方法是检查页面的`previous`指针。 如果上一页的`next`指针没有指向原始页面，则原始页面是读者页面：
