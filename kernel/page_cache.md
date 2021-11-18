@@ -138,12 +138,12 @@ struct address_space_operations {
 ![ds_addr_space](pic/ds_addr_spc.png)
 
 * 读操作的一般步骤：
-  1. 内核试图在page cache中找到需要的数据。
-  2. 如果搜索的page不在page cache中，则内核分配一个新page，然后将之前搜索的page加入到page cache中。
-  3. 需要的数据从磁盘被读入，再被加入page cache，然后返回给用户。
+  1. 内核试图在 page cache 中找到需要的数据。
+  2. 如果搜索的 page 不在 page cache 中，则内核分配一个新 page，然后将之前搜索的 page 加入到 page cache 中。
+  3. 需要的数据从磁盘被读入，再被加入 page cache，然后返回给用户。
 * 写操作的一般步骤：
-  1. 在page cache中搜索需要的page。
-  2. 如果需要的page不在page cache中，则在page cache中分配一个空闲项。
+  1. 在 page cache 中搜索需要的 page。
+  2. 如果需要的 page 不在 page cache 中，则在 page cache 中分配一个空闲项。
   3. 内核创建一个写请求。
   4. 数据被从用户空间拷贝到了内核缓冲。
   5. 数据写入磁盘。
@@ -153,7 +153,7 @@ struct address_space_operations {
 ## Radix Tree / Xarray
 * 因为任何页 I/O 操作前内核都要检查 page 是否已在 page cache 中，内核通过 **radix tree** 数据结构来快速检索希望得到的 page。
 * 每个`struct address_space`对象的都有唯一的 radix tree。
-  * radix tree 即`struct radix_tree_root  page_tree`域。
+  * radix tree 即`struct radix_tree_root page_tree`域。
 * 在 v4.20 后，radix tree 已被改为 xarray。
   * include/linux/xarray.h
   ```c

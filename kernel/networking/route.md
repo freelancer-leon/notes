@@ -21,6 +21,12 @@
 * *直接路由* 与 *间接路由* 和 *主机路由条目* 没直接联系，H、G、GH，都可能出现
 
 # 路由表
+
+### proc 文件
+* /proc/net/route
+* /proc/net/ipv6_route
+  * net/ipv6/ip6_fib.c:ipv6_route_seq_ops
+
 ### table id
 * 添加路由表项的时候可以指定路由表 id。
 * 路由表 id 可以是来自`/etc/iproute2/rt_tables`的数字或者字符串。
@@ -62,7 +68,7 @@
 * 直接单播和广播路由加到 **link** scope
 * 本地路由加到 **host** scope
 
-# 路由表缓存
+# 路由表缓存统计信息
 ```
 /proc/net/stat/rt_cache
 entries  in_hit in_slow_tot in_slow_mc in_no_route in_brd in_martian_dst in_martian_src  out_hit out_slow_tot out_slow_mc  gc_total gc_ignored gc_goal_miss gc_dst_overflow in_hlist_search out_hlist_search

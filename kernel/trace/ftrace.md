@@ -277,7 +277,7 @@ usage:
      check-events - parse trace event formats
 ```
 #### trace-cmd record
-```
+```c
 $ trace-cmd record -h
 
 trace-cmd version 2.3.1
@@ -290,7 +290,7 @@ usage:
           -e run command with event enabled
           -f filter for previous -e event
           -p run command with plugin enabled
-          -F filter only on the given process
+          -F filter only on the given process //只抓取给定进程的 trace
           -P trace the given pid like -F for the command
           -c also trace the childen of -F
           -T do a stacktrace on all events

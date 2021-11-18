@@ -199,12 +199,80 @@ config PTDUMP_DEBUGFS
   * ARM64 的`CONFIG_ARM64_PTDUMP_DEBUGFS`
 * x86 开启`CONFIG_PAGE_TABLE_ISOLATION`会增加`current_user`文件用于 dump 影子页表
 
+### x86
+
+```c
+// arch/x86/mm/debug_pagetables.c
+module_init(pt_dump_debug_init)
+pt_dump_debug_init()
+-> debugfs_create_dir("page_tables", NULL)
+-> debugfs_create_file("kernel", 0400, dir, NULL, &ptdump_fops)
+-> debugfs_create_file("current_kernel", 0400, dir, NULL, &ptdump_curknl_fops)
+
+ptdump_show()
+// arch/x86/mm/dump_pagetables.c
+-> ptdump_walk_pgd_level_debugfs(m, &init_mm, false)
+   -> ptdump_walk_pgd_level_core(m, mm, pgd, false, false)
+      struct pg_state st = {
+          .ptdump = {
+              .note_page  = note_page,
+              .effective_prot = effective_prot,
+              .range      = ptdump_ranges
+          },
+          ...
+      };
+      // mm/ptdump.c
+         static const struct mm_walk_ops ptdump_ops = {
+             .pgd_entry  = ptdump_pgd_entry,
+             .p4d_entry  = ptdump_p4d_entry,
+             .pud_entry  = ptdump_pud_entry,
+             .pmd_entry  = ptdump_pmd_entry,
+             .pte_entry  = ptdump_pte_entry,
+             .pte_hole   = ptdump_hole,
+         };
+      -> ptdump_walk_pgd(&st.ptdump, mm, pgd)
+         while (range->start != range->end)
+         // mm/pagewalk.c
+         -> walk_page_range_novma(mm, range->start, range->end, &ptdump_ops, pgd, st)
+            struct mm_walk walk = {                                                |
+                .ops        = ops,                                                 |
+                .mm     = mm,                                                      |
+                .pgd        = pgd,                                                 |
+                .private    = private, <-------+-----------------------------------+
+                .no_vma     = true             |
+            };                                 v
+            -> __walk_page_range(start, end, &walk)
+               -> walk_pgd_range(start, end, walk)
+                  -> ops->pgd_entry()
+                  => ptdump_pgd_entry() // mm/ptdump.c
+                     struct ptdump_state *st = walk->private;
+                     -> st->effective_prot(st, 0, pgd_val(val))
+                     -> st->note_page(st, addr, 0, pgd_val(val))
+                     => note_page() // arch/x86/mm/dump_pagetables.c
+                  -> walk_p4d_range()
+```
+
 ### 参考实现
 #### x86
 * arch/x86/mm/dump_pagetables.c
 #### ARM64
 * arch/arm64/mm/ptdump_debugfs.c
 * arch/arm64/mm/dump.c
+
+# Page 调试
+
+## pagemap
+*  Documentation/admin-guide/mm/pagemap.rst
+* /proc/pid/pagemap
+* /proc/kpagecount
+* /proc/kpageflags
+
+## page_owner
+* Documentation/vm/page_owner.rst
+* CONFIG_PAGE_OWNER
+* `page_owner=on`
+* /sys/kernel/debug/page_owner
+* tools/vm/page_owner_sort.c
 
 # 参考资料
 

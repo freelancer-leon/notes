@@ -47,6 +47,8 @@
 
 	```
 * 对于不希望被 ftrace 跟踪的模块也可以如法炮制。
+* 用`notrace`标记的 **函数** 不会被跟踪。
+* 用`CFLAGS_REMOVE_file.o = -pg`禁止对 **某个文件**用`-pg`编译
 
 ## ftrace跟踪函数
 
@@ -440,7 +442,7 @@ static inline void preempt_latency_start(int val)
                 unsigned long ip = get_lock_parent_ip();
 ...
                 trace_preempt_off(CALLER_ADDR0, ip);
-        }    
+        }
 }
 
 void preempt_count_add(int val)
@@ -1049,7 +1051,7 @@ static struct trace_array global_trace = {
 static char trace_boot_options_buf[MAX_TRACER_SIZE] __initdata;
 
 static int __init set_trace_boot_options(char *str)
-{               
+{
         strlcpy(trace_boot_options_buf, str, MAX_TRACER_SIZE);
         return 0;
 }

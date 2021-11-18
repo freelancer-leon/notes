@@ -10,7 +10,7 @@
   * 任务门（Task Gate）
   * 中断门（Interrupt Gate）
   * 陷阱门（Trap Gate）
-![Gate descriptors’ format](pic/Gate_descriptors_format.png)
+  ![Gate descriptors’ format](pic/Gate_descriptors_format.png)
 * Linux 采用的中断描述符稍有不同：
   * 中断门（Interrupt Gate）
   * 系统门（System Gate）：
@@ -18,7 +18,7 @@
     * DPL=3
     * 关联到 4，5，128 号向量，因此`into`，`bound`，`int $0x80`指令可以在用户态使用。
   * 系统中断门（System Interrupt Gate）
-    * Intel 中断门
+    * Intel 陷阱门
     * DPL=3
     * 关联到 3 号向量，因此`int3`指令可以在用户态使用
   * 陷阱门（Trap Gate）
@@ -360,7 +360,7 @@ start_kernel()
 * arch/x86/mm/cpu_entry_area.c
   ```c
   void cea_set_pte(void *cea_vaddr, phys_addr_t pa, pgprot_t flags)
-  {       
+  {
           unsigned long va = (unsigned long) cea_vaddr;
 
           set_pte_vaddr(va, pfn_pte(pa >> PAGE_SHIFT, flags));
