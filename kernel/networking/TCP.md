@@ -2,6 +2,8 @@
 
 ![http://coolshell.cn//wp-content/uploads/2014/05/tcpfsm.png](pic/tcpfsm.png)
 
+![pic/tcp_seq.jpg](pic/tcp_seq.jpg)
+
 ## Listen
 * 当连接的一端收到`SYN`，回复`SYN/ACK`后，状态由`LISTEN`变为`SYN RECEIVED`
 * 当收到连接的另一端回的`ACK`后，状态才变为`ESTABLISHED`，此时应用程序调用`accept()`才会返回这个连接。

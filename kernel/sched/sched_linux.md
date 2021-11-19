@@ -157,10 +157,10 @@ const int sched_prio_to_weight[40] = {
 ### CFS里的调度周期
 * CFS调度器的调度周期由`sysctl_sched_latency`变量保存。
   * 该变量可以通过`sysctl`调整，见kernel/sysctl.c
-```
-       >sysctl kernel.sched_latency_ns
+```sh
+       $ sysctl kernel.sched_latency_ns
        kernel.sched_latency_ns = 24000000
-       >sysctl kernel.sched_min_granularity_ns
+       $ sysctl kernel.sched_min_granularity_ns
        kernel.sched_min_granularity_ns = 3000000
 ```
 
@@ -900,7 +900,7 @@ void scheduler_tick(void)
 
      switch_count = &prev->nivcsw;
      if (!preempt && prev->state) {
-         /* 如果未关闭内核抢占，且进程状态不是TASK_RUNNING */
+         /* 如果不是内核抢占，且进程状态不是TASK_RUNNING，比如说因为要睡眠而被调度出去 */
          if (unlikely(signal_pending_state(prev->state, prev))) {
            /* 当前进程原来处于可中断睡眠状态，现在接收到信号，则需提升为运行进程 */
            prev->state = TASK_RUNNING;

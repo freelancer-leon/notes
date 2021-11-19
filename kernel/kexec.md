@@ -446,7 +446,7 @@ SYSCALL_DEFINE4(reboot,...)
 
   .popsection
   ```
-  * 该 routine 放入`.idmap.text`节，因为包含关闭 MMU 的操作，这意味`__cpu_soft_restart`代码在物理内存中需要存在两份
+  * 该 routine 放入`.idmap.text`节，因为包含关闭 MMU 的操作，这意味对`__cpu_soft_restart`代码的映射需要存在两份：
     * 一份由`init_mm`的`pgd`页表映射到常规的内核代码段所在的物理地址，比如`VA: 0xffffff80088842f0 -> PA: 0x8842f0`（ARM64）
     * 另一份由`idmap_pg_dir`恒等映射到与虚拟地址一样的物理地址，比如`VA: 0x8842f0 -> PA: 0x8842f0`，但是用类似 crash 或者 gdb 查看时是无法直接查看`VA: 0x8842f0`的内容的。因为 MMU 正开，所以读到的始终是虚拟地址；但页表寄存器又不是恒等映射的页表，所以无法通过调试工具查看以上转换。但我们可以借助查看虚拟地址`0xffffffc0008842f0`来了解物理地址的内容，而`0xffffffc000000000`是一致映射的偏移（ARM64）
     * 在此之前调用的`cpu_install_idmap()->cpu_switch_mm(lm_alias(idmap_pg_dir), &init_mm)`切换了页表
@@ -626,7 +626,7 @@ endif
       b   __primary_switch
   ENDPROC(stext)
   ```
-* `adrp`指令可以将符号地址变成运行时地址（通过 PC relative offset 形式），因此，当运行的 MMU OFF mode 下，通过`adrp`指令可以获取符号的物理地址。
+* `adrp`指令可以将符号地址变成运行时地址（通过 PC relative offset 形式），因此，当运行在 MMU OFF mode 下，通过`adrp`指令可以获取符号的物理地址。
 * 不过`adrp`是 page 对齐的（`adrp`中的`p`就是 page 的意思），当符号会是 page size 对齐的时，不能直接使用`adrp`，而是使用`adr_l`这个宏进行处理。
 * kexec/arch/arm64/image-header.h
   ```c

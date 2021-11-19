@@ -987,7 +987,7 @@ again:
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	if (!cfs_rq->nr_running)
 		goto idle;
-	/* 如果就当前进程不是CFS类型的进程，现在要选一个CFS类型的进程来执行，则跳到简单情况处理 */
+	/* 如果当前进程不是 CFS 类型的进程，而现在要选一个 CFS 类型的进程来执行，则跳到简单情况处理 */
 	if (prev->sched_class != &fair_sched_class)
 		goto simple;
 
@@ -998,7 +998,7 @@ again:
 	 * Therefore attempt to avoid putting and setting the entire cgroup
 	 * hierarchy, only change the part that actually changes.
 	 */
-	/* 对于CFS进程间的选取下一个进程的处理 */
+	/* 对于在 CFS 进程间的选取下一个进程的处理 */
 	do {
 		struct sched_entity *curr = cfs_rq->curr;
 
@@ -1113,7 +1113,7 @@ idle:
 	return NULL;
 }
 ```
-### CFS的put_prev_task -- put_prev_task_fair
+### CFS 的 put_prev_task - put_prev_task_fair
 * `put_prev_task_fair()`负责调用`put_prev_entity()`将调度实体放回运行队列
 
 ![pic/sched_cfs_put_prev_task.png](pic/sched_cfs_put_prev_task.png)
@@ -1141,8 +1141,8 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
      * If curr is set we have to see if its left of the leftmost entity
      * still in the tree, provided there was anything in the tree at all.
      */
-    /* 如果运行队列上没有进程排队，或者当前进程的vruntime甚至比红黑树上最左结点的
-       vruntime还要小，则left指向当前进程。
+    /* 如果运行队列上没有进程排队，或者当前进程的 vruntime 甚至比红黑树上最左结点的
+       vruntime 还要小，则 left 指向当前进程。
      */
     if (!left || (curr && entity_before(curr, left)))
         left = curr;
@@ -1153,7 +1153,7 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
      * Avoid running the skip buddy, if running something else can
      * be done without getting too unfair.
      */
-    /*如果刚选出的进程曾经被设置为skip，可能需要另选一个*/
+    /*如果刚选出的进程曾经被设置为 skip，可能需要另选一个*/
     if (cfs_rq->skip == se) {
         struct sched_entity *second;
 
@@ -1163,14 +1163,14 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
         } else {
             /*需要跳过的恰好是刚从红黑树里取出的最左结点，则再取下一个结点*/
             second = __pick_next_entity(se);
-            /*如果运行队列已经空了，或者当前进程vruntime比刚取上来的进程vruntime小，
-              second指回当前进程*/
+            /*如果运行队列已经空了，或者当前进程 vruntime 比刚取上来的进程 vruntime 小，
+              second 指回当前进程*/
             if (!second || (curr && entity_before(curr, second)))
                 second = curr;
         }
-        /*如果left不能抢占second则second作为被选中的调度实体，left被跳过。
-          如果second的vruntime实在比left的vruntime大得太多，则还是会调度left，
-          否则对left来说太不公平，尽管它已经被设为skip，所以之前要用“可能”。*/
+        /*如果 left 不能抢占 second 则 second 作为被选中的调度实体，left 被跳过。
+          如果 second 的 vruntime 实在比 left 的 vruntime 大得太多，则还是会调度 left，
+          否则对 left 来说太不公平，尽管它已经被设为 skip，所以之前要用“可能”。*/
         if (second && wakeup_preempt_entity(second, left) < 1)
             se = second;
     }
@@ -1179,8 +1179,8 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
      * Prefer last buddy, try to return the CPU to a preempted task.
      */
     /*尝试把CPU还给被抢占的进程，条件是，last 进程的 vruntime 和 left 进程的 vruntime
-		  相差不大（具体可以回去看wakeup_preempt_entity()的实现）。这是为了提高cache的利用。
-      如果last进程的vruntime比left进程的vruntime大很多，说明left进程已经积累的较大的不
+      相差不大（具体可以回去看wakeup_preempt_entity()的实现）。这是为了提高cache的利用。
+      如果 last 进程的 vruntime 比 left 进程的 vruntime 大很多，说明 left 进程已经积累的较大的不
       公平，需要及时被调度。
      */
     if (cfs_rq->last && wakeup_preempt_entity(cfs_rq->last, left) < 1)
@@ -1189,10 +1189,10 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
     /*
      * Someone really wants this to run. If it's not unfair, run it.
      */
-    /*曾经要别的地方需要某个任务被立即调度，除非left的vruntime真的很小，否则调度next进程*/
+    /*别的地方设置了 next，希望有某个任务被立即调度，除非 left 的 vruntime 真的很小，否则调度 next 进程*/
     if (cfs_rq->next && wakeup_preempt_entity(cfs_rq->next, left) < 1)
         se = cfs_rq->next;
-    /*cfs_rq的next,last,skip进程，一旦被命中一次就会被清除*/
+    /*cfs_rq 的 next,last,skip 进程，一旦被命中一次就会被清除*/
     clear_buddies(cfs_rq, se);
 
     return se;
@@ -1201,7 +1201,7 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 * `cfs_rq->rb_leftmost`会在`__enqueue_entity()`或者`__dequeue_entity()`操作时顺带缓存起来，再用到的时候就无需重新搜索红黑树了。
 * `cfs_rq->skip`通常会在`yield_task_fair()`的时候被设置，表明该实体会失去一次被调度的机会。
 * 在调用`wakeup_preempt_entity()`与`cfs_rq->next`和`cfs_rq->last`比较时用的是`left`
-	* `left`记录的是当前红黑树上和当前进程中`vruntime`最小的调度实体
+	* `left`记录的是从当前红黑树上和当前进程之中选出的`vruntime`最小的调度实体
 	* 该调度实体会按照注释所说的顺序分别与`skip`，`last`，`next`实体的`vruntime`进行比较
 	* 最后一个给`se`赋值的被选中，因此实现时的顺序与列举的顺序相反
 

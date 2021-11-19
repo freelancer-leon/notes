@@ -5,6 +5,7 @@
 ### mutex结构体
 
 * include/linux/mutex.h
+
 ```c
 /*
  * Simple, straightforward mutexes with strict semantics:
@@ -53,9 +54,43 @@ struct mutex {
 #endif
 };
 ```
+
+* `owner`被划分为两个域
+  * task field：`63 bit`至`3 bit`存放锁的持有者的`task_struct`地址
+  * flags field：`2 bit`至`0 bit`存放锁的状态，其中
+    * `bit 0`表示`wait_list`是否为空
+    * `bit 1`表示释放锁的时候需要把锁交给第一等待者
+    * `bit 2`表示 handoff 已经完成
+
+```c
+/*
+ * @owner: contains: 'struct task_struct *' to the current lock owner,
+ * NULL means not owned. Since task_struct pointers are aligned at
+ * at least L1_CACHE_BYTES, we have low bits to store extra state.
+ *
+ * Bit0 indicates a non-empty waiter list; unlock must issue a wakeup.
+ * Bit1 indicates unlock needs to hand the lock to the top-waiter
+ * Bit2 indicates handoff has been done and we're waiting for pickup.
+ */
+#define MUTEX_FLAG_WAITERS  0x01
+#define MUTEX_FLAG_HANDOFF  0x02
+#define MUTEX_FLAG_PICKUP   0x04
+
+#define MUTEX_FLAGS     0x07
+```
+
+#### 什么是乐观自旋？
+
+> 举例，不带乐观自旋的 mutex 版本中，若 A 线程持有锁且正在运行，此时 B 线程想拿锁，发现锁正被 A 拿着，B 将立即进入睡眠状态，在 A 线程释放锁后再去唤醒 B 线程来拿锁。但是我们通常认为持有锁的 A 若是在运行的情况下，通常会很快的退出临界区并释放锁，那么 B 去睡眠则是不必要的，毕竟睡眠和唤醒也是有代价的，完全可以多等一会即可。那么当 mutex 开启乐观自旋的 feature 后，若 B 拿不到锁，且发现锁的持有者 A 仍占用着 CPU 运行时，则不再去睡眠，而是像自旋锁一样进行自旋等待，直到 A 释放锁，但期间若 A 失去 CPU(即`p->on_cpu`为`0`)，那么 B 将不会继续傻傻的自旋等待，而是进入睡眠。
+
+#### 什么是 handoff 机制？
+
+> 当 mutex 支持乐观自旋时，那么会存在这样的情况：`wait_list`中有一些进程在睡眠并等待被唤醒拿锁，同时还有一些进程不在`wait_list`中且不断的自旋等锁或乐观自旋等锁。`wait_list`上的进程大概率是抢不过自旋拿锁的进程的，这是因为调度延时的存在。当被唤醒的进程真正获得 CPU 时，锁早就被自旋等锁的进程给偷走了(偷锁)，这会在一定程度的造成`wait_list`的等待者长时间“饥饿”。
+
 ### mutex结构体初始化
 
 * kernel/locking/mutex.c
+
 ```c
 void
 __mutex_init(struct mutex *lock, const char *name, struct lock_class_key *key)
@@ -80,8 +115,8 @@ EXPORT_SYMBOL(__mutex_init);
 
 * 对于锁调试没开启的情况有优化，如果`__mutex_fastpath_lock()`能拿到锁，就不用走`__mutex_lock_slowpath()`去尝试了。
 * 这里可以比较一下不同分支调用`__mutex_lock_common()`所传的参数有什么不同。
-
 * include/linux/mutex.h
+
 ```c
 /*
  * See kernel/locking/mutex.c for detailed documentation of these APIs.
@@ -102,6 +137,7 @@ extern void mutex_lock(struct mutex *lock);
 ```
 
 * kernel/locking/mutex.c
+
 ```c
 #ifndef CONFIG_DEBUG_LOCK_ALLOC
 /*
@@ -180,6 +216,7 @@ __mutex_lock_slowpath(atomic_t *lock_count)
 ```
 
 * arch/x86/include/asm/mutex_64.h
+
 ```c
 /**
  * __mutex_fastpath_lock - decrement and call function if negative
@@ -225,11 +262,12 @@ do {                                \
 
 * 在修改mutex锁内部数据期间，抢占被禁止，但没有禁止中断。所以mutex绝对不能用在中断上下文。
 * 问题：为什么修改锁数据期间要禁止抢占？
+
   * A：禁止抢占的原因是，mutex锁内部数据属于进程间共享数据，用自旋锁修改数据期间如果被别的进程抢占并获取同一mutex时会先在自旋锁上死锁。
 * 如果争不到锁，用的是`schedule_preempt_disabled()`来重新调度，原因如上所述。
 * 调用`schedule_preempt_disabled()`之前先解开自旋锁，调用`schedule_preempt_disabled()`之后立即获取自旋锁。还是那句：持有自旋锁期间不允许调度。
-
 * kernel/locking/mutex.c
+
 ```c
 /*
  * Lock a mutex (possibly interruptible), slowpath:
@@ -342,6 +380,7 @@ err:
 ```
 
 ## Mutex 锁调试
+
 ```c
 #include "mutex-debug.h"
 

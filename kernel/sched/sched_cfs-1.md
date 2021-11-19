@@ -34,8 +34,8 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling
 ```
 
 * 你可以通过`sysctl`命令查看`sysctl_sched_tunable_scaling`的值
-```
-> sysctl kernel.sched_tunable_scaling
+```sh
+$ sysctl kernel.sched_tunable_scaling
 kernel.sched_tunable_scaling = 1
 ```
 
@@ -53,8 +53,9 @@ kernel.sched_wakeup_granularity_ns = 4000000
 ```
 
 * 为什么不采用固定值，或者随着 CPU 数目线性增长，而是将`log(ncpus)`作为因子？
-* 简单的说，就是随着 CPU 性能的增多，调度的“有效延迟”肯定会减小，但减小的幅度却不可能是线性的。
+* 简单的说，就是随着 CPU 数目的增多，调度的“有效延迟”肯定会减小，但减小的幅度却不可能是线性的。
 * 可以想象，到后来即使加入更多的 CPU，调度因此而获得的收益会愈不明显，所以也就没有必要再返回更大的 factor 了。
+* 另外，在 CPU 很多的情况下，如果是线性增长而得到一个较大最小调度粒度和调度延迟，也不是期望的结果，太大的最小调度粒度不利于抢占的发生。
 * kernel/sched/fair.c
 ```c
 /*

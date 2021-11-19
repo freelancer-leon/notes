@@ -1,6 +1,7 @@
 # Linux x86自旋锁的实现
 
 ## 原理
+
 * `struct raw_spinlock`的`raw_lock`成员分为`head`和`tail`两部分
   * 如果处理器个数不超过 256，则`head`使用低位（0-7 位），`tail`使用高位（ 8-15 位）；
   * 如果处理器个数超过 256，则`head`使用低 16 位，`tail`使用高 16 位。
@@ -14,10 +15,15 @@
 * 线程释放锁时，原子地将 *Owner* 加 1 即可，下一个持有该 *Ticket* 的线程将会发现这一变化，从忙等待状态中退出，继续执行后续代码。
 * 线程将严格地按照申请顺序依次获取排队自旋锁，从而完全解决了“不公平”问题。
 
+### 弊端
+* 获取锁和释放锁的时候，参与竞争锁的 CPU 需要 invalidate 锁字所在的 cache line
+
 ## 实现
 
 ### 数据结构
+
 * include/linux/spinlock_types.h
+
 ```c
 typedef struct raw_spinlock {
     arch_spinlock_t raw_lock;
@@ -49,6 +55,7 @@ typedef struct spinlock {
 ```
 
 * arch/x86/include/asm/spinlock_types.h
+
 ```c
 #ifdef CONFIG_PARAVIRT_SPINLOCKS
 #define __TICKET_LOCK_INC   2
@@ -87,8 +94,11 @@ typedef struct arch_spinlock {
 #define __ARCH_SPIN_LOCK_UNLOCKED   { { 0 } }
 #endif /* CONFIG_QUEUED_SPINLOCKS */
 ```
+
 ### 封装方法
+
 * include/linux/spinlock.h
+
 ```c
 #define raw_spin_trylock(lock)  __cond_lock(lock, _raw_spin_trylock(lock))
 
@@ -119,8 +129,10 @@ static __always_inline void spin_unlock(spinlock_t *lock)
 }
 
 ```
+
 * 根据`CONFIG_INLINE_SPIN_LOCK`选项是否配置，`_raw_spin_lock()`的实现稍有不同，但都会调用`__raw_spin_lock()`。
 * include/linux/spinlock_api_smp.h
+
 ```c
 #ifdef CONFIG_INLINE_SPIN_LOCK
 #define _raw_spin_lock(lock) __raw_spin_lock(lock)
@@ -173,7 +185,9 @@ static inline void __raw_spin_unlock(raw_spinlock_t *lock)
 }
 
 ```
+
 * kernel/locking/spinlock.c
+
 ```c
 #ifndef CONFIG_INLINE_SPIN_TRYLOCK
 int __lockfunc _raw_spin_trylock(raw_spinlock_t *lock)
@@ -211,6 +225,7 @@ EXPORT_SYMBOL(_raw_spin_unlock);
 
 * 我们看`CONFIG_LOCK_STAT`选项没开启时`LOCK_CONTENDED`的实现
   * include/linux/lockdep.h
+
 ```c
 #ifdef CONFIG_LOCK_STAT
 ...
@@ -227,6 +242,7 @@ EXPORT_SYMBOL(_raw_spin_unlock);
 ```
 
 * include/linux/spinlock.h
+
 ```c
 static inline void do_raw_spin_lock(raw_spinlock_t *lock) __acquires(lock)
 {   
@@ -297,7 +313,8 @@ static __always_inline void arch_spin_lock(arch_spinlock_t *lock)
     register struct __raw_tickets inc = { .tail = TICKET_LOCK_INC };
 
     /*xadd 将相加后的值存入指定内存地址，并返回指定地址里原来的值。
-      实现时会在之前插入 lock 指令，表示 lock 的下一条指令执行期间锁内存，于是下一条指令就是原子操作。
+      实现时会在之前插入 lock 前缀，表示 lock 的指令执行期间锁住总线，于是该指令就是原子操作
+      （锁总线会影响其他 CPU 对内存的操作，那怕是不相关的。如今多借助 cache 一致性协议实现原子操作）。
       这样，下面一条语句的效果就是：
       1. 锁的 tail 域加 1，即更新了 Next（锁的 tail 域）
       2. 同时读取 Owner（锁的 head 域）
@@ -388,7 +405,21 @@ static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 }
 ```
 
+#### Cacheline Lock
+
+当 CPU0 试图执行原子递增操作时，
+1. CPU0 发出“Read Invalidate”消息，其他 CPU 将原子变量所在的缓存无效，并从 cache 返回数据。CPU0 将 cache line 置成 Exclusive状态。然后将该 **cache line 标记 locked**。
+2. 然后 CPU0 读取原子变量，修改，最后写入 cache line。
+3. 将 cache line 置为 unlocked。
+
+在步骤 1 和 3 之间，如果其他 CPU（例如 CPU1）尝试执行一个原子递增操作，
+1. CPU1 会发送一个“Read Invalidate”消息
+2. CPU0 收到消息后，检查对应的 cache line 的状态是 locked，暂时不回复消息
+3. CPU1 会一直等待 CPU0 回复“Invalidate Acknowledge”消息），直到 cache line 变成 unlocked。这样就可以实现原子操作。
+   我们称这种方式为 **锁 cache line**。这种实现方式必须要求操作的变量位于一个cache line。
+
 * arch/x86/include/asm/cmpxchg.h
+
 ```c
 /*
  * An exchange-type operation, which takes a value and a pointer, and
@@ -469,6 +500,7 @@ static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 ```
 
 * arch/x86/include/asm/cmpxchg.h
+
 ```c
 /*
  * Atomic compare and exchange.  Compare OLD with MEM, if identical,
@@ -534,6 +566,7 @@ static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 #### cpu_relex() - 让CPU歇一会
 
 * arch/x86/include/asm/processor.h
+
 ```c
 /* REP NOP (PAUSE) is a good thing to insert into busy-wait loops. */
 static __always_inline void rep_nop(void)
@@ -550,15 +583,17 @@ static __always_inline void cpu_relax(void)
 * 参考Stack Overflow上一篇文章 [What does “rep; nop;” mean in x86 assembly?](http://stackoverflow.com/questions/7086220/what-does-rep-nop-mean-in-x86-assembly) 提几个问题：
 
 ##### rep; nop; 是什么意思？
-   * `rep`指令的释义：Repeats a string instruction the number of times specified in the count register or until the indicated condition of the ZF flag is no longer met. 操作码为`F3`。
-     * [REP/REPE/REPZ/REPNE/REPNZ—Repeat String Operation Prefix](http://www.felixcloutier.com/x86/REP:REPE:REPZ:REPNE:REPNZ.html)
-   * `nop`指令的释义：One byte no-operation instruction. 操作码为`90`。
-     * [NOP — No Operation](http://www.felixcloutier.com/x86/NOP.html)
+
+* `rep`指令的释义：Repeats a string instruction the number of times specified in the count register or until the indicated condition of the ZF flag is no longer met. 操作码为`F3`。
+  * [REP/REPE/REPZ/REPNE/REPNZ—Repeat String Operation Prefix](http://www.felixcloutier.com/x86/REP:REPE:REPZ:REPNE:REPNZ.html)
+* `nop`指令的释义：One byte no-operation instruction. 操作码为`90`。
+  * [NOP — No Operation](http://www.felixcloutier.com/x86/NOP.html)
 
 ##### 为什么不是 pause 指令？
-   * `pause`指令的释义：Gives hint to processor that improves performance of spin-wait loops。
-   * 注意：`pause`指令的操作码为`F3 90`
-   * [PAUSE — Spin Loop Hint](http://www.felixcloutier.com/x86/PAUSE.html)
+
+* `pause`指令的释义：Gives hint to processor that improves performance of spin-wait loops。
+* 注意：`pause`指令的操作码为`F3 90`
+* [PAUSE — Spin Loop Hint](http://www.felixcloutier.com/x86/PAUSE.html)
 
 > **Description**
 >
@@ -571,17 +606,17 @@ static __always_inline void cpu_relax(void)
 > This instruction’s operation is the same in non-64-bit modes and 64-bit mode.
 
 * 可见`pause`指令实现自旋等待的效果更好，原因在于：
+
   * 给处理器一个提示，我这里想要自旋，处理器籍此优化其性能。
   * `pause`指令实现的自旋等待循环，处理器会减少能源消耗。
-
 * 对于不支持超线程的处理器，用`pause`指令也是有益的。
+
   * 现代的处理器多为[Superscalar processor](https://en.wikipedia.org/wiki/Superscalar_processor)，这意味着它会尝试同时并行地预取，译码和执行多条指令。
   * 然而在自旋等待的场景，这么做并不会提高执行速度。
   * 采用`pause`指令可以被认为是限制在流水线上的（不必要的）指令数。
   * 参考 [http://stackoverflow.com/questions/7086220/what-does-rep-nop-mean-in-x86-assembly](http://stackoverflow.com/questions/7086220/what-does-rep-nop-mean-in-x86-assembly)
-
-
 * 代码里写的`rep; nop;`，实际上它们的操作码与`pause`的操作码是相同的，这是为了向后兼容。
+
   * `pause`指令是Pentium 4处理器引入的，这样实现向后兼容所有的IA-32处理器。
   * 早期的IA-32处理器没有上面的优化效果，但依然会自旋等待（因为`rep; nop;`指令是支持的）。
   * [此处](https://lists.kernelnewbies.org/pipermail/kernelnewbies/2013-February/007473.html)也有人讨论过。
@@ -599,6 +634,7 @@ static __always_inline void cpu_relax(void)
 * 之前讲下半部加锁时就讨论过了，应该是先禁下半部。
 * 可以参考上面`__raw_spin_lock_bh()`的实现。
 * include/linux/bottom_half.h
+
 ```c
 #ifdef CONFIG_TRACE_IRQFLAGS
 extern void __local_bh_disable_ip(unsigned long ip, unsigned int cnt);
@@ -614,17 +650,18 @@ static __always_inline void __local_bh_disable_ip(unsigned long ip, unsigned int
 
 ## 示例
 
-动作 | Next (lock.tail) | Owner (lock.head) | Ticket (local_variable.tail) | 描述
----|---|---|---|---
-初始状态 | 0 | 0 | - | -
-P1加锁 | 1 | 0 | 0 | Next + 1，Owner == Ticket == 0，P1获得锁
-P2加锁 | 2 | 0 | 1 | Next + 1 == 2，Ticket = Old Next = 1，Owner != Ticket，P2自旋
-P3加锁 | 3 | 0 | 2 | Next + 1 == 3，Ticket = Old Next = 2，Owner != Ticket，P3自旋
-P1解锁 | 3 | 1 | - | Owner + 1 == 1，P1释放锁
-P2得锁 | 3 | 1 | 1 | Owner == Ticket == 1，P2获得锁
-p4加锁 | 4 | 1 | 3 | Next + 1 == 4，Ticket = Old Next = 3，Owner != Ticket，P4自旋
-P2解锁 | 4 | 2 | - | Owner + 1 == 2，P2释放锁
-P3得锁 | 4 | 2 | 2 | Owner == Ticket == 2，P3获得锁
-P3解锁 | 4 | 3 | - | Owner + 1 == 3，P3释放锁
-P4得锁 | 4 | 3 | 3 | Owner == Ticket == 3，P4获得锁
-P4解锁 | 4 | 4 | - | Owner + 1 == 4，P4释放锁
+
+| 动作     | Next (lock.tail) | Owner (lock.head) | Ticket (local_variable.tail) | 描述                                                          |
+| -------- | ---------------- | ----------------- | ---------------------------- | ------------------------------------------------------------- |
+| 初始状态 | 0                | 0                 | -                            | -                                                             |
+| P1加锁   | 1                | 0                 | 0                            | Next + 1，Owner == Ticket == 0，P1获得锁                      |
+| P2加锁   | 2                | 0                 | 1                            | Next + 1 == 2，Ticket = Old Next = 1，Owner != Ticket，P2自旋 |
+| P3加锁   | 3                | 0                 | 2                            | Next + 1 == 3，Ticket = Old Next = 2，Owner != Ticket，P3自旋 |
+| P1解锁   | 3                | 1                 | -                            | Owner + 1 == 1，P1释放锁                                      |
+| P2得锁   | 3                | 1                 | 1                            | Owner == Ticket == 1，P2获得锁                                |
+| p4加锁   | 4                | 1                 | 3                            | Next + 1 == 4，Ticket = Old Next = 3，Owner != Ticket，P4自旋 |
+| P2解锁   | 4                | 2                 | -                            | Owner + 1 == 2，P2释放锁                                      |
+| P3得锁   | 4                | 2                 | 2                            | Owner == Ticket == 2，P3获得锁                                |
+| P3解锁   | 4                | 3                 | -                            | Owner + 1 == 3，P3释放锁                                      |
+| P4得锁   | 4                | 3                 | 3                            | Owner == Ticket == 3，P4获得锁                                |
+| P4解锁   | 4                | 4                 | -                            | Owner + 1 == 4，P4释放锁                                      |
