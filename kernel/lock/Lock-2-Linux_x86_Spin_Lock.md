@@ -7,16 +7,21 @@
   * 如果处理器个数超过 256，则`head`使用低 16 位，`tail`使用高 16 位。
   * 可见排队自旋锁最多支持 2^16=65536 个处理器。
 * 排队自旋锁初始化时`raw_lock`被置为 0，即`head`和`tail`置为 0。
-* 内核执行线程申请自旋锁时，原子地将`tail`域加 1，表示下一个持锁者的票据号将会是多少（*Next*），并将`tail`原值返回作为自己的票据序号（*Ticket*）。
-* 同时，原子地取出`head`域，表示当前持锁者的票据号应是多少（*Owner*）。
+* 内核执行线程申请自旋锁时，**原子地将`tail`域加 1**，表示下一个持锁者的票据号将会是多少（*Next*），并将`tail`原值返回作为自己的票据序号（*Ticket*）。
+* 接着，取出`head`域，表示当前持锁者的票据号应是多少（*Owner*）。
+  * 这个步骤无需是原子的，但需要用`READ_ONCE()`确保读到 *Owner* 是内存上的数据即可。
 * `head`与`tail`相等时，表明锁处于未使用状态（此时也无人申请该锁）。
   * 如果返回的票据序号 *Ticket* 等于申请时的 *Owner* 值，说明自旋锁处于未使用状态，则直接获得锁；
   * 否则，该线程忙等待检查 *Owner* 是否等于自己持有的票据序号 *Ticket*，一旦相等，则表明锁轮到自己获取。
-* 线程释放锁时，原子地将 *Owner* 加 1 即可，下一个持有该 *Ticket* 的线程将会发现这一变化，从忙等待状态中退出，继续执行后续代码。
+* 线程释放锁时，**原子地将 *Owner* 加 1** 即可，下一个持有该 *Ticket* 的线程将会发现这一变化，从忙等待状态中退出，继续执行后续代码。
 * 线程将严格地按照申请顺序依次获取排队自旋锁，从而完全解决了“不公平”问题。
+* 这个实现将传统的 CAS 拆开，lock 和 unlock 是 Swap 部分，必须是原子的；忙等待为 Compare 部分，不需要是原子的，只需要保证 *Owner* 读的是内存里的数据即可。
 
 ### 弊端
-* 获取锁和释放锁的时候，参与竞争锁的 CPU 需要 invalidate 锁字所在的 cache line
+* 获取锁和释放锁的时候，需要 invalidate 参与竞争锁的 CPU 的锁字所在的 cache line
+  * 参与竞争锁的 CPU 的锁字所在的 cache line 会因为需要不停比较锁字而处于 *shared 状态*
+  * 硬件 cache 一致性协议，比如 MESI，在改变处于 *shared 状态* 的 cache line 时，需要先 invalidate 其他 CPU 上的 cache line
+  * 改变完锁字之后，cache line 先是*modified 状态*，由于其他的 CPU 在不停地读取，又变为 *shared 状态*
 
 ## 实现
 
@@ -415,7 +420,7 @@ static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 在步骤 1 和 3 之间，如果其他 CPU（例如 CPU1）尝试执行一个原子递增操作，
 1. CPU1 会发送一个“Read Invalidate”消息
 2. CPU0 收到消息后，检查对应的 cache line 的状态是 locked，暂时不回复消息
-3. CPU1 会一直等待 CPU0 回复“Invalidate Acknowledge”消息），直到 cache line 变成 unlocked。这样就可以实现原子操作。
+3. CPU1 会一直等待 CPU0 回复“Invalidate Acknowledge”消息，直到 cache line 变成 unlocked。这样就可以实现原子操作。
    我们称这种方式为 **锁 cache line**。这种实现方式必须要求操作的变量位于一个cache line。
 
 * arch/x86/include/asm/cmpxchg.h
