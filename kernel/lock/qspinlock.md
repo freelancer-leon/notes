@@ -320,9 +320,9 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
     if (val == _Q_PENDING_VAL) {
         int cnt = _Q_PENDING_LOOPS;
         val = atomic_cond_read_relaxed(&lock->val,
-                           (VAL != _Q_PENDING_VAL) || !cnt--);
+                           (VAL != _Q_PENDING_VAL) || !cnt--); // 短暂自旋
     }
-    // 自旋一小下的第一种结果，三元组是(*,1,0)，仍然在过渡或者有其他竞争者加入，排长队去
+    // 自旋一小下的第一种结果，三元组不是(0,0,1)，仍然在过渡或者有其他竞争者加入，排长队去
     /*
      * If we observe any contention; queue.
      */
@@ -335,9 +335,9 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
      *
      * 0,0,* -> 0,1,* -> 0,0,1 pending, trylock
      */
-    // 此时，三元组是 (0,0,1)，我们设置 pending 位，(0,0,1) --> (0,1,1)
-    val = queued_fetch_set_pending_acquire(lock);
-    // 这里有两种返回结果，见下面详解。注意，返回的是三元组的原值，赋给 val
+    // 此时，三元组是 (0,0,1)，我们通过原子操作设置 pending 位，(0,0,1) --> (0,1,1)
+    val = queued_fetch_set_pending_acquire(lock); // 原子操作
+    // 这里有两种返回结果，见下面详解。注意，这里返回的是三元组的原值，赋给 val
     /*
      * If we observe contention, there is a concurrent locker.
      *
@@ -349,8 +349,8 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
     if (unlikely(val & ~_Q_LOCKED_MASK)) {
 
         /* Undo PENDING if we set it. */
-        if (!(val & _Q_PENDING_MASK))
-            clear_pending(lock);      // 清除 pending 位
+        if (!(val & _Q_PENDING_MASK)) // 条件为 true 时 pending 位为 0，为什么还要去清它？
+            clear_pending(lock);      // 清除 pending 域
         // 排长队去
         goto queue;
     }
@@ -367,14 +367,14 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
      * barriers.
      */
     if (val & _Q_LOCKED_MASK)
-        atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_MASK));
+        atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_MASK)); // 自旋
     // 拿锁，将三元组由 (0,1,0) 设为 (0,0,1)，pending 位同时被清除
     /*
      * take ownership and clear the pending bit.
      *
      * 0,1,0 -> 0,0,1
      */
-    clear_pending_set_locked(lock);
+    clear_pending_set_locked(lock); // 不需要原子操作，理论上只有我们能走到这里，因为只有一个 pending 位
     lockevent_inc(lock_pending); // 增加 lock_pending 事件的统计计数
     return;                      // 获得锁，返回
     [part 3 - 进入 MCS lock 队列]
@@ -404,7 +404,7 @@ pv_queue:
             cpu_relax();
         goto release;
     }
-    // 根据上下文索引 idx 拿到真正跟上下文关联的 msc node
+    // 根据上下文索引 idx 拿到真正跟上下文关联的 MSC node
     node = grab_mcs_node(node, idx);
 
     /*
@@ -502,8 +502,8 @@ locked:
     /*
      * claim the lock:
      *
-     * n,0,0 -> 0,0,1 : lock, uncontended
-     * *,*,0 -> *,*,1 : lock, contended
+     * n,0,0 -> 0,0,1 : lock, uncontended 进来排队的时候发现 owner 和第二个 CPU 都释放了
+     * *,*,0 -> *,*,1 : lock, contended 不行啊，还是有人在用啊
      *
      * If the queue head is the only one in the queue (lock value == tail)
      * and nobody is pending, clear the tail code and grab the lock.
@@ -664,8 +664,8 @@ static __always_inline void clear_pending_set_locked(struct qspinlock *lock)
 #else
 #endif
 ```
-* `clear_pending()`清除`pending`位，将三元组由`(*, 1, *)`设为`(*, 0, *)`
-* `clear_pending_set_locked()`拿锁，将三元组由`(*, 1, 0)`设为`(*, 0, 1)`，`pending`位同时被清除
+* `clear_pending()`：清除`pending`域，将三元组由`(*, 1, *)`设为`(*, 0, *)`
+* `clear_pending_set_locked()`：拿锁，按照设计此时三元组为`(*, 1, 0)`，把它设为`(*, 0, 1)`，`pending`位同时被清除
 
 ##### lockevent_inc() 增加统计计数
 * kernel/locking/lock_events.h
@@ -678,7 +678,7 @@ static __always_inline void clear_pending_set_locked(struct qspinlock *lock)
   * 这种启发式自旋用于，等待锁从`== _Q_PENDING_VAL`状态转换时，限制`atomic_cond_read_relaxed()`对锁字的访问次数
   * 不能无限地旋转，因为此时没有保证我们会取得进步（成为第二个 CPU）
 * `smp_cond_load_relaxed(ptr, cond_expr)`语义为，自旋直至条件表达式`cond_expr`成立
-* include/linux/atomic.h 
+* include/linux/atomic.h
 ```c
 #define atomic_cond_read_relaxed(v, c) smp_cond_load_relaxed(&(v)->counter, (c))
 ```
