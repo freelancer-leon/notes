@@ -21,7 +21,7 @@
 * 获取锁和释放锁的时候，需要 invalidate 参与竞争锁的 CPU 的锁字所在的 cache line
   * 参与竞争锁的 CPU 的锁字所在的 cache line 会因为需要不停比较锁字而处于 *shared 状态*
   * 硬件 cache 一致性协议，比如 MESI，在改变处于 *shared 状态* 的 cache line 时，需要先 invalidate 其他 CPU 上的 cache line
-  * 改变完锁字之后，cache line 先是*modified 状态*，由于其他的 CPU 在不停地读取，又变为 *shared 状态*
+  * 改变完锁字之后，cache line 先是 *modified 状态*，由于其他的 CPU 在不停地读取，需要先写回，然后变为 *shared 状态*
 
 ## 实现
 
@@ -413,15 +413,15 @@ static inline int arch_spin_is_locked(arch_spinlock_t *lock)
 #### Cacheline Lock
 
 当 CPU0 试图执行原子递增操作时，
-1. CPU0 发出“Read Invalidate”消息，其他 CPU 将原子变量所在的缓存无效，并从 cache 返回数据。CPU0 将 cache line 置成 Exclusive状态。然后将该 **cache line 标记 locked**。
+1. CPU0 发出“Read Invalidate”消息，其他 CPU 将原子变量所在的缓存无效，并从 cache 返回数据。CPU0 将 cache line 置成 Exclusive 状态。然后将该 **cache line 标记 locked**。
 2. 然后 CPU0 读取原子变量，修改，最后写入 cache line。
-3. 将 cache line 置为 unlocked。
+3. 将 cache line 置为 **unlocked**。
 
 在步骤 1 和 3 之间，如果其他 CPU（例如 CPU1）尝试执行一个原子递增操作，
 1. CPU1 会发送一个“Read Invalidate”消息
-2. CPU0 收到消息后，检查对应的 cache line 的状态是 locked，暂时不回复消息
-3. CPU1 会一直等待 CPU0 回复“Invalidate Acknowledge”消息，直到 cache line 变成 unlocked。这样就可以实现原子操作。
-   我们称这种方式为 **锁 cache line**。这种实现方式必须要求操作的变量位于一个cache line。
+2. CPU0 收到消息后，检查对应的 cache line 的状态是 **locked**，暂时不回复消息
+3. CPU1 会一直等待 CPU0 回复“Invalidate Acknowledge”消息，直到 cache line 变成 **unlocked**。这样就可以实现原子操作。
+   我们称这种方式为 **锁 cache line**。这种实现方式必须要求操作的变量位于一个 cache line。
 
 * arch/x86/include/asm/cmpxchg.h
 
