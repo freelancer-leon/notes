@@ -369,7 +369,7 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
         // 下面这个条件为 true 时说明原来 pending 位为 0，是我们把它设成了 1，但这是不对的，必须撤销，见下面的详解
         /* Undo PENDING if we set it. */
         if (!(val & _Q_PENDING_MASK))
-            clear_pending(lock); // 撤销我们刚才设置的 qspinlock 的 pending 域，不这么可能造成死锁
+            clear_pending(lock); // 撤销我们刚才设置的 qspinlock 的 pending 域，不这么做可能造成死锁
         // 排长队去
         goto queue;
     }
@@ -599,9 +599,10 @@ static __always_inline u32 queued_fetch_set_pending_acquire(struct qspinlock *lo
 
 * `btsl`，**bit test and set**，前面还加了`lock`前缀使其成为原子操作
 * 这里返回两个结果：
-  1. 是我们设置了`pending`位，三元组`(0, 0, *)`->`(0, 1, *)`，第一行语句的`val`为`0`，因为是我们把`pending`位变为了`0`，第二行语句让`val`为三元组`(0, 0, *)`
-  2. 别人设置了`pending`位，我们在三元组为`(0, 1, *)`时设置`pending`位，第一行语句的`val`为`1*_Q_PENDING_VAL`，因为`pending`位原值已经是`1`，第二行语句让`val`为三元组`(0, 1, *)`
-* 但这个写操作是个原子操作，所以只能有一个 CPU 返回的三元组是`(0, 0, 1)`，成为第 1 竞争者
+  1. 是我们设置了`pending`位，三元组`(*, 0, *)`->`(*, 1, *)`，第一行语句的`val`为`0`，因为是我们把`pending`位变为了`0`
+  2. 别人设置了`pending`位，我们在三元组为`(*, 1, *)`时设置`pending`位，第一行语句的`val`为`1*_Q_PENDING_VAL`，因为`pending`位原值已经是`1`
+* 第二个赋值语句的作用是把`val`的值与非`pending`位的值合并，这样返回的就是之前的锁的`val`了
+* 但这个写操作`lock btsl`是个原子操作，所以只能有一个 CPU 返回的三元组是`(0, 0, 1)`，成为第 1 竞争者
 * include/asm-generic/barrier.h
 
 ```c
@@ -967,9 +968,9 @@ static __always_inline void queued_spin_unlock(struct qspinlock *lock)
 #### 为什么在[原子操作 1]`(0,0,*)->(0,1,*)`不成功且发现是我们设置的`pending`位，还要撤销`pending`位？
 
 * 这是在发生在 *慢速路径* [自旋点 1] 后的事情
-* 横轴：CPU
-* 纵轴：事件
-* 单元格：三元组
+* **横轴**：CPU
+* **纵轴**：事件
+* **单元格**：三元组
 
 |            | CPU A | CPU B | CPU C | 说明 |
 | ---------- | ----- | ----- | ----- | ---- |
