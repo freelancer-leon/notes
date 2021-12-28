@@ -2,7 +2,7 @@
 ***
 # Architectures
 ## ARM
-- [ARM64 的一些基本概念](arm64/basic.md)
+- [ARM64 的一些基本概念](arch/arm64/basic.md)
 # Computer Science
 - [Cache](computer_science/cache.md)
 - [TLB](computer_science/tlb.md)
