@@ -74,27 +74,6 @@ struct mutex {
 
 #define MUTEX_FLAGS     0x07
 ```
-* include/linux/osq_lock.h
-```c
-/*
- * An MCS like lock especially tailored for optimistic spinning for sleeping
- * lock implementations (mutex, rwsem, etc).
- */
-struct optimistic_spin_node {
-    struct optimistic_spin_node *next, *prev;
-    int locked; /* 1 if lock acquired */
-    int cpu; /* encoded CPU # + 1 value */
-};
-
-struct optimistic_spin_queue {
-    /*
-     * Stores an encoded value of the CPU # of the tail node in the queue.
-     * If the queue is empty, then it's set to OSQ_UNLOCKED_VAL.
-     */
-    atomic_t tail;
-};
-```
-* `locked`：**1** 表示已经获得锁
 
 #### 什么是乐观自旋？
 
@@ -197,7 +176,7 @@ static __always_inline bool __mutex_trylock_fast(struct mutex *lock)
     * `mem`里的内容和`old`进行比较，如果相等则将`mem`里的内容更新为`new`，（无论成功与否）返回`mem`里原来的值。
     * 比较原来的值与`old`的值，如果一样，更新成功；如果不一样，说明`mem`的值被其他 CPU 修改了，更新失败。
   * 加了个`try`表示，如果更新成功，返回`true`；如果更新失败，返回`false`。
-  * **注意关键的一点**，如果`cmpxchg`失败，该函数会把`old`的指更新为`cmpxchg`的返回值，即`mem`现在的值。
+  * **注意关键的一点**，即便`cmpxchg`失败，该函数也会把`old`的指更新为`cmpxchg`的返回值，即`mem`现在的值。
 * `owner`域为 **空** 表示没人持有锁，所以这里把`owner`域和`0`比较，如果成功拿到锁，`owner`更新为当前任务的`struct taske_struct`指针
 
 ### 慢速路径
@@ -311,243 +290,8 @@ int __sched mutex_trylock(struct mutex *lock)
 
 #### 乐观自旋
 
-##### 乐观锁 osq_lock
-* kernel/locking/osq_lock.c
-```c
-/*
- * An MCS like lock especially tailored for optimistic spinning for sleeping
- * lock implementations (mutex, rwsem, etc).
- *
- * Using a single mcs node per CPU is safe because sleeping locks should not be
- * called from interrupt context and we have preemption disabled while
- * spinning.
- */
-static DEFINE_PER_CPU_SHARED_ALIGNED(struct optimistic_spin_node, osq_node);
-
-/*
- * We use the value 0 to represent "no CPU", thus the encoded value
- * will be the CPU number incremented by 1.
- */
-static inline int encode_cpu(int cpu_nr)
-{
-	return cpu_nr + 1;
-}
-
-static inline int node_cpu(struct optimistic_spin_node *node)
-{
-	return node->cpu - 1;
-}
-
-static inline struct optimistic_spin_node *decode_cpu(int encoded_cpu_val)
-{
-	int cpu_nr = encoded_cpu_val - 1;
-
-	return per_cpu_ptr(&osq_node, cpu_nr);
-}
-
-/*
- * Get a stable @node->next pointer, either for unlock() or unqueue() purposes.
- * Can return NULL in case we were the last queued and we updated @lock instead.
- */
-static inline struct optimistic_spin_node *
-osq_wait_next(struct optimistic_spin_queue *lock,
-	      struct optimistic_spin_node *node,
-	      struct optimistic_spin_node *prev)
-{
-	struct optimistic_spin_node *next = NULL;
-	int curr = encode_cpu(smp_processor_id());
-	int old;
-
-	/*
-	 * If there is a prev node in queue, then the 'old' value will be
-	 * the prev node's CPU #, else it's set to OSQ_UNLOCKED_VAL since if
-	 * we're currently last in queue, then the queue will then become empty.
-	 */
-	old = prev ? prev->cpu : OSQ_UNLOCKED_VAL;
-
-	for (;;) {
-		if (atomic_read(&lock->tail) == curr &&
-		    atomic_cmpxchg_acquire(&lock->tail, curr, old) == curr) {
-			/*
-			 * We were the last queued, we moved @lock back. @prev
-			 * will now observe @lock and will complete its
-			 * unlock()/unqueue().
-			 */
-			break;
-		}
-
-		/*
-		 * We must xchg() the @node->next value, because if we were to
-		 * leave it in, a concurrent unlock()/unqueue() from
-		 * @node->next might complete Step-A and think its @prev is
-		 * still valid.
-		 *
-		 * If the concurrent unlock()/unqueue() wins the race, we'll
-		 * wait for either @lock to point to us, through its Step-B, or
-		 * wait for a new @node->next from its Step-C.
-		 */
-		if (node->next) {
-			next = xchg(&node->next, NULL);
-			if (next)
-				break;
-		}
-
-		cpu_relax();
-	}
-
-	return next;
-}
-
-bool osq_lock(struct optimistic_spin_queue *lock)
-{
-	struct optimistic_spin_node *node = this_cpu_ptr(&osq_node);
-	struct optimistic_spin_node *prev, *next;
-	int curr = encode_cpu(smp_processor_id());
-	int old;
-
-	node->locked = 0;
-	node->next = NULL;
-	node->cpu = curr;
-
-	/*
-	 * We need both ACQUIRE (pairs with corresponding RELEASE in
-	 * unlock() uncontended, or fastpath) and RELEASE (to publish
-	 * the node fields we just initialised) semantics when updating
-	 * the lock tail.
-	 */
-	old = atomic_xchg(&lock->tail, curr);
-	if (old == OSQ_UNLOCKED_VAL)
-		return true;
-
-	prev = decode_cpu(old);
-	node->prev = prev;
-
-	/*
-	 * osq_lock()			unqueue
-	 *
-	 * node->prev = prev		osq_wait_next()
-	 * WMB				MB
-	 * prev->next = node		next->prev = prev // unqueue-C
-	 *
-	 * Here 'node->prev' and 'next->prev' are the same variable and we need
-	 * to ensure these stores happen in-order to avoid corrupting the list.
-	 */
-	smp_wmb();
-
-	WRITE_ONCE(prev->next, node);
-
-	/*
-	 * Normally @prev is untouchable after the above store; because at that
-	 * moment unlock can proceed and wipe the node element from stack.
-	 *
-	 * However, since our nodes are static per-cpu storage, we're
-	 * guaranteed their existence -- this allows us to apply
-	 * cmpxchg in an attempt to undo our queueing.
-	 */
-
-	/*
-	 * Wait to acquire the lock or cancellation. Note that need_resched()
-	 * will come with an IPI, which will wake smp_cond_load_relaxed() if it
-	 * is implemented with a monitor-wait. vcpu_is_preempted() relies on
-	 * polling, be careful.
-	 */
-	if (smp_cond_load_relaxed(&node->locked, VAL || need_resched() ||
-				  vcpu_is_preempted(node_cpu(node->prev))))
-		return true;
-
-	/* unqueue */
-	/*
-	 * Step - A  -- stabilize @prev
-	 *
-	 * Undo our @prev->next assignment; this will make @prev's
-	 * unlock()/unqueue() wait for a next pointer since @lock points to us
-	 * (or later).
-	 */
-
-	for (;;) {
-		/*
-		 * cpu_relax() below implies a compiler barrier which would
-		 * prevent this comparison being optimized away.
-		 */
-		if (data_race(prev->next) == node &&
-		    cmpxchg(&prev->next, node, NULL) == node)
-			break;
-
-		/*
-		 * We can only fail the cmpxchg() racing against an unlock(),
-		 * in which case we should observe @node->locked becoming
-		 * true.
-		 */
-		if (smp_load_acquire(&node->locked))
-			return true;
-
-		cpu_relax();
-
-		/*
-		 * Or we race against a concurrent unqueue()'s step-B, in which
-		 * case its step-C will write us a new @node->prev pointer.
-		 */
-		prev = READ_ONCE(node->prev);
-	}
-
-	/*
-	 * Step - B -- stabilize @next
-	 *
-	 * Similar to unlock(), wait for @node->next or move @lock from @node
-	 * back to @prev.
-	 */
-
-	next = osq_wait_next(lock, node, prev);
-	if (!next)
-		return false;
-
-	/*
-	 * Step - C -- unlink
-	 *
-	 * @prev is stable because its still waiting for a new @prev->next
-	 * pointer, @next is stable because our @node->next pointer is NULL and
-	 * it will wait in Step-A.
-	 */
-
-	WRITE_ONCE(next->prev, prev);
-	WRITE_ONCE(prev->next, next);
-
-	return false;
-}
-
-void osq_unlock(struct optimistic_spin_queue *lock)
-{
-	struct optimistic_spin_node *node, *next;
-	int curr = encode_cpu(smp_processor_id());
-
-	/*
-	 * Fast path for the uncontended case.
-	 */
-	if (likely(atomic_cmpxchg_release(&lock->tail, curr,
-					  OSQ_UNLOCKED_VAL) == curr))
-		return;
-
-	/*
-	 * Second most likely case.
-	 */
-	node = this_cpu_ptr(&osq_node);
-	next = xchg(&node->next, NULL);
-	if (next) {
-		WRITE_ONCE(next->locked, 1);
-		return;
-	}
-
-	next = osq_wait_next(lock, node, NULL);
-	if (next)
-		WRITE_ONCE(next->locked, 1);
-}
-```
-
 ##### mutex 自旋锁
 
-* 当我们发现锁的持有者当前正运行在一个（不同的）CPU 上时，我们尽可能以自旋的方式去争用锁，我们并不需要被调度出去。这么做的理由是，如果锁的持有者正在运行，它很可能会很快释放锁
-* 拿到锁时返回 **true**，否则返回 **false**，意味着我们需要转到慢速路径并且睡眠
-* 如果自旋者在等待队列上，`waiter`标志位被设为`true`
 * kernel/locking/mutex.c
 ```c
 /*
@@ -592,7 +336,7 @@ bool mutex_spin_on_owner(struct mutex *lock, struct task_struct *owner,
 
     return ret;
 }
-
+// 检查 mutex 能否在 owner 上乐观自旋
 /*
  * Initial check for entering the mutex spinning loop
  */
@@ -622,7 +366,12 @@ static inline int mutex_can_spin_on_owner(struct mutex *lock)
      */
     return retval;
 }
-
+```
+###### mutex_optimistic_spin()
+* 当我们发现锁的持有者当前正运行在一个（不同的）CPU 上时，我们尽可能以自旋的方式去争用锁，我们并不需要被调度出去。这么做的理由是，如果锁的持有者正在运行，它很可能会很快释放锁
+* 拿到锁时返回 **true**，否则返回 **false**，意味着我们需要转到慢速路径并且睡眠
+* 如果自旋者在等待队列上，`waiter`标志位被设为`true`
+```c
 /*
  * Optimistic spinning.
  *
@@ -659,7 +408,7 @@ mutex_optimistic_spin(struct mutex *lock, struct ww_acquire_ctx *ww_ctx,
         // 这里调用 mutex_can_spin_on_owner() 的目的是，当自旋不可能拿到锁时，消除 osq_lock() 和 osq_unlock() 的潜在开销
         if (!mutex_can_spin_on_owner(lock))
             goto fail;
-        // 为了避免突然吓跑正在尝试获取锁的 mutex 自旋者，自旋者需要在 owner 域上自旋前，先获取 MCS 排队锁
+        // 为了避免突然惊跑正在尝试获取锁的 mutex 自旋者，自旋者需要在 owner 域上自旋前，先获取 MCS 排队锁
         /*
          * In order to avoid a stampede of mutex spinners trying to
          * acquire the mutex all at once, the spinners need to take a
