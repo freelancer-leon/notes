@@ -1,9 +1,13 @@
 # Notes
 ***
+# Architectures
+## ARM
+- [ARM64 的一些基本概念](arm64/basic.md)
 # Computer Science
 - [Cache](computer_science/cache.md)
 - [TLB](computer_science/tlb.md)
 - [浮点数](computer_science/float.md)
+- [MESI 协议](computer_science/MESI.md)
 
 # Kernel
 - [Bottom Half 下半部](kernel/Bottom_Half.md)
@@ -20,9 +24,11 @@
 
 ## 锁
 - [锁的基本知识](kernel/lock/Lock-1.md)
-- [Linux自旋锁的实现](kernel/lock/Lock-2-Linux_x86_Spin_Lock.md)
-- [Linux信号量（Semaphore）的实现](kernel/lock/Lock-3-Linux_Semaphore.md)
-- [Linux Mutex的实现](kernel/lock/Lock-4-Linux_Mutex.md)
+- [Linux 自旋锁的实现](kernel/lock/Lock-2-Linux_x86_Spin_Lock.md)
+- [Linux 信号量（Semaphore）的实现](kernel/lock/Lock-3-Linux_Semaphore.md)
+- [Linux Mutex 的实现](kernel/lock/Lock-4-Linux_Mutex.md)
+- [自旋锁的新实现 - qspinlock](kernel/lock/qspinlock.md)
+- [乐观自旋锁 osq_lock 的实现](kernel/lock/osq_lock.md)
 
 ## 进程调度
 - [进程调度](kernel/sched/sched_intro.md)
@@ -40,6 +46,7 @@
 - [进程地址空间](kernel/mm/mm-1-process_addr_spc.md)
 - [slab](kernel/mm/slab.md)
 - [slub](kernel/mm/slub.md)
+- [学习 /proc/meminfo](kernel/mm/meminfo.md)
 
 ## 网络
 - [Monitoring and Tuning the Linux Networking Stack: Receiving Data](kernel/networking/monitoring-tuning-linux-networking-stack-receiving-data.md)
