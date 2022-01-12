@@ -238,6 +238,7 @@ if (!do_kexec_file_syscall)
 kernel/kexec.c
 SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ...)
 -> do_kexec_load(entry, nr_segments, segments, flags)
+   -> kimage_free(xchg(dest_image, NULL)) //如果有需要，释放旧的 kernel image
    -> kimage_alloc_init(&image, entry, nr_segments, segments, flags)
       -> image = do_kimage_alloc_init(); //这里分配和初始化 kimage 结构
          -> image = kzalloc(sizeof(*image), GFP_KERNEL);
