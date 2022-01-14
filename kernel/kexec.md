@@ -259,14 +259,18 @@ SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ..
         -> kimage_load_normal_segment(image, segment)
            -> kimage_set_destination(image, maddr)
               -> kimage_add_entry()
-                 -> kimage_alloc_page()
-           -> kimage_alloc_page()
-           -> kimage_add_page()
+           -> kimage_alloc_page() //分配用于拷贝 segment 数据的页帧
+           -> kimage_add_page() //将刚才分配的页帧加入到"页表目录"并更新 etnry
               -> kimage_add_entry()
+                 if (image->entry == image->last_entry) //如果当前用于记录 entry 的"页表目录"满了
+                    kimage_alloc_page() //分配一个新的页帧用于"页表目录"
    -> kimage_terminate(image)
    -> image = xchg(dest_image, image); //安装新捕捉内核镜像，卸载旧捕捉内核镜像
 ```
-* `kimage_add_entry()`会设定`image->entry`的值
+* `kimage_add_entry()`会设定`image->entry`的值，但不要与`image->start`混淆，`start`域记录的才是入口地址，而`entry`域记录的是`kimage_load_segment()`过程中分配的页表项。这里设计的思路是：
+  * 用于拷贝 segment 数据的页帧是通过`kimage_alloc_page()`分配的，但为了避免被系统误用，所以没有加到常规的页表里，而是通过自己建立的“页表目录”进行追踪
+  * 每当一个“页表目录”用完了，即`image->entry == image->last_entry`，则分配一个新的“页表目录”，并用`last_entry`指向新“页表目录”的最后一个条目
+  * `image->head`始终指向第一条页表项
 
 > Control pages are special, they are the intermediaries
 > that are needed while we copy the rest of the pages
