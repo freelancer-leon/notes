@@ -21,8 +21,8 @@ main()
       => crashkernel_mem_callback() //把传入的值更新到 crash_reserved_mem 数组的第 nr 个元素
 -> arch_process_options()
 if (do_kexec_file_syscall) //-s, --kexec-file-syscall
--> do_kexec_file_load()
-   -> kexec_file_load() // 调用 kexec_file_load() 系统调用来加载文件
+   -> do_kexec_file_load()
+      -> kexec_file_load() // 调用 kexec_file_load() 系统调用来加载文件
 if (!do_kexec_file_syscall) //-c, --kexec-syscall
 -> my_load()
    +-> kernel_buf = slurp_decompress_file() //尝试用 zlib 或 lzma 解压，否则只是将文件读入内存 
@@ -34,7 +34,7 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
    |   -> get_memory_ranges_sysfs() //优先尝试 /sys/firmware/memmap
    |      -> get_firmware_memmap_ranges()
    |   -> get_memory_ranges_proc_iomem() //上面遇到错误，回退到 /proc/iomem，返回 System RAM 等多条数据
-   +-> file_type[i].probe(kernel_buf, kernel_size) // 探测传入的 kernel image 文件的类型
+   +-> file_type[i].probe(kernel_buf, kernel_size) //探测传入的 kernel image 文件的类型
    |   => bzImage64_probe() // -t bzImage64
    +-> physical_arch() // 根据`uname()`的返回结果确定当前系统的 ARCH 的类型
    +-> file_type[i].load(argc, argv, kernel_buf, kernel_size, &info)
@@ -43,15 +43,18 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
    |         -> load_crashdump_segments() //-p 才会调用这个函数
    |               case KEXEC_ARCH_X86_64:
    |                    elf_info.machine = EM_X86_64;
-   |            -> arch_options.core_header_type = get_core_type() //根据输入得到 elfcorehdr 的类型
+   |               if (arch_options.core_header_type == CORE_TYPE_UNDEF)
+                      arch_options.core_header_type = get_core_type() //根据输入得到 elfcorehdr 的类型
    |               if (arch_options.core_header_type == CORE_TYPE_ELF64)
    |                  elf_info.class = ELFCLASS64; //这个类型会决定 ELF 的 class 类型
-   |            -> get_crash_memory_ranges() //从 proc/iomen 中读取 "Crash kernel" 的范围
+   |            -> get_crash_memory_ranges() //根据 /proc/iomem 的内容填充 mem_range 数组
+   |               // 1. 根据 /proc/iomem 填充 crash_memory_range 数组
+   |               // 2. 从 crash_memory_range 数组中剔除 crash_reserved_mem 数组的范围
    |            -> get_backup_area() //找到第一个大于 640 KiB 的 System RAM region 作为备份区
-   |            -> get_kernel_page_offset() //根据 elf_info->machine 得到内核直接映射物理内存的虚拟地址的基地址
-   |            -> get_kernel_paddr() //根据 /proc/iomem 中的 "Kernel code" 得到运行时内核代码段的物理地址
+   |            -> get_kernel_page_offset() //根据 elf_info->machine 得到内核直接映射物理内存的虚拟地址的基地址(PAGE_OFFSET)
+   |            -> get_kernel_paddr() //根据 /proc/iomem 中的 "Kernel code" 得到当前内核代码段的物理地址
    |               -> parse_iomem_single("Kernel code\n", &start, NULL);
-   |                  elf_info->kern_paddr_start = start; //这个信息将来会更新到 elfcorehdr 里
+   |                  elf_info->kern_paddr_start = start; //当前内核代码段的物理地址的信息将来会更新到 elfcorehdr 里
    |            -> get_kernel_vaddr_and_size()
    |               -> buf = slurp_file_len(kcore, KCORE_ELF_HEADERS_SIZE, &size); //读 /proc/kcore 的 ELF header 部分（64 KB）到 buf
    |               -> build_elf_core_info() //根据 /proc/kcore 的 ELF header 填充 struct mem_ehdr ehdr
@@ -62,12 +65,12 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
    |                     -> build_mem_notes() //填充 Notes
    |                  for(phdr = ehdr.e_phdr; phdr != end_phdr; phdr++) // 处理 KASLR，查找真实的 PAGE_OFFSET 
    |                     lowest_vaddr = vaddr; // 从 PT_LOAD 中找到虚拟地址最小的 Program 段
-   |                  elf_info->page_offset = lowest_vaddr; // 更新为真实的内核直接映射物理内存的虚拟地址的基地址
-   |                  stext_sym = get_kernel_sym("_stext") // 从 /proc/kallsyms 中找到 "_stext" 符号的地址
+   |                  elf_info->page_offset = lowest_vaddr; //更新为真实的内核直接映射物理内存的虚拟地址的基地址
+   |                  stext_sym = get_kernel_sym("_stext") //从 /proc/kallsyms 中找到 "_stext" 符号的地址
    |                  // 根据"_stext"符号的地址落在那个 Program 段内，得到运行时内核代码段的起始虚拟地址
    |                  for(phdr = ehdr.e_phdr; stext_sym && phdr != end_phdr; phdr++) {
-   |                     elf_info->kern_vaddr_start = saddr; // 得到运行时内核代码段的起始虚拟地址
-   |                     elf_info->kern_size = size; // 得到运行时内核代码段所在 Program 段的大小
+   |                     elf_info->kern_vaddr_start = saddr; //得到运行时内核代码段的起始虚拟地址
+   |                     elf_info->kern_size = size; //得到运行时内核代码段所在 Program 段的大小
    |                     return 0;
    |                  }
    |                  // 上一个步骤找不到，根据硬编码的 X86_64__START_KERNEL_map（0xffffffff80000000ULL）再来查找
@@ -77,12 +80,13 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
    |                     return 0;
    |                  }
    |            -> info->backup_start = add_buffer(info, ...) //加入 backup region segment 用于存储备份数据
-   |            -> crash_create_elf64_headers() //创建 elfcorehdr segment 用于存储 crash 内存镜像数据
+   |            -> crash_create_elf64_headers() //创建 elfcorehdr segment 用于存储 crash 内存镜像数据，即 FUNC()
    |                  elf = (EHDR *) bufp; //将 elf_info 里的信息填入 EHDR *elf 指向的 buffer
    |               -> get_kernel_vmcoreinfo() //读入 /sys/kernel/vmcoreinfo 的信息
    |                  -> get_vmcoreinfo("/sys/kernel/vmcoreinfo", addr, len);
    |                  for (i = 0; count_cpu > 0; i++) { //构造 percpu 的 Program header
-   |                     get_note_info() //读入 /sys/devices/system/cpu/cpu%d/crash_notes 和 crash_notes_size 的信息
+   |                     -> get_note_info() //读入 /sys/devices/system/cpu/cpu%d/crash_notes 和 crash_notes_size 的信息
+   |                     => get_crash_notes_per_cpu()
    |                     phdr->p_type   = PT_NOTE;
    |                     phdr->p_offset = phdr->p_paddr = notes_addr;
    |                  }
@@ -134,7 +138,9 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
    +-> for (i = 0; i < info.nr_segments; i++) //验证是否所有的 segments 都加载到了内存中的有效位置
    |      valid_memory_segment(&info, info.segmen t +i);
    +-> update_purgatory(&info)
-   |   -> arch_update_purgatory(info) //计算并设置 sha256 相关的信息，用于启动时 purgatory 做校验 
+   |   -> arch_update_purgatory(info) //设置 purgatory 期间用到的 arch 相关的参数
+   |      //根据各 segments 做 sha256 计算并设置`sha256_regions`和`sha256_digest`全局变量
+   |      //启动 purgatory 时`verify_sha256_digest()`会根据`sha256_regions`再次计算 sha256 哈希值，和`sha256_digest`比较
    +-> if (entry) info.entry = entry; //--entry 参数可以指定`entry`的位置
    +-> dbgprintf("kexec_load: entry = %p flags = 0x%lx\n", info.entry, info.kexec_flags); //打印重要的调试信息
    +-> kexec_load(info.entry, info.nr_segments, info.segment, info.kexec_flags);
@@ -175,6 +181,9 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
   4. 更新`ehdr->e_shdr`数组里每个 section header 的地址`sh_addr`为重定位后的地址和`sh_data`指针，还把原`shdr->sh_data`中的数据拷贝到新分配的`buf + off`当中
   5. 修正`info->entry` 和`info->rhdr.e_entry`为重定位到 “Crash kernel” region 后的`purgatory_start`例程的物理地址
   6. 遍历`ehdr->e_shdr`，重定位 section 中的符号
+
+* Backup data
+> On x86 machines, the first 640 KB of physical memory is needed to boot, regardless of where the kernel loads. Therefore, kexec backs up this region just before rebooting into the dump-capture kernel.
 
 #### Purgatory - x86
 
@@ -450,7 +459,7 @@ purgatory_start
 -> jmp entry64
    -> jmpq *rip(%rip) // 即 jmpq *(%rip + addr + 0x200) => jmpq startup_64
 ```
-
+* 所以说，`real_mode_data` segment 包含 bzImage 中拷贝出来的一小部分内容，然后被重定向以后交给内核，最后被用在了这里。此外，它还必须包含启动协议中 BIOS 需要向内核提供的数据，这些数据主要由`setup_linux_bootloader_parameters_high()`和`setup_linux_system_parameters()`这两个函数中填充。
 ### 内核加载 crash 内核镜像
 ```c
 kernel/kexec.c
@@ -466,27 +475,27 @@ SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ..
       -> copy_user_segment_list(image, nr_segments, segments) //把用户空间的 segments 数组拷贝到内核空间
          if (kexec_on_panic) {
             /* Enable special crash kernel control page alloc policy. */
-            image->control_page = crashk_res.start; //指向 "Crash Kernel"，物理地址
+            image->control_page = crashk_res.start; //指向 "Crash kernel"，物理地址
             image->type = KEXEC_TYPE_CRASH;
          }
       -> sanity_check_segment_list(image) //对 segments 的健全性检查，例如范围不重叠、在预留范围内、不能太多
       -> image->control_code_page = kimage_alloc_control_pages(image, get_order(KEXEC_CONTROL_PAGE_SIZE))  //KEXEC_CONTROL_PAGE_SIZE 8192
             case KEXEC_TYPE_CRASH:
             pages = kimage_alloc_crash_control_pages(image, order); //用于从 crash kernel region 分配一个 page，而不是 buddy system
-               //以 "Crash Kernel" 为起始地址，在该范围内找到一个不与任何 segments 重叠的一个页大小的空洞
+               //以 "Crash kernel" 为起始地址，在该范围内找到一个不与任何 segments 重叠的一个页大小的空洞
                pages = pfn_to_page(hole_start >> PAGE_SHIFT); //要返回的指向 control page 的 page 结构的指针
                image->control_page = hole_end; //这个指针现在指向 control page 页面的结尾了
    -> machine_kexec_prepare(image)
          start_pgtable = page_to_pfn(image->control_code_page) << PAGE_SHIFT; //根据 page 结构的指针找到 control page 的物理地址
          init_pgtable(image, start_pgtable) //负责给 crash kernel 用到的内存建立恒等映射，见下面详解
    -> kimage_crash_copy_vmcoreinfo(image)
-      -> vmcoreinfo_page = kimage_alloc_control_pages(image, 0); //对于 crash 需要拷贝一份 vmcoreinfo 到 "Crash Kernel" region
+      -> vmcoreinfo_page = kimage_alloc_control_pages(image, 0); //对于 crash 需要拷贝一份 vmcoreinfo 到 "Crash kernel" region
       -> safecopy = vmap(&vmcoreinfo_page, 1, VM_MAP, PAGE_KERNEL) //给该页一个当前内核中的虚拟地址
          image->vmcoreinfo_data_copy = safecopy;
-      -> crash_update_vmcoreinfo_safecopy(safecopy); //把 vmcoreinfo_data 中的内容拷贝至 "Crash Kernel" region 里
+      -> crash_update_vmcoreinfo_safecopy(safecopy); //把 vmcoreinfo_data 中的内容拷贝至 "Crash kernel" region 里
          -> memcpy(ptr, vmcoreinfo_data, vmcoreinfo_size)
-         -> vmcoreinfo_data_safecopy = ptr; //这样在 crash 的时候，crash_save_vmcoreinfo() 会更新 "Crash Kernel" region 里 vmcoreinfo note
-   -> for (i = 0; i < nr_segments; i++) //把用户空间传进来的 segments 数据拷贝到 "Crash Kernel" region 里
+         -> vmcoreinfo_data_safecopy = ptr; //这样在 crash 的时候，crash_save_vmcoreinfo() 会更新 "Crash kernel" region 里 vmcoreinfo_data_safecopy
+   -> for (i = 0; i < nr_segments; i++) //把用户空间传进来的 segments 数据拷贝到 "Crash kernel" region 里
         kimage_load_segment(image, &image->segment[i]);
         -> kimage_load_crash_segment(image, segment) //相对于 -e 的的情况，panic 要简单地多，不需要分配页帧了，直接拷贝就行
    -> kimage_terminate(image) // 结束 kimage->entry 的记录，对于 panic 的情况，此函数意义不大，除了设置 IND_DONE 标志位用以跳出 swap_pages 循环
@@ -635,8 +644,11 @@ static void ident_pmd_init(struct x86_mapping_info *info, pmd_t *pmd_page,
        crash_kexec(regs);
        -> __crash_kexec(regs)
           -> crash_setup_regs(&fixed_regs, regs) //把 panic CPU 寄存器信息在 fixed_reg 另存了一份
-          -> crash_save_vmcoreinfo() //更新 vmcoreinfo note，如果已加载了 crash kernel，则更新的是 "Crash Kernel" region 里的那一份
+          -> crash_save_vmcoreinfo() //更新 vmcoreinfo note，如果已加载了 crash kernel，则更新的是 "Crash kernel" region 里的那一份
              -> vmcoreinfo_append_str("CRASHTIME=%lld\n", ktime_get_real_seconds())
+             -> update_vmcoreinfo_note()
+                -> append_elf_note(vmcoreinfo_note, VMCOREINFO_NOTE_NAME, 0, vmcoreinfo_data, ...)
+                -> final_note(vmcoreinfo_note)
           -> machine_crash_shutdown(&fixed_regs)
              -> machine_ops.crash_shutdown(regs) //arch 相关的 crash_shutdown 回调，x86 的 arch/x86/kernel/crash.c
              => native_machine_crash_shutdown(regs)
@@ -973,24 +985,14 @@ SYM_CODE_END(swap_pages)
 > 这个标志会使得处理器在执行新任务指令流的任何时候遇到一条协处理器指令时产生 *设备不存在异常*。*设备不存在异常* 的处理程序可使用`CLTS`指令清除`TS`标志，并且保存协处理器的上下文。
 > 如果任务从没有使用过协处理器，那么相应协处理器上下文就不用保存。
 
+* 这里面多次先把要调用的函数`push`到栈上，再用`ret`指令跳转的方式完成函数调用，而不是用`call`指令。我能想到的原因是`call`指令需要把下一条指令压栈作为将来的返回地址，然而我们这用`ret`调用的方式大多是不需要返回的，所以用这样的方式能保持栈的干净。而为什么不是`jmp`指令呢？是因为要跳转的地址都是动态的吗？
+
 ## vmcoreinfo
 ### 分配 vmcoreinfo 空间
-* `vmcoreinfo`通过`subsys_initcall(crash_notes_memory_init)`调用时分配，分为两部分
-  * 全局的部分
-  ```c
-  typedef u32 note_buf_t[CRASH_CORE_NOTE_BYTES/4];
-  ```
-  * percpu 的部分
-  ```c
-  static int __init crash_notes_memory_init(void)
-  {
-      ...
-      crash_notes = __alloc_percpu(size, align);
-      ...
-  }
-  ```
-### 通用的 vmcoreinfo
-* 这个章节主要揭示`vmcoreinfo`里主要存些什么
+* `vmcoreinfo`通过`subsys_initcall(crash_save_vmcoreinfo_init)`调用时分配，分为两部分
+  * `vmcoreinfo_data`：用来存储收集到的数据
+  * `vmcoreinfo_note`：用来提供`/sys/kernel/vmcoreinfo`，kexec 根据里面提供的信息构造 elfcorehdr 中存放 vmcoreinfo 的类型为`PT_NOTE`的 program header
+    * kernel/ksysfs.c:`vmcoreinfo_show()`
 * kernel/crash_core.c
 ```c
 static void update_vmcoreinfo_note(void)
@@ -1128,7 +1130,26 @@ void arch_crash_save_vmcoreinfo(void)
     VMCOREINFO_NUMBER(sme_mask);
 }
 ```
+## Core Files
+### /proc/kcore
+* 提供一个 live kernel 的虚拟的 ELF core 文件，可以用 gdb，crash-utility，readelf 等 ELF 工具读取
+* 内核选项`CONFIG_PROC_KCORE`
+* 通过`fs_initcall(proc_kcore_init)`初始化
+* fs/proc/kcore.c:`read_kcore()`提供内容
+
+### /proc/vmcore
+* 通过`fs_initcall(vmcore_init)`初始化
+* fs/proc/vmcore.c:`__read_vmcore()`提供内容
+
+### Crash notes
+* 当系统崩溃时存储 CPU states 的 Per CPU 内存
+* 通过`subsys_initcall(crash_notes_memory_init)`给 Per CPU 数据结构`note_buf_t __percpu *crash_notes`分配空间
+* 通过 drivers/base/cpu.c 导出文件
+  * `static DEVICE_ATTR_ADMIN_RO(crash_notes)`导出文件`/sys/devices/system/cpu/cpu%d/crash_notes`，指示 Per CPU `crash_notes[i]`的地址
+  * `static DEVICE_ATTR_ADMIN_RO(crash_notes_size)`导出文件`/sys/devices/system/cpu/cpu%d/crash_notes_size`，指示 Per CPU `crash_notes[i]`的大小
+* kexec 构造 elfcorehdr 的时候会分别读取每个 CPU 以上两个文件的信息，放入`PT_NOTE`类型的多个 program headers
+* Panic 时通过`crash_save_cpu()`填充数据 crash CPU 的 `prstatus`，`pid`，寄存器等
+* 创建`/proc/vmcore`的时候会合并成一个`PT_NOTE`类型的 program header（fs/proc/vmcore.c:`parse_crash_elf64_headers()`）
 
 ## References
-
 * [Org (Using as)](https://sourceware.org/binutils/docs/as/Org.html)
