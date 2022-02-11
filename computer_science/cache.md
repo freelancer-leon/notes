@@ -118,7 +118,17 @@
 * 监听协议分为两大类
   * **写-使无效（write-invalidate）**:在一个处理器修改了已经由其他处理处理器高速缓存的数据时，向系统内的所有其他高速缓存广播一则 *使无效* 消息
   * **写-更新（write-update）**：在一个处理器修改数据的时候广播它的新值，以便系统内的所有其他 cache 正好缓存了受影响的行，就可以更新它们的值
+* 在 MESI 协议中，每个 cache Line（x86 中是 64 bytes）都有 **MESI** 四种状态，cache line 实际上是加了几个 bits 来表示这些状态
+  * 在 Intel CPU 中引入 HA 和 CA 来管理这些状态以及同步各个 cache line 的副本
+    * **Home Agent（HA）**，在 *内存控制器端*
+    * **Cache Agent（CA）**，在 *L3 Cache 端*
+* 他们都在 ring bus 上监听和发送 snoop 消息，这种模型叫做 **Bus snooping 模型**，与之相对的还有 **Directory 模型**
+* Snoop 消息会在 QPI 总线上广播，会造成很大的带宽消耗，为了减小这种带宽消耗，如何 snoop 有很多讲究
+* 在 [quick-path-interconnect-introduction-paper.pdf](https://www.intel.ca/content/dam/doc/white-paper/quick-path-interconnect-introduction-paper.pdf) 里面有介绍 Intel 的两种 snoop 的方式：Home Snoop 和 Source Snoop，它们的主要区别在于谁主导Snoop消息的发送:
+  * HA 主导叫做 Home Snoop
+  * CA 主导叫做 Source Snoop
 
 ## References
 
+- [quick-path-interconnect-introduction-paper.pdf](https://www.intel.ca/content/dam/doc/white-paper/quick-path-interconnect-introduction-paper.pdf)
 - [高速缓存与一致性专栏索引](https://zhuanlan.zhihu.com/p/136300660)
