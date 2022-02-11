@@ -183,12 +183,11 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
   4. 逐个把`ehdr->e_shdr`数组里的每个 section header 的原来的数据`shdr->sh_data`拷贝到新分配的`buf + off`当中，然后更新起始地址`shdr->sh_addr`为重定位后的地址以及指向数据的`shdr->sh_data`指针
   5. 修正`info->entry` 和`info->rhdr.e_entry`为重定位到 “Crash kernel” region 后的`purgatory_start`例程的物理地址
   6. 遍历`ehdr->e_shdr`，重定位 section 中的符号
-
 * Backup data
 > On x86 machines, the first 640 KB of physical memory is needed to boot, regardless of where the kernel loads. Therefore, kexec backs up this region just before rebooting into the dump-capture kernel.
-  * `get_backup_area()`会找到第一个大于 640 KiB 的 System RAM region 作为备份区，比如`0000000000001000-000000000009fbff`，并存储在`info->backup_src_start`和`info->backup_src_size`里
-  * 把 backup data 加入到`segment[]`数组后会返回其在 Crash kernel region 的物理地址`info->backup_start = add_buffer(info, ...)`
-  * purgatory 阶段的`crashdump_backup_memory()`会把`backup_src_start`开始的长度为`backup_src_size`数据拷贝到`backup_start`处
+* `get_backup_area()`会找到第一个大于 640 KiB 的 System RAM region 作为备份区，比如`0000000000001000-000000000009fbff`，并存储在`info->backup_src_start`和`info->backup_src_size`里
+* 把 backup data 加入到`segment[]`数组后会返回其在 Crash kernel region 的物理地址`info->backup_start = add_buffer(info, ...)`
+* purgatory 阶段的`crashdump_backup_memory()`会把`backup_src_start`开始的长度为`backup_src_size`数据拷贝到`backup_start`处
 
 #### Purgatory - x86
 
@@ -249,62 +248,129 @@ PURGATORY_SRCS+=$($(ARCH)_PURGATORY_SRCS)
 
 #### 拷贝 setup_header
 
+##### setup.bin
+
+###### Legacy 启动模式
+> 在进行内核初始化时，需要一些信息，如显示信息、内存信息等。曾经，这些信息由工作在实模式下的 setup.bin 通过 BIOS 获取，保存在内核中的变量`boot_params`中，变量`boot_params`是结构体`struct boot_params`的一个实例。
+>
+> 在完成信息收集后，setup.bin 将 CPU 切换到保护模式，并跳转到内核的保护模式部分执行。
+
+* 这些硬件相关的参数必须在实模式下借助 BIOS 中断获取
+* BIOS 中断可以理解为由 BIOS 固件填充到内存中的中断处理例程
+* 变量`struct boot_params boot_params`也即内核中所说的 **零页（zeropage）**
+  * arch/x86/include/uapi/asm/bootparam.h
+    ```c
+    /* The so-called "zeropage" */
+    struct boot_params {
+        struct screen_info screen_info;         /* 0x000 */
+        struct apm_bios_info apm_bios_info;     /* 0x040 */
+        __u8  _pad2[4];                 /* 0x054 */
+        __u64  tboot_addr;              /* 0x058 */
+        struct ist_info ist_info;           /* 0x060 */
+        __u64 acpi_rsdp_addr;               /* 0x070 */
+        __u8  _pad3[8];                 /* 0x078 */
+        __u8  hd0_info[16]; /* obsolete! */     /* 0x080 */
+        __u8  hd1_info[16]; /* obsolete! */     /* 0x090 */
+        struct sys_desc_table sys_desc_table; /* obsolete! */   /* 0x0a0 */
+        struct olpc_ofw_header olpc_ofw_header;     /* 0x0b0 */
+        __u32 ext_ramdisk_image;            /* 0x0c0 */
+        __u32 ext_ramdisk_size;             /* 0x0c4 */
+        __u32 ext_cmd_line_ptr;             /* 0x0c8 */
+        __u8  _pad4[116];               /* 0x0cc */
+        struct edid_info edid_info;         /* 0x140 */
+        struct efi_info efi_info;           /* 0x1c0 */
+        __u32 alt_mem_k;                /* 0x1e0 */
+        __u32 scratch;      /* Scratch field! */    /* 0x1e4 */
+        __u8  e820_entries;             /* 0x1e8 */
+        __u8  eddbuf_entries;               /* 0x1e9 */
+        __u8  edd_mbr_sig_buf_entries;          /* 0x1ea */
+        __u8  kbd_status;               /* 0x1eb */
+        __u8  secure_boot;              /* 0x1ec */
+        __u8  _pad5[2];                 /* 0x1ed */
+        /*
+        * The sentinel is set to a nonzero value (0xff) in header.S.
+        *
+        * A bootloader is supposed to only take setup_header and put
+        * it into a clean boot_params buffer. If it turns out that
+        * it is clumsy or too generous with the buffer, it most
+        * probably will pick up the sentinel variable too. The fact
+        * that this variable then is still 0xff will let kernel
+        * know that some variables in boot_params are invalid and
+        * kernel should zero out certain portions of boot_params.
+        */
+        __u8  sentinel;                 /* 0x1ef */
+        __u8  _pad6[1];                 /* 0x1f0 */
+        struct setup_header hdr;    /* setup header */  /* 0x1f1 */
+        __u8  _pad7[0x290-0x1f1-sizeof(struct setup_header)];
+        __u32 edd_mbr_sig_buffer[EDD_MBR_SIG_MAX];  /* 0x290 */
+        struct boot_e820_entry e820_table[E820_MAX_ENTRIES_ZEROPAGE]; /* 0x2d0 */
+        __u8  _pad8[48];                /* 0xcd0 */
+        struct edd_info eddbuf[EDDMAXNR];       /* 0xd00 */
+        __u8  _pad9[276];               /* 0xeec */
+    } __attribute__((packed));
+    ```
+###### EFI 启动模式
+> 但是随着新的 BIOS 标准的出现，尤其是 EFI 的出现，为了支持这些新标准，开发者们制定了 32 位启动协议（32-bit boot protocol）。在 32 位启动协议下，由 Bootloader 实现收集这些信息的功能，内核启动时不再需要首先运行实模式部分（即 setup.bin），而是直接跳转到内核的保护模式部分。因此，在 32 位启动协议下，不再需要 setup.bin 收集内核初始化时需要的相关信息。但是这是否意味着可以彻底放弃 setup.bin 呢？
+>
+> 事实上，除了收集信息功能外，setup.bin 被忽略的另一个重要功能就是负责在内核和 Bootloader 之间传递信息。例如，在加载内核时，Bootloader 需要从 setup.bin 中获取内核是否是可重定位的、内核的对齐要求、内核建议的加载地址等。32 位启动协议约定在 setup.bin 中分配一块空间用来承载这些信息，在构建映像时，内核构建系统需要将这些信息写到 setup.bin 的这块空间中。所以，虽然 setup.bin 已经失去了其以往的作用，但还不能完全放弃，其还要作为内核与 Bootloader 之间传递数据的桥梁，而且还要照顾到某些不能使用 32 位启动协议的场合。
+
+
 ##### x86_linux_header
 
 * kexec/include/x86/x86-linux.h
+  ```c
+  struct x86_linux_header {
+      uint8_t  reserved1[0xc0];       /* 0x000 */
+      uint32_t ext_ramdisk_image;     /* 0x0c0 */
+      uint32_t ext_ramdisk_size;      /* 0x0c4 */
+      uint32_t ext_cmd_line_ptr;      /* 0x0c8 */
+      uint8_t  reserved1_1[0x1f1-0xcc];   /* 0x0cc */
+      uint8_t  setup_sects;           /* 0x1f1 */
+      uint16_t root_flags;            /* 0x1f2 */
+      uint32_t syssize;           /* 0x1f4 */
+      uint16_t ram_size;          /* 0x1f8 */
+      uint16_t vid_mode;          /* 0x1fa */
+      uint16_t root_dev;          /* 0x1fc */
+      uint16_t boot_sector_magic;     /* 0x1fe */
+      /* 2.00+ */
+      uint16_t jump;              /* 0x200 */
+      uint8_t  header_magic[4];       /* 0x202 */
+      uint16_t protocol_version;      /* 0x206 */
+      uint32_t realmode_swtch;        /* 0x208 */
+      uint16_t start_sys;         /* 0x20c */
+      uint16_t kver_addr;         /* 0x20e */
+      uint8_t  type_of_loader;        /* 0x210 */
+      uint8_t  loadflags;         /* 0x211 */
+      uint16_t setup_move_size;       /* 0x212 */
+      uint32_t code32_start;          /* 0x214 */
+      uint32_t ramdisk_image;         /* 0x218 */
+      uint32_t ramdisk_size;          /* 0x21c */
+      uint32_t bootsect_kludge;       /* 0x220 */
+      /* 2.01+ */
+      uint16_t heap_end_ptr;          /* 0x224 */
+      uint8_t  ext_loader_ver;        /* 0x226 */
+      uint8_t  ext_loader_type;       /* 0x227 */
+      /* 2.02+ */
+      uint32_t cmd_line_ptr;          /* 0x228 */
+      /* 2.03+ */
+      uint32_t initrd_addr_max;       /* 0x22c */
 
-```c
-struct x86_linux_header {
-    uint8_t  reserved1[0xc0];       /* 0x000 */
-    uint32_t ext_ramdisk_image;     /* 0x0c0 */
-    uint32_t ext_ramdisk_size;      /* 0x0c4 */
-    uint32_t ext_cmd_line_ptr;      /* 0x0c8 */
-    uint8_t  reserved1_1[0x1f1-0xcc];   /* 0x0cc */
-    uint8_t  setup_sects;           /* 0x1f1 */
-    uint16_t root_flags;            /* 0x1f2 */
-    uint32_t syssize;           /* 0x1f4 */
-    uint16_t ram_size;          /* 0x1f8 */
-    uint16_t vid_mode;          /* 0x1fa */
-    uint16_t root_dev;          /* 0x1fc */
-    uint16_t boot_sector_magic;     /* 0x1fe */
-    /* 2.00+ */
-    uint16_t jump;              /* 0x200 */
-    uint8_t  header_magic[4];       /* 0x202 */
-    uint16_t protocol_version;      /* 0x206 */
-    uint32_t realmode_swtch;        /* 0x208 */
-    uint16_t start_sys;         /* 0x20c */
-    uint16_t kver_addr;         /* 0x20e */
-    uint8_t  type_of_loader;        /* 0x210 */
-    uint8_t  loadflags;         /* 0x211 */
-    uint16_t setup_move_size;       /* 0x212 */
-    uint32_t code32_start;          /* 0x214 */
-    uint32_t ramdisk_image;         /* 0x218 */
-    uint32_t ramdisk_size;          /* 0x21c */
-    uint32_t bootsect_kludge;       /* 0x220 */
-    /* 2.01+ */
-    uint16_t heap_end_ptr;          /* 0x224 */
-    uint8_t  ext_loader_ver;        /* 0x226 */
-    uint8_t  ext_loader_type;       /* 0x227 */
-    /* 2.02+ */
-    uint32_t cmd_line_ptr;          /* 0x228 */
-    /* 2.03+ */
-    uint32_t initrd_addr_max;       /* 0x22c */
+      uint32_t kernel_alignment;      /* 0x230 */
+      uint8_t  relocatable_kernel;        /* 0x234 */
+      uint8_t  min_alignment;         /* 0x235 */
+      uint16_t xloadflags;            /* 0x236 */
+      uint32_t cmdline_size;          /* 0x238 */
+      uint32_t hardware_subarch;      /* 0x23C */
+      uint64_t hardware_subarch_data;     /* 0x240 */
+      uint32_t payload_offset;        /* 0x248 */
+      uint32_t payload_size;          /* 0x24C */
+      uint64_t setup_data;            /* 0x250 */
+      uint64_t pref_address;          /* 0x258 */
+      uint32_t init_size;         /* 0x260 */
+      uint32_t handover_offset;       /* 0x264 */
+  } __attribute__((packed));
+  ```
 
-    uint32_t kernel_alignment;      /* 0x230 */
-    uint8_t  relocatable_kernel;        /* 0x234 */
-    uint8_t  min_alignment;         /* 0x235 */
-    uint16_t xloadflags;            /* 0x236 */
-    uint32_t cmdline_size;          /* 0x238 */
-    uint32_t hardware_subarch;      /* 0x23C */
-    uint64_t hardware_subarch_data;     /* 0x240 */
-    uint32_t payload_offset;        /* 0x248 */
-    uint32_t payload_size;          /* 0x24C */
-    uint64_t setup_data;            /* 0x250 */
-    uint64_t pref_address;          /* 0x258 */
-    uint32_t init_size;         /* 0x260 */
-    uint32_t handover_offset;       /* 0x264 */
-} __attribute__((packed));
-```
 * `setup_sects`存的是 setup section 的数目，每个 section 的大小是`512`（见 x86 启动协议），所以在 kexec/arch/x86_64/kexec-bzImage64.c:`do_bzImage64_load()`计算实模式部分的长度时是`kern16_size = (setup_sects + 1) * 512`
 
 ##### 内核中的 setup_header
@@ -367,7 +433,8 @@ start_of_setup:
 
 > 在 32 位引导协议下，除了传统的 16 位协议，Bootloader 取代内核中实模式部分负责收集硬件信息（即零页 zero-page 信息）的功能。而 Bootloader 会将 CPU 切换为保护模式，而是直接跳转到内核的保护模式部分。
 
-* 引导协议规定，**协议数据** 从内核镜像的偏移`0x1f1`处开始，`setup.bin`的链接器脚本`arch/x86/boot/setup.ld`因此把它放在了偏移`495 + 2 =497`处，前面填充了 2 字节的`0xff`作为哨兵
+* 引导协议规定，**协议数据** 从内核镜像的偏移`0x1f1`处开始，`setup.bin`的链接器脚本`arch/x86/boot/setup.ld`因此把它放在了偏移`495 + 2 = 497`处，前面填充了 2 字节的`0xff`作为哨兵
+
 ```lua
 SECTIONS
 {
@@ -376,7 +443,6 @@ SECTIONS
     .header     : { *(.header) }
 }
 ```
-
 * 所以 kexec/arch/x86_64/kexec-bzImage64.c`do_bzImage64_load()`拷贝 setup_header 就是`hdr/setup_sects`到`start_of_setup`这一段
 ```c
 static int do_bzImage64_load(...)
@@ -435,7 +501,6 @@ static int do_bzImage64_load(...)
     return 0;
 }
 ```
-
 * `regs64.rip = addr + 0x200;`里的`0x200`是 ABI 的规定。因为用的是 bzImage，所以我们看的是 arch/x86/boot/compressed/head_64.S 这个文件：
   * arch/x86/boot/compressed/head_64.S
   ```c
@@ -453,7 +518,6 @@ static int do_bzImage64_load(...)
       * and command line.
       */
   ```
-
 * `.org`伪指令作用如下：
 
 > Advance the location counter of the current section to *new-lc*. *new-lc* is either an absolute expression or an expression with the same section as the current subsection. That is, you can’t use `.org` to cross sections: if *new-lc* has the wrong section, the `.org` directive is ignored. To be compatible with former assemblers, if the section of *new-lc* is absolute, as issues a warning, then pretends the section of *new-lc* is the same as the current subsection.
@@ -489,7 +553,11 @@ machine_kexec()
             -> jmpq *rip(%rip) // 即 jmpq *(%rip + addr + 0x200) => jmpq startup_64
                -> startup_64
 ```
+
 * 所以说，`real_mode_data` segment 包含 bzImage 中拷贝出来的一小部分内容，然后被重定向以后交给内核，最后被用在了这里。此外，它还必须包含启动协议中 BIOS 需要向内核提供的数据，这些数据主要由`setup_linux_bootloader_parameters_high()`和`setup_linux_system_parameters()`这两个函数中填充。
+  * 其中，`setup_linux_bootloader_parameters_high()`设置了`real_mode->cmd_line_ptr`指针，并拷贝了命令行参数到`((char *)real_mode) + cmdline_offset`处，也就时零页中的`boot_params.hdr.cmd_line_ptr`处。
+  * 也就是说，命令行参数是通过`real_mode_data` segment 来传递的。
+
 ### 内核加载 crash 内核镜像
 ```c
 kernel/kexec.c
@@ -532,7 +600,9 @@ SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ..
    -> image = xchg(dest_image, image); //安装新捕捉内核镜像，卸载旧捕捉内核镜像
    -> kimage_free(image) //释放 kimage 控制结构
 ```
+
 #### Control pages
+
 > Control pages are special, they are the intermediaries that are needed while we copy the rest of the pages to their final resting place.  As such they must not conflict with either the destination addresses or memory the kernel is already using.
 >
 > Control pages are also the only pags we must allocate when loading a crash kernel.  All of the other pages are specified by the segments and we just memcpy into them directly.
@@ -540,6 +610,7 @@ SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ..
 > The only case where we really need more than one of these are for architectures where we cannot disable the MMU and must instead generate an identity mapped page table for all of the memory.
 >
 > Given the low demand this implements a very simple allocator that finds the first hole of the appropriate size in the reserved memory region, and allocates all of the memory up to and including the hole.
+
 * Control pages 很特别，它是当我们拷贝其余的页面到它们最终要被安放的位置时的中间媒介。因此它们必须不和目的地址冲突，也不能与当前内核正在使用的内存冲突。
 * 当我们加载一个 crash kernel 时，control pages 是我们必须分配的唯一页面。所有其他的页面由 segments 指定，我们只是用`memcpy`把他们直接拷贝进来。
 * 确实需要多于一页的 control page 的唯一情况是，对于那些无法禁用 MMU 体系结构，必须为所有内存生成一个恒等映射的页表。
@@ -626,6 +697,7 @@ static int init_pgtable(struct kimage *image, unsigned long start_pgtable)
     return init_transition_pgtable(image, level4p); //在恒等映射页表中创建 relocate_kernel 例程原始地址的页表项
 }
 ```
+
 * `kernel_ident_mapping_init()`是负责建立一个范围的恒等映射的接口，大体思路是这样：
   1. 它先检查某一页表条目是否被映射
   2. 如果已经映射了，则调用它下一级页表的恒等映射初始化函数，如`ident_p4d_init(info, p4d, addr, next)`去初始化下一级的页表
@@ -649,6 +721,7 @@ static void ident_pmd_init(struct x86_mapping_info *info, pmd_t *pmd_page,
     }
 }
 ```
+
 ## 发生 kernel panic 时的内核切换
 
 ### 调用 machine_kexec() 的几个场景
@@ -692,6 +765,7 @@ static void ident_pmd_init(struct x86_mapping_info *info, pmd_t *pmd_page,
              -> native_gdt_invalidate() //通过指令 lgdt 将全局段寄存器清零
              -> image->start = relocate_kernel((unsigned long)image->head, (unsigned long)page_list, image->start, ...)
   ```
+
 ### 切换内核
 * `machine_kexec()`调用`relocate_kernel`例程开启了切换内核之旅，传入的参数如下：
 ```c
@@ -721,6 +795,7 @@ void machine_kexec(struct kimage *image)
                        sme_active());
 }
 ```
+
 * `KEXEC_CONTROL_CODE_MAX_SIZE`为`2048`，意思是把`4096 Byte`的 control_page 分为两部分，前`2048 B`放`relocate_kernel`例程的代码，后面`2048 B`用做数据存储、栈和 jump back
 * arch/x86/kernel/relocate_kernel_64.S 这个文件很重要，需要重点了解一下了
 ```s
@@ -1006,6 +1081,7 @@ SYM_CODE_END(swap_pages)
 	.globl kexec_control_code_size
 .set kexec_control_code_size, . - relocate_kernel
 ```
+
 * 关于`CR0`的`TS`位
 > `TS`：`CR0`的 bit `3`是 **任务已切换（Task Switched）标志**。该标志用于推迟保存任务切换时的协处理器内容，直到新任务开始实际执行协处理器指令。处理器在每次任务切换时都会设置该标志，并且在执行协处理器指令时测试该标志。
 > 如果设置了`TS`标志并且`CR0`的`EM`标志为`0`，那么在执行任何协处理器指令之前会产生一个 *设备不存在异常*。
@@ -1161,6 +1237,7 @@ void arch_crash_save_vmcoreinfo(void)
     VMCOREINFO_NUMBER(sme_mask);
 }
 ```
+
 ## Core Files
 ### /proc/kcore
 * 提供一个 live kernel 的虚拟的 ELF core 文件，可以用 gdb，crash-utility，readelf 等 ELF 工具读取
