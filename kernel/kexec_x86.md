@@ -375,7 +375,7 @@ PURGATORY_SRCS+=$($(ARCH)_PURGATORY_SRCS)
 
 ##### 内核中的 setup_header
 * 见 arch/x86/include/uapi/asm/bootparam.h 的`struct setup_header`结构体的原型。
-* `arch/x86/boot/header.S`会被编译成`arch/x86/boot/header.o`，这个文件会和其他文件一起编译进`arch/x86/boot/setup.elf`，接着`setup.elf`会被`objcopy`去掉无用的信息成为`setup.bin`，这个文件会被和第二次编译出来的`vmlinux.bin`合并成`bzImage`。所以`header.o`和`setup.elf`去掉 ELF 头与`setup.bin`，`bzImage`的前面一段的内容是一样的，构成`x86_linux_header`
+* `arch/x86/boot/header.S`会被编译成`arch/x86/boot/header.o`，这个文件会和其他文件一起编译进`arch/x86/boot/setup.elf`，接着`setup.elf`会被`objcopy`去掉无用的信息成为`setup.bin`，这个文件会被和第二次编译出来的`vmlinux.bin`合并成`bzImage`。所以`header.o`和`setup.elf`去掉 ELF 头与`setup.bin`，`bzImage`的前面一段的内容是一样的，构成`x86_linux_header`（但`bzImage`的一部分内容会被`arch/x86/boot/tools/build`修改）。
 * arch/x86/boot/header.S
 ```s
 ...
@@ -754,6 +754,18 @@ static void ident_pmd_init(struct x86_mapping_info *info, pmd_t *pmd_page,
           -> machine_crash_shutdown(&fixed_regs)
              -> machine_ops.crash_shutdown(regs) //arch 相关的 crash_shutdown 回调，x86 的 arch/x86/kernel/crash.c
              => native_machine_crash_shutdown(regs)
+                -> crash_smp_send_stop()
+                   if (smp_ops.crash_stop_other_cpus)
+                   -> smp_ops.crash_stop_other_cpus()
+                   => kdump_nmi_shootdown_cpus()
+                      -> nmi_shootdown_cpus(kdump_nmi_callback)
+                            crashing_cpu = safe_smp_processor_id();
+                            shootdown_callback = callback; // callback 是入参 kdump_nmi_callback
+                            //crash_nmi_callback() 注册为 NMI 回调函数，会调 shootdown_callback() 即 kdump_nmi_callback()，
+                            //kdump_nmi_callback() 调到 crash_save_cpu(regs, cpu)，从而让其他 CPU 的寄存器信息保存到 crash note
+                            if (register_nmi_handler(NMI_LOCAL, crash_nmi_callback, NMI_FLAG_FIRST, "crash"))
+                               return;
+                            apic_send_IPI_allbutself(NMI_VECTOR);//触发 IPI 中断，让其他 CPU 调 crash_nmi_callback()
                 -> crash_save_cpu(regs, safe_smp_processor_id()) //把 panic CPU 的寄存器信息更新到 crash note
           -> machine_kexec(kexec_crash_image)
              -> local_irq_disable() //关中断了
