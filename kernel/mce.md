@@ -1,4 +1,29 @@
 # MCE
+* Machine Check Exception 是一类由硬件错误触发的异常，譬如当 CPU 检测到总线，chipset，内存，cache，TLB 等硬件出现致命错误时会触发这类异常。
+* 一般来说这些错误对系统的稳定性危害极大而且无法恢复，通常会触发系统的复位操作。这些错误在一个大型的服务器环境 如服务器集群或者是云计算的环境下是不可避免的，因此必须对此有相应的处理机制。
+## MCA 错误分类分级表
+
+| Error Handling                                                                      | Category              |
+| ----------------------------------------------------------------------------------- | --------------------- |
+| **System Reset** <br/>Multi-bit Error in Kernel                                          | Non-Recoverable/Fatal |
+| **OS Recoverable: System Available** <br/>Multi-bit Error in Application                 | Recoverable           |
+| **OS Corrected: Execution Continues** <br/>Patrol Scrub Error                            | Recoverable           |
+| **Firmware Corrected: Execution Continues** <br/>Single-bit Error in Write-Through Cache | Corrected             |
+| **Hardware Corrected: Execution Continues** <br/>Most Single-bit Errors                  | Corrected             |
+
+* **Corrected**: 对于可以纠正的错误（**CE** -- corrected error）类型，需要通过 CMCI（Corrected Machine Check Interrupt）中断来处理（并不是所有的 CE 都需要）
+  * 这是一个存在于每个 CPU 的 Local Vector Table 中的中断向量而不是一个异常
+* **Recoverable**: 对于不可纠正但是可以恢复的错误（**UCR Error** -- Uncorrected Recoverable Error），通过传统的 MCE 异常处理
+* **Fatal**: 对于致命的错误，软件也无法恢复的，将通过 MCE 强制系统复位
+
+### UCR 的细分
+* UCR 还可以细分为 SRAR 和 SRAO 两种不同的类型的 MCE
+  * **SRAR**（software recoverable action **required**）
+  * **SRAO**（software recoverable action **optional**）
+* **相同点**：对于**已知**类型的错误，OS 需要根据错误类型执行不同的动作将系统从错误状态中恢复
+* **不同点**：对于**未知**类型的错误
+  * SRAR 需要将系统 *复位*
+  * SRAO 则可以让系统 *继续正常运行*
 
 ## 注册 MCE 中断处理函数
 ```c
@@ -9,8 +34,11 @@ start_kernel()
          -> mcheck_cpu_init(c)
             -> machine_check_vector = do_machine_check;
 ```
+
 * Machine Check 的中断向量`X86_TRAP_MC`（中断号是`18`）
+
   * arch/x86/include/asm/trapnr.h
+
   ```c
   /* Interrupts/Exceptions */
 
@@ -39,9 +67,10 @@ start_kernel()
   #define X86_TRAP_VC     29  /* VMM Communication Exception */
   #define X86_TRAP_IRET       32  /* IRET Exception */
   ```
-
 * 定义 Machine Check 的中断向量`X86_TRAP_MC`的中断描述符表项
+
   * arch/x86/kernel/idt.c
+
   ```c
   ...
   #define G(_vector, _addr, _ist, _type, _dpl, _segment)  \
@@ -80,11 +109,15 @@ start_kernel()
       ...
   };
   ```
+
   * 由此可见，其中断处理函数为`asm_exc_machine_check`
 
 ## MCE 中断处理函数的声明
+
 * `idtentry_mce_db`宏的定义
+
   * arch/x86/entry/entry_64.S
+
   ```s
   /**
    * idtentry_mce_db - Macro to generate entry stubs for #MC and #DB
@@ -135,7 +168,9 @@ start_kernel()
   SYM_CODE_END(\asmsym)
   .endm
   ```
+
   * arch/x86/include/asm/idtentry.h
+
   ```c
   #ifdef CONFIG_X86_64
   # define DECLARE_IDTENTRY_MCE(vector, func)             \
@@ -149,7 +184,9 @@ start_kernel()
   ...
   #endif
   ```
+
 ## MCE 中断处理函数的定义
+
 * arch/x86/include/asm/idtentry.h
   ```c
   #ifndef __ASSEMBLY__
@@ -190,6 +227,7 @@ start_kernel()
   ```
 * 所以最后看到的中断处理函数`exc_machine_check()`的定义是这样的：
   * arch/x86/kernel/cpu/mce/core.c
+
   ```c
   ...
   #ifdef CONFIG_X86_64
@@ -205,9 +243,12 @@ start_kernel()
   ...
   #endif
   ```
+
 ## MCE Severity
+
 * MCE 的严重程度分为以下级别：
 * arch/x86/kernel/cpu/mce/internal.h
+
 ```c
 enum severity_level {
     MCE_NO_SEVERITY,
@@ -221,8 +262,10 @@ enum severity_level {
     MCE_PANIC_SEVERITY,
 };
 ```
+
 * 对应的，有个`struct severity`类型的数组`severities[]`
 * arch/x86/kernel/cpu/mce/severity.c
+
 ```c
 static struct severity {
     u64 mask;
@@ -399,6 +442,7 @@ static struct severity {
 ```
 
 * arch/x86/include/asm/mce.h
+
 ```c
 /* MCG_STATUS register defines */
 #define MCG_STATUS_RIPV     BIT_ULL(0)   /* restart ip valid */
@@ -448,7 +492,88 @@ static struct severity {
 ...
 ```
 
+
+## HWPOISON
+### HWPOISN 的应用背景与基本原理
+* 当硬件（如内存控制器）发现一个内存页中的数据出错并且无法被纠正，就会标记该页面，并抛出 MCE 异常并通知 OS 该页面已包含错误数据，需要立即被隔离。从而确保错误数据不会被自身或应用程序“消费”，或进一步被写入磁盘。
+* 一般来说，大多数出错的页面都可以被 OS 简单有效地隔离，从而避免错误的扩散甚至系统复位，但也有些 OS 不值得或者不可能处理的情况，比如
+  * 页面被复杂数据结构所引用，
+  * 包含了内核自身的代码和数据，
+  * 恰好在硬件发现问题到 OS 隔离的时间间隙内被访问。
+* 如果这些未被隔离的页面被访问，将会被硬件捕获并触发新的 MCE 异常，从而导致 kernel panic。
+* **可隔离的页面** 包括 LRU page 和 buddy system 中的页面，都是**和进程相关的**
+  * 如果这个页面映射的是**磁盘文件**，即 page cache，
+    * 如果这个页面是**干净的**，也就是说和磁盘数据是同步的，那么**直接丢弃**这个页面即可
+    * 反之如果这个页面**被改写过**或者说是**脏页**则不能让这个有问题的内存页面污染磁盘文件，**所有映射了该页面的进程必须被终止**
+  * 如果这个页面是某个进程正在使用的**匿名页面（anonymous page）**，譬如进程使用的栈或者堆，那么**必须终止这个进程**以防止错误扩散到本进程以外的其他地址空间中
+* **不可隔离的页面** 即由内核分配使用的页面，如 driver，内核线程，slab 管理器等等
+
+### HWPOISON 对于 corrupted 页面的处理方式
+* 当硬件检测到一个 *无法纠正* 的内存 ECC 校验错误时，
+  * 如果这个*页面正在被“消费”*，会产生 Action Required 类型的 MCE 异常
+  * 反之则产生 Action Optional 类型的 MCE 异常
+* 从产生 MCE 开始，这个内存页必须尽快从内存管理系统中隔离并且确保永远不会被使用，除非重启系统。但是由于内存页可能处于各种各样的状态，譬如被改写过，是否处于 swap 分区中，是 anonymous 映射还是 file-backed 映射等等，因此需要分门别类的进行相应的处理。总的来说有四种处理结果：
+  * recovery
+  * delay
+  * ignore
+  * failure
+* **Recovery** 意味着 HWPOISON 采取了一定的动作，可能仅仅只有一步操作，也可能是一系列的处理，但是最终这个内存页被成功隔离，因此被称为 Recovery。
+  * 这里的 recovery 并不是说内存错误被修复，这个内存页又可以使用了，而是指 **这个内存页从一切可以导向 / 访问这个页面的数据结构中隔离开了**，如 buddy system，LRU 队列，radix tree 等等。
+* 对于 delay/ignore/failure 而言，它们和 recovery 最大的不同是 delay/ignore/failure 并没有在处理行为结束时将内存页隔离开，而 **仅仅是在 OS 中标识了当前内存页被 poison 而已**。
+* **Delay** 意味着需要延后处理，譬如当 HWPOISON 面对的是一个 *出错的空闲的内存页* 时，HWPOISON 不用做过多的处理，只需要将其标识为 poison，等待后继的内存分配函数（这里指 `prep_new_page`）执行时自动将其跳过并从 buddy system 中隔离开，永不再用
+* **Ignore** 则意味着 HWPOISON 放弃处理某些类型的内存页，忽略即可。这些类型包括有：
+    * 已经被标识为 poison 的内存页，无需再处理一次
+    * 无效的页面，如页框号超出了当前系统的最大内存
+    * 内核占用的页面，因为如果处理的话很可能导致系统变得更加不稳定
+    * 某些引用计数（`(struct page *)page->_count`）为 0 的页面，这里特指那些为 high order 但是并没有标识为 `PG_compound` 的页面，这是因为一个 high order 的页面包含连续的几个物理页，但是只有 `head` 页才会更新引用计数，其他的页面中的引用计数均为 0，由于 high order 的页面是连续的物理地址，可能处于各种状态，例如正在被设备用作 DMA 传输，在这种情况下就无法杀掉使用的进程，因为这个"进程"就是内核本身，因此对这种页面目前没有再做细分处理，全部忽略
+* **Failure** 则针对以上所以处理情形之外的 *未知页* 或者是 *大页*，或者是 *在处理的过程中出现问题* 也会视为 failure。
+  * 这里所说的 **大页** 不是上文提及的 high order 的页面，而是指开启 PAE，PSE 之后使用的 2M/4M 甚至更大的页面，这种页面标识有 `PG_compound` 以确保这个大页面不会被细分。
+  * 因为目前反向映射不提供对大页的支持，而且对大页的支持还需要将 hugetlbfs 考虑进来，由于其复杂性目前并没有实现对大页的支持，因此只能当作处理失败。
+* Recovery 和 Delay 都可以认为是 **“隔离成功”**，因为 OS 确信该页面不会再被访问，从而造成系统崩溃
+* Ignore 和 Failure 都应当被视为 **“隔离失败”**，因为系统可能在接下来的任何时刻崩溃
+
+### Early Kill VS. Late Kill
+* 当一个 **内存页是干净的** 状态时，无论这个页是映射磁盘文件的一个 page cache 页，还是进程使用的 anonymous 页，由于已经是和磁盘同步的，所以不用担心丢失数据，可以直接从磁盘读取或者在 page fault 的时候从磁盘中读取。因此处理逻辑也很简单：
+  1. 首先将所有使用这个页面的进程中对应的页表项取消映射，
+  2. 然后直接丢弃这个页面即可；
+* 但是对于 **脏页** 显然要麻烦的多，因为脏页面就意味着有数据还没来得及同步，因此无法从磁盘中恢复有效的数据，所以对于使用脏页的进程只能被杀掉。
+* HWPOISON 的具体处理过程如下：
+  1. 首先要将所有使用这个页面的进程中对应的页表项取消映射，
+  2. 然后根据需要选择是否立即杀掉相应的进程。
+* 这里 HWPOISON 使用了一个 sysctl 接口 `vm.memory_failure_early_kill` 来选择
+  * 是立刻杀掉所有有关的进程
+    * 如果是选择立刻杀掉进程的话，HWPOISON 通过构造一个 `SIGBUS` 信号来杀掉相应的进程
+  * 还是仅仅把对应的页表项取消映射，等到 page fault 的时候再进行必要的处理
+* 即使是要杀掉的进程是像 Qemu 这样的虚拟机客户端，也没有太大的不同，只要 Qemu 能够将这个信号适当的转发到 Guest VM 的内部，从逻辑上也讲也只会杀掉真正使用这个内存页的虚拟进程，而不会将整个虚拟机都杀掉。
+* 不过对于存在于 swap cache 中的页面处理则有些特别。
+  * 因为放在 swap cache 中的页面有可能已经不存在通常意义上的 rmap，因而无法通过 rmap 遍历所有引用当前页面的进程，从而无法进行 early kill，
+  * 因此对于 swap cache 中的页面只能使用 late kill 的方式进行处理，即使通过 sysctl 接口选择了 early kill 也是一样的。
+## APEI
+* **APEI（ACPI Platform Error Interface）** 是定义在 ACPI4.0 规范中的一个面向硬件错误管理的接口。
+* APEI 的产生，主要是为了统一 firmware/BIOS 和 OS 之间的错误交互机制，使用标准的错误接口进行管理，同时也扩展了错误接口的内容以便实现更加灵活丰富的功能
+* 通过 APEI，firmware/BIOS 甚至可以在将错误报告到 OS 之前就进行解析，譬如
+  * 通过 firmware/BIOS 提供一个简单的管理环境，不用进入 OS 就可以分析处理错误，
+  * 或者利用 APEI 人为注入错误以测试某些特定的错误是否可以正确处理。
+* 本质上说，APEI 就是四张表：
+  * Error Record Serialization Table (**ERST**)：用来保存错误记录，通过 daemon 程序可以定期写入到 flash 或者 NVRAM 这类非易失性介质中永久保存；
+  * BOOT Error Record Table (**BERT**)：用来记录本次启动之前保留下来的未处理的错误；
+  * Hardware Error Source Table (**HEST**)：提供了对各式各样的硬件错误源的控制管理；
+  * Error Injection Table (**EINJ**)：是提供了一个便捷的错误注入接口以方便测试其他的 APEI 接口和相关的 RAS 特性。
+* APEI 所涵盖的硬件错误类型十分丰富，包括处理器，chipset，总线以及 I/O 设备产生的各种硬件错误。
+  * 对于 MCE，NMI 这样的严重错误，根据错误的严重程度，可以选择
+    * 通过 CPER 记录下来，
+    * 或是需要重启系统，在重启系统之前同时使用 BERT 保存本次的出错信息供重启后继续处理；
+  * 对于普通的错误则可以定期轮询并记录保存在磁盘上。
+* APEI 提供的 inject 机制十分便利。通过一个与 OS 无关的接口，注入需要的硬件错误，从而检测硬件是否可以正确的错误报告，从而达到了诊断硬件的目的。
+* 在这个基础上，OS 可以提供一个简便的错误处理机制来完善软件对硬件的诊断和管理。APEI 的 inject 实现基本上是一个 2 步操作：
+  1. 软件通过`SET_ERROR_TYPE`这个动作每次在`EINJ`表中注入一个错误
+  2. 软件通过`GET_TRIGGER_ERROR_ACTION_TABLE`得到需要的 Trigger Error Action 表，然后通过读写这个表来触发上一步注入的错误
+
+### CPER & Serialization
+* **标准错误接口 CPER（Common Platform Error Record）** 定义在 UEFI 2.1 specification 的 Appendix N 中。
+* **Serialization** 类似于 C++ 中的流，这里特指使用 CPER 的编码方式将记录保存在 non-volatile 的设备如 flash/NVRAM 上。
 ## References
+
 - [怎样诊断Machine-check Exception](http://linuxperf.com/?p=105)
 - [x86架构—MCA](https://www.codenong.com/cs106476885/)
 - [CPU RAS](https://zhuanlan.zhihu.com/p/345444988)
