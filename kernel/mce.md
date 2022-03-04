@@ -1,10 +1,13 @@
 # MCE
+
 * Machine Check Exception 是一类由硬件错误触发的异常，譬如当 CPU 检测到总线，chipset，内存，cache，TLB 等硬件出现致命错误时会触发这类异常。
 * 一般来说这些错误对系统的稳定性危害极大而且无法恢复，通常会触发系统的复位操作。这些错误在一个大型的服务器环境 如服务器集群或者是云计算的环境下是不可避免的，因此必须对此有相应的处理机制。
+
 ## MCA 错误分类分级表
 
-| Error Handling                                                                      | Category              |
-| ----------------------------------------------------------------------------------- | --------------------- |
+
+| Error Handling                                                                           | Category              |
+| ------------------------------------------------------------------------------------------ | ----------------------- |
 | **System Reset** <br/>Multi-bit Error in Kernel                                          | Non-Recoverable/Fatal |
 | **OS Recoverable: System Available** <br/>Multi-bit Error in Application                 | Recoverable           |
 | **OS Corrected: Execution Continues** <br/>Patrol Scrub Error                            | Recoverable           |
@@ -17,6 +20,7 @@
 * **Fatal**: 对于致命的错误，软件也无法恢复的，将通过 MCE 强制系统复位
 
 ### UCR 的细分
+
 * UCR 还可以细分为 SRAR 和 SRAO 两种不同的类型的 MCE
   * **SRAR**（software recoverable action **required**）
   * **SRAO**（software recoverable action **optional**）
@@ -25,7 +29,10 @@
   * SRAR 需要将系统 *复位*
   * SRAO 则可以让系统 *继续正常运行*
 
+![pic/mce.jpg](pic/mce.jpg)
+
 ## 注册 MCE 中断处理函数
+
 ```c
 start_kernel()
 -> check_bugs()
@@ -188,6 +195,7 @@ start_kernel()
 ## MCE 中断处理函数的定义
 
 * arch/x86/include/asm/idtentry.h
+
   ```c
   #ifndef __ASSEMBLY__
   ...
@@ -226,6 +234,7 @@ start_kernel()
   #endif
   ```
 * 所以最后看到的中断处理函数`exc_machine_check()`的定义是这样的：
+
   * arch/x86/kernel/cpu/mce/core.c
 
   ```c
@@ -492,9 +501,10 @@ static struct severity {
 ...
 ```
 
-
 ## HWPOISON
+
 ### HWPOISN 的应用背景与基本原理
+
 * 当硬件（如内存控制器）发现一个内存页中的数据出错并且无法被纠正，就会标记该页面，并抛出 MCE 异常并通知 OS 该页面已包含错误数据，需要立即被隔离。从而确保错误数据不会被自身或应用程序“消费”，或进一步被写入磁盘。
 * 一般来说，大多数出错的页面都可以被 OS 简单有效地隔离，从而避免错误的扩散甚至系统复位，但也有些 OS 不值得或者不可能处理的情况，比如
   * 页面被复杂数据结构所引用，
@@ -509,6 +519,7 @@ static struct severity {
 * **不可隔离的页面** 即由内核分配使用的页面，如 driver，内核线程，slab 管理器等等
 
 ### HWPOISON 对于 corrupted 页面的处理方式
+
 * 当硬件检测到一个 *无法纠正* 的内存 ECC 校验错误时，
   * 如果这个*页面正在被“消费”*，会产生 Action Required 类型的 MCE 异常
   * 反之则产生 Action Optional 类型的 MCE 异常
@@ -522,10 +533,10 @@ static struct severity {
 * 对于 delay/ignore/failure 而言，它们和 recovery 最大的不同是 delay/ignore/failure 并没有在处理行为结束时将内存页隔离开，而 **仅仅是在 OS 中标识了当前内存页被 poison 而已**。
 * **Delay** 意味着需要延后处理，譬如当 HWPOISON 面对的是一个 *出错的空闲的内存页* 时，HWPOISON 不用做过多的处理，只需要将其标识为 poison，等待后继的内存分配函数（这里指 `prep_new_page`）执行时自动将其跳过并从 buddy system 中隔离开，永不再用
 * **Ignore** 则意味着 HWPOISON 放弃处理某些类型的内存页，忽略即可。这些类型包括有：
-    * 已经被标识为 poison 的内存页，无需再处理一次
-    * 无效的页面，如页框号超出了当前系统的最大内存
-    * 内核占用的页面，因为如果处理的话很可能导致系统变得更加不稳定
-    * 某些引用计数（`(struct page *)page->_count`）为 0 的页面，这里特指那些为 high order 但是并没有标识为 `PG_compound` 的页面，这是因为一个 high order 的页面包含连续的几个物理页，但是只有 `head` 页才会更新引用计数，其他的页面中的引用计数均为 0，由于 high order 的页面是连续的物理地址，可能处于各种状态，例如正在被设备用作 DMA 传输，在这种情况下就无法杀掉使用的进程，因为这个"进程"就是内核本身，因此对这种页面目前没有再做细分处理，全部忽略
+  * 已经被标识为 poison 的内存页，无需再处理一次
+  * 无效的页面，如页框号超出了当前系统的最大内存
+  * 内核占用的页面，因为如果处理的话很可能导致系统变得更加不稳定
+  * 某些引用计数（`(struct page *)page->_count`）为 0 的页面，这里特指那些为 high order 但是并没有标识为 `PG_compound` 的页面，这是因为一个 high order 的页面包含连续的几个物理页，但是只有 `head` 页才会更新引用计数，其他的页面中的引用计数均为 0，由于 high order 的页面是连续的物理地址，可能处于各种状态，例如正在被设备用作 DMA 传输，在这种情况下就无法杀掉使用的进程，因为这个"进程"就是内核本身，因此对这种页面目前没有再做细分处理，全部忽略
 * **Failure** 则针对以上所以处理情形之外的 *未知页* 或者是 *大页*，或者是 *在处理的过程中出现问题* 也会视为 failure。
   * 这里所说的 **大页** 不是上文提及的 high order 的页面，而是指开启 PAE，PSE 之后使用的 2M/4M 甚至更大的页面，这种页面标识有 `PG_compound` 以确保这个大页面不会被细分。
   * 因为目前反向映射不提供对大页的支持，而且对大页的支持还需要将 hugetlbfs 考虑进来，由于其复杂性目前并没有实现对大页的支持，因此只能当作处理失败。
@@ -533,6 +544,7 @@ static struct severity {
 * Ignore 和 Failure 都应当被视为 **“隔离失败”**，因为系统可能在接下来的任何时刻崩溃
 
 ### Early Kill VS. Late Kill
+
 * 当一个 **内存页是干净的** 状态时，无论这个页是映射磁盘文件的一个 page cache 页，还是进程使用的 anonymous 页，由于已经是和磁盘同步的，所以不用担心丢失数据，可以直接从磁盘读取或者在 page fault 的时候从磁盘中读取。因此处理逻辑也很简单：
   1. 首先将所有使用这个页面的进程中对应的页表项取消映射，
   2. 然后直接丢弃这个页面即可；
@@ -548,7 +560,9 @@ static struct severity {
 * 不过对于存在于 swap cache 中的页面处理则有些特别。
   * 因为放在 swap cache 中的页面有可能已经不存在通常意义上的 rmap，因而无法通过 rmap 遍历所有引用当前页面的进程，从而无法进行 early kill，
   * 因此对于 swap cache 中的页面只能使用 late kill 的方式进行处理，即使通过 sysctl 接口选择了 early kill 也是一样的。
+
 ## APEI
+
 * **APEI（ACPI Platform Error Interface）** 是定义在 ACPI4.0 规范中的一个面向硬件错误管理的接口。
 * APEI 的产生，主要是为了统一 firmware/BIOS 和 OS 之间的错误交互机制，使用标准的错误接口进行管理，同时也扩展了错误接口的内容以便实现更加灵活丰富的功能
 * 通过 APEI，firmware/BIOS 甚至可以在将错误报告到 OS 之前就进行解析，譬如
@@ -556,7 +570,7 @@ static struct severity {
   * 或者利用 APEI 人为注入错误以测试某些特定的错误是否可以正确处理。
 * 本质上说，APEI 就是四张表：
   * Error Record Serialization Table (**ERST**)：用来保存错误记录，通过 daemon 程序可以定期写入到 flash 或者 NVRAM 这类非易失性介质中永久保存；
-  * BOOT Error Record Table (**BERT**)：用来记录本次启动之前保留下来的未处理的错误；
+  * Boot Error Record Table (**BERT**)：用来记录本次启动之前保留下来的未处理的错误；
   * Hardware Error Source Table (**HEST**)：提供了对各式各样的硬件错误源的控制管理；
   * Error Injection Table (**EINJ**)：是提供了一个便捷的错误注入接口以方便测试其他的 APEI 接口和相关的 RAS 特性。
 * APEI 所涵盖的硬件错误类型十分丰富，包括处理器，chipset，总线以及 I/O 设备产生的各种硬件错误。
@@ -564,14 +578,47 @@ static struct severity {
     * 通过 CPER 记录下来，
     * 或是需要重启系统，在重启系统之前同时使用 BERT 保存本次的出错信息供重启后继续处理；
   * 对于普通的错误则可以定期轮询并记录保存在磁盘上。
+
+### 用 APEI 进行错误注入
+
 * APEI 提供的 inject 机制十分便利。通过一个与 OS 无关的接口，注入需要的硬件错误，从而检测硬件是否可以正确的错误报告，从而达到了诊断硬件的目的。
 * 在这个基础上，OS 可以提供一个简便的错误处理机制来完善软件对硬件的诊断和管理。APEI 的 inject 实现基本上是一个 2 步操作：
   1. 软件通过`SET_ERROR_TYPE`这个动作每次在`EINJ`表中注入一个错误
   2. 软件通过`GET_TRIGGER_ERROR_ACTION_TABLE`得到需要的 Trigger Error Action 表，然后通过读写这个表来触发上一步注入的错误
+* 在操作系统平台可以使用这种机制注入错误之前，它必须通过执行`GET_ERROR_TYPE`动作来了解平台的错误注入能力。
+  * `/sys/kernel/debug/apei/einj/available_error_type`对应函数 drivers/acpi/apei/einj.c:`available_error_type_show()`
+  * 在发现错误注入能力后，操作系统平台可以按照下面描述的顺序注入并触发错误。
+* 请注意，将错误注入平台不会自动消耗错误。为响应错误注入，平台返回一个触发错误动作表（trigger error action table）。
+* 注入错误的软件必须执行触发错误动作表中的动作才能消耗错误。如果特定错误类型在注入时*自动消耗*，则平台将返回由`NO_OP`组成的触发错误操作表。
+
+#### 执行错误注入
+
+1. 执行 `BEGIN_INJECTION_OPERATION` 动作以通知平台错误注入操作正在开始
+2. 执行 `GET_ERROR_TYPE` 动作以确定系统的错误注入能力。此动作返回平台支持的错误类型的 DWORD bitmap
+3. 如果 `GET_ERROR_TYPE` 返回设置了第 `[31] bit` 的 DWORD，则表示存在 vendor 定义的错误类型
+4. 操作系统平台选择要注入的错误类型。
+   * 如果操作系统平台选择注入一个支持的标准错误类型，则它通过执行 `SET_ERROR_TYPE_WITH_ADDRESS` 命令设置“`Error Type`”字段中的相应位。
+      * 例如，如果操作系统平台选择注入“Memory Correctable”错误，则操作系统平台执行 `SET_ERROR_TYPE_WITH_ADDRESS`，“`Error Type`”值为 `0x0000_0080`。
+      * 或者，操作系统平台可以选择注入的目标，例如内存范围、PCIe Segment/Device/Function 或 Processor APIC ID，具体取决于错误的类型。操作系统平台通过填写“`SET_ERROR_TYPE_WITH_ADDRESS` 数据结构”的适当字段来做到这一点。参考 ACPI spec 的 `SET_ERROR_TYPE_WITH_ADDRESS Data Structure` 表。
+   * 如果操作系统平台选择注入一个 vendor 定义的错误类型，则它执行 `SET_ERROR_TYPE_WITH_ADDRESS` 并设置“`Error Type`”字段的 `[31] bit`。
+      * 操作系统平台通过读取“`SET_ERROR_TYPE_WITH_ADDRESS` 数据结构”的“`Vendor Error Type Extension Structure Offset`”字段获取“`Vendor Error Type Extension Structure`”的位置。
+        * 操作系统平台从 PCI 配置空间中读取 Vendor ID、Device ID 和 Rev ID，其路径（PCIe Segment/Device/Function）在 `Vendor Error Type Extension Structure` 的 `SBDF` 字段中提供。
+        * 如果 Vendor ID、Device ID、Rev ID 匹配，则操作系统平台可以识别它正在运行的平台，并知道该平台支持的 Vendor Error Type。
+        * 操作系统平台在“`OEM Defined Structure`”字段中写入要注入的 Vendor Error Type。
+      * 或者，操作系统平台可以选择注入的目标，例如内存范围、PCIe Segment/Device/Function 或 Processor APIC ID，具体取决于错误的类型。操作系统平台通过填写“`SET_ERROR_TYPE_WITH_ADDRESS` 数据结构”的适当字段来做到这一点。
+5. 执行 `EXECUTE_OPERATION` 操作以指示平台开始注入操作。
+6. 通过不断执行 `CHECK_BUSY_STATUS` 操作来忙等待，直到平台通过清除 `Busy` 位来指示*操作完成*。
+7. 执行 `GET_COMMAND_STATUS` 操作以确定读取操作的状态。
+8. 如果状态指示平台无法注入错误，停止注入。
+9. 执行 `GET_TRIGGER_ERROR_ACTION_TABLE` 动作以获取指向触发错误动作表的物理地址的指针。这在错误注入是两个（或更多）步骤的系统中提供了灵活性。
+10. 执行在触发错误动作表中指定的操作。
+11. 执行 `END_OPERATION` 通知平台错误注入操作已完成。
 
 ### CPER & Serialization
+
 * **标准错误接口 CPER（Common Platform Error Record）** 定义在 UEFI 2.1 specification 的 Appendix N 中。
 * **Serialization** 类似于 C++ 中的流，这里特指使用 CPER 的编码方式将记录保存在 non-volatile 的设备如 flash/NVRAM 上。
+
 ## References
 
 - [怎样诊断Machine-check Exception](http://linuxperf.com/?p=105)
