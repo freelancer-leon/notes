@@ -81,7 +81,7 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
    |                     elf_info->kern_size = size; // 得到运行时内核代码段所在 Program 段的大小
    |                     return 0;
    |                  }
-   |            -> info->backup_start = add_buffer(info, ...) //加入 backup region segment 用于存储备份数据
+   |            -> info->backup_start = add_buffer(info, ...) //加入 backup region segment 用于存储 backup data
    |            -> crash_create_elf64_headers(..., &elf_info, ..., &tmp, ...) //创建 elfcorehdr segment 用于存储 crash 内存镜像数据，即 FUNC()
    |               -> get_kernel_vmcoreinfo(&vmcoreinfo_addr, &vmcoreinfo_len) //读入 /sys/kernel/vmcoreinfo 的信息
    |                  -> get_vmcoreinfo("/sys/kernel/vmcoreinfo", addr, len); //结果存入 addr 和 len
@@ -314,7 +314,7 @@ PURGATORY_SRCS+=$($(ARCH)_PURGATORY_SRCS)
 >
 > 事实上，除了收集信息功能外，setup.bin 被忽略的另一个重要功能就是负责在内核和 Bootloader 之间传递信息。例如，在加载内核时，Bootloader 需要从 setup.bin 中获取内核是否是可重定位的、内核的对齐要求、内核建议的加载地址等。32 位启动协议约定在 setup.bin 中分配一块空间用来承载这些信息，在构建映像时，内核构建系统需要将这些信息写到 setup.bin 的这块空间中。所以，虽然 setup.bin 已经失去了其以往的作用，但还不能完全放弃，其还要作为内核与 Bootloader 之间传递数据的桥梁，而且还要照顾到某些不能使用 32 位启动协议的场合。
 
-
+* 启动协议还规定，Bootloader 加载内核时`%rsi`必须存放`struct boot_params`的基地址
 ##### x86_linux_header
 
 * kexec/include/x86/x86-linux.h
@@ -558,6 +558,80 @@ machine_kexec()
   * 其中，`setup_linux_bootloader_parameters_high()`设置了`real_mode->cmd_line_ptr`指针，并拷贝了命令行参数到`((char *)real_mode) + cmdline_offset`处，也就时零页中的`boot_params.hdr.cmd_line_ptr`处。
   * 也就是说，命令行参数是通过`real_mode_data` segment 来传递的。
 
+#### 为什么捕捉内核启动时只能看见和保留内存
+1. 内核启动后能使用的内存信息是根据零页中的 `struct boot_e820_entry e820_table[E820_MAX_ENTRIES_ZEROPAGE]`得来的，例如，启动时可以看到打印如下：
+  ```c
+  BIOS-provided physical RAM map:
+  BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+  BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+  BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+  BIOS-e820: [mem 0x0000000000100000-0x000000005ffd4fff] usable
+  BIOS-e820: [mem 0x000000005ffd5000-0x000000005fffffff] reserved
+  BIOS-e820: [mem 0x00000000b0000000-0x00000000bfffffff] reserved
+  BIOS-e820: [mem 0x00000000fed1c000-0x00000000fed1ffff] reserved
+  BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
+  ```
+2. 启动后会被 I/O 设备、内核逐渐使用调，就是在`/proc/iomem`中看到的一些使用情况
+3. `get_crash_memory_ranges()`会通过`/proc/iomem`的信息填充`crash_memory_range[]`
+4. 从`crash_memory_range[]`数组中剔除（为 crash kernel 保留的内存 region）`crash_reserved_mem[]`数组的范围
+5. 在`crash_memory_range[]`数组中找到第一个类型为`System RAM` 640 KiB region 作为 backup data
+6. `load_crashdump_segments()`中，先分配`struct memory_range *memmap_p` `
+7. 把 backup data 范围通过`add_memmap()`函数加到`memmap_p`数组
+8. 把`crash_reserved_mem[]`数组通过`add_memmap()`函数加到`memmap_p`数组
+9. 创建 backup region segment，并把该范围通过`delete_memmap()`函数从`memmap_p`数组剔除
+10. 创建`elfcorehdr` segment，把该范围通过`delete_memmap()`函数从`memmap_p`数组剔除
+11. 遍历`mem_range`，即`get_crash_memory_ranges()`填充的`crash_memory_range[]`数组，把以下类型的 region 添加到`memmap_p`数组
+  * `RANGE_ACPI`: ACPI Tables
+  * `RANGE_ACPI_NVS`：ACPI Non-volatile Storage
+  * `RANGE_RESERVED`：Reserved，reserved
+  * `RANGE_PMEM`：Persistent Memory
+  * `RANGE_PRAM`：Persistent Memory (legacy)
+12. 在`setup_e820()`通过`add_e820_map_from_mr()`及`setup_e820_ext()`把`memmap_p`数组里的范围填充到`real_mode_data`的`e820_map[]`数组，其实也就是给 crash kernel 准备的零页的`e820_table[]`数组
+    ```c
+    BIOS-provided physical RAM map:
+    BIOS-e820: [mem 0x0000000000000000-0x0000000000000fff] reserved
+    BIOS-e820: [mem 0x0000000000001000-0x000000000009fbff] usable
+    BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+    BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+    BIOS-e820: [mem 0x000000003f000000-0x000000005ef5cfff] usable
+    BIOS-e820: [mem 0x000000005efffc00-0x000000005effffff] usable
+    BIOS-e820: [mem 0x000000005ffd5000-0x000000005fffffff] reserved
+    BIOS-e820: [mem 0x00000000b0000000-0x00000000bfffffff] reserved
+    BIOS-e820: [mem 0x00000000fed1c000-0x00000000fed1ffff] reserved
+    BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
+    ```
+* 对应的 segments 数组为
+  ```c
+  1) Crash kernel bzImage
+  segment[0].buf   = 0x7f6449f95810
+  segment[0].bufsz = 0x91ce60
+  segment[0].mem   = 0x5d000000
+  segment[0].memsz = 0x1f3f000
+  
+  2) real_mode_data
+  segment[1].buf   = 0x55c74044aa10
+  segment[1].bufsz = 0x3936
+  segment[1].mem   = 0x5ef50000
+  segment[1].memsz = 0x4000
+  
+  3) purgatory
+  segment[2].buf   = 0x55c7404437b0
+  segment[2].bufsz = 0x70e0
+  segment[2].mem   = 0x5ef54000
+  segment[2].memsz = 0x9000
+  
+  4) elfcoreheader
+  segment[3].buf   = 0x55c740441910
+  segment[3].bufsz = 0x400
+  segment[3].mem   = 0x5ef5d000
+  segment[3].memsz = 0x4000
+  
+  5) backup_data
+  segment[4].buf   = 0x7f6449ef3010
+  segment[4].bufsz = 0x9ec00
+  segment[4].mem   = 0x5ef61000
+  segment[4].memsz = 0x9f000
+  ```
 ### 内核加载 crash 内核镜像
 ```c
 kernel/kexec.c

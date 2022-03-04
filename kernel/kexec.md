@@ -132,7 +132,8 @@ if (!do_kexec_file_syscall)
 #### Purgatory
 * 简单说，purgatory 就是一个 bootloader，一个为 kdump 定做的 boot loader
 * 在特定体系架构上编译 kexec 时，purgatory 会从相应特定体系的源码生成。它是一个 ELF 格式的 relocatable 文件
-* 为了使用上的方便，它被一个工具，`bin-to-hex`，翻译成一个数组并放在`kexec/purgatory.c`里。这样 kexec 的代码就可以直接使用它了
+* 为了使用上的方便，它被一个工具，`bin-to-hex`，翻译成一个数组并放在`kexec/purgatory.c`里，这样 kexec 的代码就可以直接使用它了
+* 虽然用`mmap()`把 purgatory 二进制文件映射到内存也可以达到类似的效果，但完全没必要，这意味着这个文件要被单独打包到`kexec-tools`里，每次运行`kexec`还要映射一次，所以还不如直接合到`kexec`可执行文件里呢
 * 最终它要链接进`kexec`可执行程序中，并作为一个 segment 通过`kexec_load()`系统调用传递给内核，内核会把它放在计算好的位置
 ##### ARM64 Purgatory 的生成过程
 * `purgatory/purgatory.c`实现了运行在内核态`purgatory()`函数
