@@ -369,7 +369,7 @@ static __always_inline int arch_spin_trylock(arch_spinlock_t *lock)
     new.head_tail &= ~TICKET_SLOWPATH_FLAG;
 
     /* cmpxchg is a full barrier, so nothing can move before it */
-    /*cmpxchg 族指令实现原子地比较并交换，由于前面插入了 lock 指令，因此 cmpxchg 指令
+    /*cmpxchg 族指令实现原子地比较并交换，由于前面插入了 lock 前缀，因此 cmpxchg 指令
       执行时锁内存总线，别的线程无法更新锁。
       cmpxchg 比较 old.head_tail 与 lock->head_tail 地址里的值，返回原来
       lock->head_tail 地址里的值：

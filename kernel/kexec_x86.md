@@ -184,7 +184,7 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
   5. 修正`info->entry` 和`info->rhdr.e_entry`为重定位到 “Crash kernel” region 后的`purgatory_start`例程的物理地址
   6. 遍历`ehdr->e_shdr`，重定位 section 中的符号
 * Backup data
-> On x86 machines, the first 640 KB of physical memory is needed to boot, regardless of where the kernel loads. Therefore, kexec backs up this region just before rebooting into the dump-capture kernel.
+> On x86 machines, the first 640 KB of physical memory is needed to boot, regardless of where the kernel loads. Therefore, kexec backs up this region just before rebooting into the dump-capture kernel. For simpler handling, the whole low 1M is reserved to avoid any later kernel or device driver writing data into this area. Like this, the low 1M can be reused as system RAM by kdump kernel without extra handling.
 * `get_backup_area()`会找到第一个大于 640 KiB 的 System RAM region 作为备份区，比如`0000000000001000-000000000009fbff`，并存储在`info->backup_src_start`和`info->backup_src_size`里
 * 把 backup data 加入到`segment[]`数组后会返回其在 Crash kernel region 的物理地址`info->backup_start = add_buffer(info, ...)`
 * purgatory 阶段的`crashdump_backup_memory()`会把`backup_src_start`开始的长度为`backup_src_size`数据拷贝到`backup_start`处

@@ -177,7 +177,6 @@ start_kernel()
   ```
 
   * arch/x86/include/asm/idtentry.h
-
   ```c
   #ifdef CONFIG_X86_64
   # define DECLARE_IDTENTRY_MCE(vector, func)             \
@@ -195,7 +194,6 @@ start_kernel()
 ## MCE 中断处理函数的定义
 
 * arch/x86/include/asm/idtentry.h
-
   ```c
   #ifndef __ASSEMBLY__
   ...
@@ -225,9 +223,14 @@ start_kernel()
   #define DEFINE_IDTENTRY_IST(func)                   \
       DEFINE_IDTENTRY_RAW(func)
   ...
+  #define DEFINE_IDTENTRY_NOIST(func)                 \
+      DEFINE_IDTENTRY_RAW(noist_##func)
+  ...
   #ifdef CONFIG_X86_64
   ...
   #define DEFINE_IDTENTRY_MCE     DEFINE_IDTENTRY_IST
+  ...
+  #define DEFINE_IDTENTRY_MCE_USER    DEFINE_IDTENTRY_NOIST
   ...
   #endif
   ...
@@ -249,6 +252,18 @@ start_kernel()
       exc_machine_check_kernel(regs);
       local_db_restore(dr7);
   }
+  // 发生异常时正在运行的是用户态的代码，跳转到这 noist_exc_machine_check()
+  /* The user mode variant. */
+  DEFINE_IDTENTRY_MCE_USER(exc_machine_check)
+  {
+      unsigned long dr7;
+
+      dr7 = local_db_save();
+      exc_machine_check_user(regs);
+      local_db_restore(dr7);
+  }
+  #else
+  /* 32bit unified entry point */
   ...
   #endif
   ```
