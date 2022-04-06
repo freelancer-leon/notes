@@ -21,10 +21,10 @@
   * 如果在异常表里有对应的 fixup 表项，且缺页地址在 VMA 内，则先在内核态建立好页的映射，修正完缺页之后，就可访问用户态的地址了
   * 如果缺页地址不在 VMA 内，则进入`bad_area()`处理，看`kernelmode_fixup_or_oops()->fixup_exception()`
     * 先查找异常表，如果异常表里有对应的 fixup 表项
+      * 在`fixup_exception()`中根据不同的情况修正错误
       * 得到 fixup 地址
       * 缺页处理函数修改`regs->ip`为 fixup 地址，因此缺页处理函数返回的时候会跳到异常表给出的 fixup 地址
-      * 跳到 fixup 例程后接着修复（大部分情况是把`RAX`设为`-EFAULT == -14`，让用户态程序得到一个错误）
-      * fixup 例程的最后通常会跳转到之前因访问用户态内存导致缺页的下一条指令（回到同一条指令不是又继续缺页吗？所以必须是下一条）
+      * fixup 地址通常是之前因访问用户态内存导致缺页的下一条指令（回到同一条指令不是又继续缺页吗？所以必须是下一条）
     * 如果异常表里没有对应的 fixup 表项`fixup_exception()`返回错误`0`，或者是表项类型不对，这应该是内核的错误，会导致 oops
 * **注意**：由于异常表的构建方式需要排序（方便运行时用`bsearch()`做 binary 搜索），因此仅对`.text`部分中的代码使用异常
 * `CONFIG_BUILDTIME_TABLE_SORT`允许通过 host 工具`scripts/sorttable`对内核映像的链接后的`__ex_table` section 进行排序。它将符号`main_extable_sort_needed `设置为`0`，避免在引导时对`__ex_table` section 进行排序。
@@ -53,11 +53,11 @@
   };
   ```
   * `insn`: 内核允许在虚拟地址空间发生异常的指令的地址（32 bit，64 bit 为到 exception table 起始地址的偏移）
-  * `fixup`：指定了进行异常处理代码的地址
+  * `fixup`：指定了`fixup_exception()`修正完后要跳转到的地址
   * `data`：就是原来的`type`，原来`type`功能单一，但现在被分为多个段复用了
     * **type** `EX_DATA_TYPE_MASK ((int)0x000000FF)`: 异常表项的类型，和原来的`type`意思一样
     * **reg**  `EX_DATA_REG_MASK  ((int)0x00000F00)`：`fixup_exception()`修正时要操作的寄存器
-    * **flag** `EX_DATA_FLAG_MASK ((int)0x0000F000)`：
+    * **flag** `EX_DATA_FLAG_MASK ((int)0x0000F000)`：目前就两个 flags 可用，可以控制在修正时是否要清除`rax`或`rdx`寄存器
     * **imm**  `EX_DATA_IMM_MASK  ((int)0xFFFF0000)`：要给寄存器填入的立即数
 
 * 插入条目，例如`_ASM_EXTABLE_CPY(1b, .L_fixup_4x8b_copy)`
@@ -150,7 +150,7 @@
     ".macro extable_type_reg type:req reg:req\n" \ //定义汇编宏 extable_type_reg，该宏需要入参 type 和 reg
     ".set found, 0\n"                            \ //设置 as 变量 found = 0
     ".set regnr, 0\n"                            \ //设置 as 变量 regnr = 0
-    ".irp rs,rax,rcx,rdx,rbx,rsp,rbp,rsi,rdi,r8,r9,r10,r11,r12,r13,r14,r15\n" \ //重复后面的是参数列表，rs 为要替换的占位符，注意，这里参数数据对应到 struct pt_regs 里的偏移，不能乱改
+    ".irp rs,rax,rcx,rdx,rbx,rsp,rbp,rsi,rdi,r8,r9,r10,r11,r12,r13,r14,r15\n" \ //重复后面的是参数列表，rs 为要替换的占位符，注意，这里参数数据对应到数组 pt_regoff[] 里的偏移，不能乱改
     ".ifc \\reg, %%\\rs\n"                       \ //如果两个字符串相同，则汇编以下代码部分（字符串比较区分大小写）
     ".set found, found+1\n"                      \ //found = fount + 1
     ".long \\type + (regnr << 8)\n"              \ //在此处放置数据`data`，`type`、`flag`、`imm`都是实参给的，8~11 位`reg`是这里需要确定的
@@ -187,6 +187,25 @@
 * `show_stack_regs(regs)`可以根据传入的`struct pt_regs *regs`来 dump stack
 * `k0`寄存器
 > AVX-512 还引入了 8 个 OPMask 寄存器，`k0`到`k7`。`k0`是一个特殊的情况，它的行为很像一些 RISC ISA 上的 “零 “寄存器：它不能被存储到，而且从它的加载总是产生一个全部为1的位掩码。
+
+### 旧的实现
+* 在旧实现里，异常表里的`fixup`域都指向放在`.fixup section`里的修正代码，对应现在的缺页异常处理是这样的
+  * 先查找异常表，如果异常表里有对应的 fixup 表项
+    * 得到 fixup 地址
+    * 缺页处理函数修改`regs->ip`为 fixup 地址，因此缺页处理函数返回的时候会跳到异常表给出的 fixup 地址
+    * 跳到`.fixup section`里的 fixup 例程后接着修复（大部分情况是把`RAX`设为`-EFAULT == -14`，让用户态程序得到一个错误）
+    * fixup 例程的最后通常会跳转到之前因访问用户态内存导致缺页的下一条指令（回到同一条指令不是又继续缺页吗？所以必须是下一条）
+  * 如果异常表里没有对应的 fixup 表项`fixup_exception()`返回错误`0`，或者是表项类型不对，这应该是内核的错误，会导致 oops
+* Peter Zijlstra 在 https://lore.kernel.org/all/20211110100102.250793167@infradead.org/ `v5.17-rc1`里把旧的实现改成现在的样子。
+  * 因为旧的实现运行在`.fixup section`里的代码回给栈回溯造成麻烦，比如说符号的查找和 unwind。
+  * 而且，这么多分散的`.fixup`项做的事情差不多，然后又集中放到`.fixup section`里，既冗余的且没什么必要
+* 修改的思路：
+  * 把`struct exception_table_entry`的单一功能`type`域变为`type`、`reg`、`flags`、`imm`几个位域复合而成的`data`域
+  * 在各个`pushsection __ex_table`时就制定好几个位域的值
+  * 把`struct exception_table_entry`的`fixup`域通常指定为导致缺页的下一条指令，而不是 fixup 例程的地址
+  * 在`fixup_exception()`根据制定好的位域的值，进行 case by case 的修正处理，替代原有的分散的各个 fixup 例程
+  * 修正完之后修改`regs->ip`为 fixup 地址
+  * 异常处理完后返回 fixup 地址
 
 ## References
 * [Kernel level exception handling](https://docs.kernel.org/x86/exception-tables.html)
