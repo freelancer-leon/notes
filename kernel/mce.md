@@ -516,9 +516,11 @@ static struct severity {
 ...
 ```
 
+## /dev/mcelog 错误注入
+![MCE inject](pic/mce_inject_fatal_broadcast.svg)
 ## HWPOISON
 
-### HWPOISN 的应用背景与基本原理
+### HWPOISON 的应用背景与基本原理
 
 * 当硬件（如内存控制器）发现一个内存页中的数据出错并且无法被纠正，就会标记该页面，并抛出 MCE 异常并通知 OS 该页面已包含错误数据，需要立即被隔离。从而确保错误数据不会被自身或应用程序“消费”，或进一步被写入磁盘。
 * 一般来说，大多数出错的页面都可以被 OS 简单有效地隔离，从而避免错误的扩散甚至系统复位，但也有些 OS 不值得或者不可能处理的情况，比如
@@ -557,6 +559,41 @@ static struct severity {
   * 因为目前反向映射不提供对大页的支持，而且对大页的支持还需要将 hugetlbfs 考虑进来，由于其复杂性目前并没有实现对大页的支持，因此只能当作处理失败。
 * Recovery 和 Delay 都可以认为是 **“隔离成功”**，因为 OS 确信该页面不会再被访问，从而造成系统崩溃
 * Ignore 和 Failure 都应当被视为 **“隔离失败”**，因为系统可能在接下来的任何时刻崩溃
+* `action_result()`对错误处理的结果进行解释
+  * include/linux/mm.h
+  ```c
+  /*
+  * Error handlers for various types of pages.
+  */
+  enum mf_result {
+      MF_IGNORED, /* Error: cannot be handled */
+      MF_FAILED,  /* Error: handling failed */
+      MF_DELAYED, /* Will be handled later */
+      MF_RECOVERED,   /* Successfully recovered */
+  };
+  ```
+  * mm/memory-failure.c
+  ```c
+  static const char *action_name[] = {
+    [MF_IGNORED] = "Ignored",
+    [MF_FAILED] = "Failed",
+    [MF_DELAYED] = "Delayed",
+    [MF_RECOVERED] = "Recovered",
+  };
+  ...
+  /*
+   * "Dirty/Clean" indication is not 100% accurate due to the possibility of
+   * setting PG_dirty outside page lock. See also comment above set_page_dirty().
+   */
+  static void action_result(unsigned long pfn, enum mf_action_page_type type,
+                enum mf_result result)
+  {
+      trace_memory_failure_event(pfn, type, result);
+  
+      pr_err("Memory failure: %#lx: recovery action for %s: %s\n",
+          pfn, action_page_types[type], action_name[result]);
+  }
+  ```
 
 ### Early Kill VS. Late Kill
 

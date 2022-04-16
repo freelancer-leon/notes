@@ -208,7 +208,7 @@ Memory: 3918160K/4093400K available (18445K kernel code, 2373K rwdata, 5424K rod
 
 ### AnonPages
 
-* 所有 page cache 里的页面（`Cached`）都是 file-backed pages，不是 anonymous Pages。`Cached`与`AnoPages`之间没有重叠。
+* 所有 page cache 里的页面（`Cached`）都是 file-backed pages，不是 anonymous Pages。`Cached`与`AnonPages`之间没有重叠。
   * 注：shared memory 不属于`AnonPages`，而是属于`Cached`，因为 shared memory 基于 tmpfs，所以被视为 file-backed，在 page cache 里
 * mmap **private** anonymous pages 属于`AnonPages`（anonymous pages），而 mmap **shared** anonymous pages 属于`Cached`（file-backed pages），因为 shared anonymous mmap 也是基于 tmpfs 的
 * Anonymous Pages 是与用户进程共存的，一旦进程退出，则 anonymous pages 也释放，不像 page cache 即使文件与进程不关联了还可以缓存
