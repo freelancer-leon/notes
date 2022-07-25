@@ -503,7 +503,7 @@ static int do_bzImage64_load(...)
 ```
 * `regs64.rip = addr + 0x200;`里的`0x200`是 ABI 的规定。因为用的是 bzImage，所以我们看的是 arch/x86/boot/compressed/head_64.S 这个文件：
   * arch/x86/boot/compressed/head_64.S
-  ```c
+  ```cpp
       .code64
       .org 0x200
   SYM_CODE_START(startup_64)
