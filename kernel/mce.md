@@ -595,6 +595,98 @@ static struct severity {
   }
   ```
 
+* `memory_failure()`会通过`TestSetPageHWPoison(p)`宏来设置页面结构的`PG_hwpoison` flag
+  * include/linux/page-flags.h
+  ```cpp
+  enum pageflags {
+  ...
+  #ifdef CONFIG_MEMORY_FAILURE
+      PG_hwpoison,        /* hardware poisoned page. Don't touch */
+  #endif
+  ...
+  }
+  ...
+  /*
+  * Macros to create function definitions for page flags
+  */
+  #define TESTPAGEFLAG(uname, lname, policy)              \
+  static __always_inline bool folio_test_##lname(struct folio *folio) \
+  { return test_bit(PG_##lname, folio_flags(folio, FOLIO_##policy)); }    \
+  static __always_inline int Page##uname(struct page *page)       \
+  { return test_bit(PG_##lname, &policy(page, 0)->flags); }
+
+  #define SETPAGEFLAG(uname, lname, policy)               \
+  static __always_inline                          \
+  void folio_set_##lname(struct folio *folio)             \
+  { set_bit(PG_##lname, folio_flags(folio, FOLIO_##policy)); }        \
+  static __always_inline void SetPage##uname(struct page *page)       \
+  { set_bit(PG_##lname, &policy(page, 1)->flags); }
+
+  #define CLEARPAGEFLAG(uname, lname, policy)             \
+  static __always_inline                          \
+  void folio_clear_##lname(struct folio *folio)               \
+  { clear_bit(PG_##lname, folio_flags(folio, FOLIO_##policy)); }      \
+  static __always_inline void ClearPage##uname(struct page *page)     \
+  { clear_bit(PG_##lname, &policy(page, 1)->flags); }
+  ...
+  #define TESTSETFLAG(uname, lname, policy)               \
+  static __always_inline                          \
+  bool folio_test_set_##lname(struct folio *folio)            \
+  { return test_and_set_bit(PG_##lname, folio_flags(folio, FOLIO_##policy)); } \
+  static __always_inline int TestSetPage##uname(struct page *page)    \
+  { return test_and_set_bit(PG_##lname, &policy(page, 1)->flags); }
+
+  #define TESTCLEARFLAG(uname, lname, policy)             \
+  static __always_inline                          \
+  bool folio_test_clear_##lname(struct folio *folio)          \
+  { return test_and_clear_bit(PG_##lname, folio_flags(folio, FOLIO_##policy)); } \
+  static __always_inline int TestClearPage##uname(struct page *page)  \
+  { return test_and_clear_bit(PG_##lname, &policy(page, 1)->flags); }
+
+  #define PAGEFLAG(uname, lname, policy)                  \
+      TESTPAGEFLAG(uname, lname, policy)              \
+      SETPAGEFLAG(uname, lname, policy)               \
+      CLEARPAGEFLAG(uname, lname, policy)
+  ...
+  #define TESTSCFLAG(uname, lname, policy)                \
+      TESTSETFLAG(uname, lname, policy)               \
+      TESTCLEARFLAG(uname, lname, policy)
+  ...
+  #ifdef CONFIG_MEMORY_FAILURE
+  PAGEFLAG(HWPoison, hwpoison, PF_ANY)
+  TESTSCFLAG(HWPoison, hwpoison, PF_ANY)
+  #define __PG_HWPOISON (1UL << PG_hwpoison)
+  #define MAGIC_HWPOISON  0x48575053U /* HWPS */
+  extern void SetPageHWPoisonTakenOff(struct page *page);
+  extern void ClearPageHWPoisonTakenOff(struct page *page);
+  extern bool take_page_off_buddy(struct page *page);
+  extern bool put_page_back_buddy(struct page *page);
+  #else
+  PAGEFLAG_FALSE(HWPoison, hwpoison)
+  #define __PG_HWPOISON 0
+  #endif
+  ```
+
+#### 为什么`get_user_pages(uaddr2, 1, FOLL_HWPOISON | FOLL_WRITE, ...)`在`memory_failure()`把 page unmap 后还能再找回来？
+1. `memory_failure()`会先给 page 设置上`PG_hwpoison` flag
+2. 后面`try_to_unmap()`会给该 page 对应的 PTE 改为一个特殊的 poison swap 条目，类型为`SWP_HWPOISON`，让它看起来是被交换出去了（其实并不是）
+3. 等到进程访问到该地址的时候，会发生缺页，但之前并不是正真的被换出，这里当然也不会换入，而是根据这个特殊的 swap 类型返回缺页原因`VM_FAULT_HWPOISON`
+4. 该缺页原因 `VM_FAULT_HWPOISON` + `get_user_pages()`时传入的`FOLL_HWPOISON` flag 会被`vm_fault_to_errno()`转化为`-EHWPOISON`并最终返回给用户（否则会被当成普通缺页错误`-EFAULT`）
+* 参见 commits：
+  ```
+  commit 888b9f7c58ebe8303bad817cd554df887a683957
+  Author: Andi Kleen ak@linux.intel.com
+  Date:   Wed Sep 16 11:50:11 2009 +0200
+
+      HWPOISON: Handle hardware poisoned pages in try_to_unmap
+
+  commit a7420aa54dbf699a5a05feba3c859b6baaa3938c
+  Author: Andi Kleen andi@firstfloor.org
+  Date:   Wed Sep 16 11:50:05 2009 +0200
+
+      HWPOISON: Add support for poison swap entries v2
+  ```
+
 ### Early Kill VS. Late Kill
 
 * 当一个 **内存页是干净的** 状态时，无论这个页是映射磁盘文件的一个 page cache 页，还是进程使用的 anonymous 页，由于已经是和磁盘同步的，所以不用担心丢失数据，可以直接从磁盘读取或者在 page fault 的时候从磁盘中读取。因此处理逻辑也很简单：
@@ -670,6 +762,11 @@ static struct severity {
 
 * **标准错误接口 CPER（Common Platform Error Record）** 定义在 UEFI 2.1 specification 的 Appendix N 中。
 * **Serialization** 类似于 C++ 中的流，这里特指使用 CPER 的编码方式将记录保存在 non-volatile 的设备如 flash/NVRAM 上。
+
+### 用户态 MCE 错误的一些处理
+1. 对于用户态的 UCNA 错误，MCE hanlder 会利用 task_work facility 把会调用`memory_failure()`的回调函数挂在`task_struct`的`task_works`链表上
+2. 当 task 返回用户态/虚拟机时会调用`task_work_run()`去逐个执行`task_works`链表上的回调函数
+3. 所以对于 RIPV 的 MCE，发送信号的目的 task 就是当时 MCE handler 发现 memory failure 的 task，只是延后到了返回用户态时才进行`memory_failure()`处理
 
 ## References
 
