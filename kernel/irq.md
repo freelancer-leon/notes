@@ -50,9 +50,11 @@
   8. 如果异常带有硬件错误码，也将它保存到栈上
   9. 根据 IDT 第 i 项的门描述符中的 *段选择符* 和 *偏移*，将中断或异常 handler 第一条指令的逻辑地址加载地址到`cs`和`eip`
 
+![Stack Usage on Transfers to Interrupt and Exception-Handling Routines](pic/x86_stack_irq_exp.png)
+
 ## 中断初始化
 ### Call trace
-```c
+```cpp
 start_kernel()
 -> trap_init()
   -> idt_setup_traps()
@@ -64,6 +66,7 @@ start_kernel()
         -> load_idt((const struct desc_ptr *)&idt_descr);
            -> native_load_idt()
   -> idt_setup_ist_traps()
+     -> idt_setup_from_table(idt_table, ist_idts, ARRAY_SIZE(ist_idts), true)
   -> x86_init.irqs.trap_init()
   -> idt_setup_debugidt_traps()
 -> init_IRQ()
@@ -85,7 +88,7 @@ start_kernel()
 ### `def_idts[]`数组
 * `struct gate_struct`对应到 Intel IDT 的表项，存储格式见上面图示，注意，中断处理函数的地址不是连续存储的，而是被`offset_low`，`offset_middle`，`offset_high`分成三个部分
   * arch/x86/include/asm/desc_defs.h
-  ```c
+  ```cpp
   enum {  //对应到表示门描述符类型的 40-43 位
           GATE_INTERRUPT = 0xE,
           GATE_TRAP = 0xF,
@@ -94,7 +97,7 @@ start_kernel()
   };
   ...
   struct idt_bits {
-          u16             ist     : 3, //32-34 位
+          u16             ist     : 3, //32-34 位，interrupt stack table 索引
                           zero    : 5, //35-39 位为 0
                           type    : 5, //40-43 位为门描述符类型，44 为 0
                           dpl     : 2, //45-46 位为门描述符 DPL
@@ -116,7 +119,7 @@ start_kernel()
   ```
 * 0~32 号异常的枚举定义
   * arch/x86/include/asm/traps.h
-  ```c
+  ```cpp
   /* Interrupts/Exceptions */
   enum {
           X86_TRAP_DE = 0,        /*  0, Divide-by-zero */
@@ -144,7 +147,7 @@ start_kernel()
   ```
 * `def_idts[]`数组存储的 Linux 中断向量与中断处理函数的对应关系，这与 Intel IDT 表`idt_table[]`是不同的，尤其是 Intel IDT 表项中存的是 **段选择符** 和 **偏移**，因此需要在`idt_init_desc()`函数中进行格式转换
 * arch/x86/kernel/idt.c
-  ```c
+  ```cpp
   struct idt_data {
           unsigned int    vector;
           unsigned int    segment;
@@ -232,25 +235,24 @@ start_kernel()
   ...*```
   ```
 * 例如，对于`X86_TRAP_NMI`，在IDT 数组`def_idts[]`的第二个元素
-  ```c
+  ```cpp
   struct idt_data def_idts[1] =
   {
           .vector         = X86_TRAP_NMI,   //第二号中断向量
-          .bits.ist       = DEFAULT_STACK,
+          .bits.ist       = DEFAULT_STACK,  //用于中断栈表的索引
           .bits.type      = GATE_INTERRUPT, //门描述符的 40-43 位
           .bits.dpl       = DPL0,           //门描述符的 45~46 位
           .bits.p         = 1,              //门描述符的 47 位
           .addr           = nmi,
           .segment        = __KERNEL_CS,
   }
-  ...__```
   ```
 * 其中，`X86_TRAP_NMI`向量的中断处理函数的入口地址为`nmi`，例如在 x86-64 中的定义见`arch/x86/entry/entry_64.S`中的`ENTRY(nmi)`
   * 该中断处理函数的入口地址会在`idt_init_desc()`函数中被分为`offset_low`（16 bit）、`offset_middle`（16 bit）、`offset_high`（32 bit）三段存储
 * 其他的一些中断向量的入口函数可能会用类似`idtentry invalid_op do_invalid_op has_error_code=0`的汇编宏`.macro idtentry sym do_sym has_error_code:req paranoid=0 shift_ist=-1`来实现
 * x86 填充 Intel IDT 表，加载 IDT 表的实现
   * arch/x86/include/asm/desc.h
-  ```c
+  ```cpp
   #ifdef CONFIG_PARAVIRT
   #include <asm/paravirt.h>
   #else
@@ -274,7 +276,7 @@ start_kernel()
   ```
 * `idt_descr` 初始值为`idt_table[]`的起始地址，在`trap_init()`中会被改写
 * arch/x86/kernel/idt.c
-  ```c
+  ```cpp
   /* Must be page-aligned because the real IDT is used in a fixmap. */
   gate_desc idt_table[IDT_ENTRIES] __page_aligned_bss;
 
@@ -337,7 +339,7 @@ start_kernel()
   ```
 ### 加载IDT
 * arch/x86/include/asm/pgtable_64_types.h
-  ```c
+  ```cpp
   /*
    * 4th level page in 5-level paging case
    */
@@ -358,7 +360,7 @@ start_kernel()
   * `pfn_pte(unsigned long page_nr, pgprot_t pgprot)` 根据输入的 Page Frame Number 和 Page Flags 转为 `pte_t` 类型的值（`.val`当然是物理地址）
   * `set_pte_vaddr(unsigned long vaddr, pte_t pteval)` 会根据输入的虚拟地址层层往下直至找到 PTE，把值设为传入的`pte_t pteval`
 * arch/x86/mm/cpu_entry_area.c
-  ```c
+  ```cpp
   void cea_set_pte(void *cea_vaddr, phys_addr_t pa, pgprot_t flags)
   {
           unsigned long va = (unsigned long) cea_vaddr;
@@ -369,7 +371,7 @@ start_kernel()
 * `load_idt()`在非半虚拟化分支就是`native_load_idt()`，定义见之前的代码
 * `native_load_idt()`用`lidt`指令将`&idt_descr`加载到`idtr`寄存器
 * arch/x86/include/asm/desc.h
-  ```c
+  ```cpp
   static inline void native_load_idt(const struct desc_ptr *dtr)
   {
           asm volatile("lidt %0"::"m" (*dtr));
@@ -391,7 +393,7 @@ start_kernel()
   }
   ```
   * arch/x86/kernel/traps.c
-  ```c
+  ```cpp
   void __init trap_init(void)
   {
           /* Init cpu_entry_area before IST entries are set up */
@@ -419,7 +421,6 @@ start_kernel()
 
           idt_setup_debugidt_traps();
   }
-  ...*```
   ```
 
 ## x86的`do_IRQ()`
@@ -431,7 +432,7 @@ start_kernel()
 * `struct irq_desc irq_desc[NR_IRQS]`数组的初值
   - 索引是中断向量，值是`struct irq_desc`实例
   - kernel/irq/irqdesc.c
-  ```c
+  ```cpp
   struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
           [0 ... NR_IRQS-1] = {
                   .handle_irq     = handle_bad_irq,
@@ -444,20 +445,20 @@ start_kernel()
 * `vector_irq`则是 per-CPU 的存储指向`struct irq_desc`实例的指针
 * 声明
   - arch/x86/include/asm/hw_irq.h
-  ```c
+  ```cpp
   typedef struct irq_desc* vector_irq_t[NR_VECTORS];
   DECLARE_PER_CPU(vector_irq_t, vector_irq);
   ```
 * 初值
   - arch/x86/kernel/irqinit.c
-  ```c
+  ```cpp
   DEFINE_PER_CPU(vector_irq_t, vector_irq) = {
           [0 ... NR_VECTORS - 1] = VECTOR_UNUSED,
   };
   ```
 
 ### Call Trace
-```c
+```cpp
 irq_entries_start
 -> jmp common_interrupt
    -> interrupt do_IRQ
@@ -468,7 +469,7 @@ irq_entries_start
 * Per-CPU 的`struct pt_regs`类型的`irq_regs`变量用于保存被中断时的寄存器的值。
   * 这些值是在调用`do_IRQ()`前在汇编入口例程中保存的。
 * arch/x86/include/asm/irq_regs.h
-  ```c
+  ```cpp
   DECLARE_PER_CPU(struct pt_regs *, irq_regs);
 
   static inline struct pt_regs *get_irq_regs(void)
@@ -487,7 +488,7 @@ irq_entries_start
   }
   ```
 * include/linux/irqdesc.h
-  ```c
+  ```cpp
   /*
    * Architectures call this to let the generic IRQ layer
    * handle an interrupt.
@@ -498,7 +499,7 @@ irq_entries_start
   }
   ```
 * arch/x86/kernel/irq.c
-  ```c
+  ```cpp
   /*
    * do_IRQ handles all normal device IRQ's (the special
    * SMP cross-CPU interrupts have their own specific
@@ -659,3 +660,4 @@ irq_entries_start
            */
           TRACE_IRQS_IRETQ
   ```
+
