@@ -1065,5 +1065,6 @@ $ sudo sysctl -w net.ipv4.tcp_dma_copybreak=2048
 ![http://blog.packagecloud.io/images/netif_receive_skb.jpg](pic/netif_receive_skb.jpg)
 
 # 参考资料
-* [Monitoring and Tuning the Linux Networking Stack: Receiving Data](http://blog.packagecloud.io/eng/2016/06/22/monitoring-tuning-linux-networking-stack-receiving-data/)
-* [Illustrated Guide to Monitoring and Tuning the Linux Networking Stack: Receiving Data](http://blog.packagecloud.io/eng/2016/10/11/monitoring-tuning-linux-networking-stack-receiving-data-illustrated/)
+* [Monitoring and Tuning the Linux Networking Stack: Receiving Data](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-receiving-data/)
+* [Illustrated Guide to Monitoring and Tuning the Linux Networking Stack: Receiving Data](https://packagecloud.io/blog/illustrated-guide-monitoring-tuning-linux-networking-stack-receiving-data/)
+* [Monitoring and Tuning the Linux Networking Stack: Sending Data](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-sending-data/)

@@ -335,6 +335,47 @@ config DYNAMIC_DEBUG
         information.
 ```
 
+# /proc/sys/kernel/panic_print
+* Panic 时打印额外的信息，和`sysrq`提供的信息类似
+* kernel/panic.c
+```cpp
+#define PANIC_PRINT_TASK_INFO       0x00000001
+#define PANIC_PRINT_MEM_INFO        0x00000002
+#define PANIC_PRINT_TIMER_INFO      0x00000004
+#define PANIC_PRINT_LOCK_INFO       0x00000008
+#define PANIC_PRINT_FTRACE_INFO     0x00000010
+#define PANIC_PRINT_ALL_PRINTK_MSG  0x00000020
+#define PANIC_PRINT_ALL_CPU_BT      0x00000040
+unsigned long panic_print;
+...
+static void panic_print_sys_info(bool console_flush)
+{
+    if (console_flush) {
+        if (panic_print & PANIC_PRINT_ALL_PRINTK_MSG)
+            console_flush_on_panic(CONSOLE_REPLAY_ALL);
+        return;
+    }
+
+    if (panic_print & PANIC_PRINT_ALL_CPU_BT)
+        trigger_all_cpu_backtrace();
+
+    if (panic_print & PANIC_PRINT_TASK_INFO)
+        show_state();
+
+    if (panic_print & PANIC_PRINT_MEM_INFO)
+        show_mem(0, NULL);
+
+    if (panic_print & PANIC_PRINT_TIMER_INFO)
+        sysrq_timer_list_show();
+
+    if (panic_print & PANIC_PRINT_LOCK_INFO)
+        debug_show_all_locks();
+
+    if (panic_print & PANIC_PRINT_FTRACE_INFO)
+        ftrace_dump(DUMP_ALL);
+}
+```
+
 # References
 * [Debugging by printing](https://elinux.org/Debugging_by_printing)
 * [[console] early printk实现流程](https://blog.csdn.net/ooonebook/article/details/52654120)

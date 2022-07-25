@@ -3,7 +3,7 @@
 ## CONFIG_THREAD_INFO_IN_TASK
 
 * init/Kconfig
-```c
+```cpp
 config THREAD_INFO_IN_TASK
     bool
     help
@@ -24,7 +24,7 @@ config THREAD_INFO_IN_TASK
 ### 定义
 
 * include/linux/sched.h
-```c
+```cpp
 union thread_union {
 #ifndef CONFIG_ARCH_TASK_STRUCT_ON_STACK
     struct task_struct task;
@@ -37,7 +37,7 @@ union thread_union {
 ```
 
 * arch/x86/include/asm/thread_info.h
-```c
+```cpp
 struct thread_info {
     unsigned long       flags;      /* low level flags */
     unsigned long       syscall_work;   /* SYSCALL_WORK_ flags */
@@ -49,7 +49,7 @@ struct thread_info {
 ```
 
 * include/linux/sched.h
-```c
+```cpp
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
     /*
