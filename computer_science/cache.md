@@ -119,14 +119,32 @@
   * **写-使无效（write-invalidate）**:在一个处理器修改了已经由其他处理处理器高速缓存的数据时，向系统内的所有其他高速缓存广播一则 *使无效* 消息
   * **写-更新（write-update）**：在一个处理器修改数据的时候广播它的新值，以便系统内的所有其他 cache 正好缓存了受影响的行，就可以更新它们的值
 * 在 MESI 协议中，每个 cache Line（x86 中是 64 bytes）都有 **MESI** 四种状态，cache line 实际上是加了几个 bits 来表示这些状态
-  * 在 Intel CPU 中引入 HA 和 CA 来管理这些状态以及同步各个 cache line 的副本
-    * **Home Agent（HA）**，在 *内存控制器端*
-    * **Cache Agent（CA）**，在 *L3 Cache 端*
+* 在 Intel CPU 中引入 HA 和 CA 来管理这些状态以及同步各个 cache line 的副本
+  * **Home Agent（HA）**，连接到 *内存控制器端*，
+    * 持续跟踪 cache line 所有权
+    * 从其他 CA 或内存中获取 cache line 数据
+  * **Cache Agent（CA）**，连接到 *L3 Cache 端*，cache misses 的时候为 cache line 数据制作请求发送给 HA
 * 他们都在 ring bus 上监听和发送 snoop 消息，这种模型叫做 **Bus snooping 模型**，与之相对的还有 **Directory 模型**
 * Snoop 消息会在 QPI 总线上广播，会造成很大的带宽消耗，为了减小这种带宽消耗，如何 snoop 有很多讲究
-* 在 [quick-path-interconnect-introduction-paper.pdf](https://www.intel.ca/content/dam/doc/white-paper/quick-path-interconnect-introduction-paper.pdf) 里面有介绍 Intel 的两种 snoop 的方式：Home Snoop 和 Source Snoop，它们的主要区别在于谁主导Snoop消息的发送:
-  * HA 主导叫做 Home Snoop
-  * CA 主导叫做 Source Snoop
+* 在 [quick-path-interconnect-introduction-paper.pdf](https://www.intel.ca/content/dam/doc/white-paper/quick-path-interconnect-introduction-paper.pdf) 里面有介绍 Intel 的两种 snoop 的方式：Home Snoop 和 Source Snoop，它们的主要区别在于谁主导 snoop 消息的发送:
+  * HA 主导叫做 **Home Snoop**
+  * CA 主导叫做 **Source Snoop**
+
+![inter-core and core-uncore communication](pic/inter-core-uncore.png)
+
+* Hashing scheme 映射物理地址到 LLC 分片（last-level cache slice）上，避免某个分片成为热点
+* LLC 分片的数目和一个 CPU 里的 core 的数目一致
+* 每个 LLC 分片和一个 core 共享一个 CBox
+* CBox 实现 cache 一致性引擎，所以 CBox 作为它的 LLC 分片的 QPI cache agent
+
+## Cache 的行为控制
+* Intel 处理器的 cache 行为主要由
+  * **内存类型范围寄存器（Memory Type Range Register，MTRR）** 和 **页属性表（Page Atrribute Table，PAT）** 配置
+  * 控制寄存器 **Control Register 0（CR0）** 的 *Cache Disable（CD）* 和 *Not-Write through（NW）* 位
+  * 页表条目中的同等位，即 *Page-level Cache Disable（PCD）* 和 *Page-level Write-Through（PWT）* 位
+* PAT 意图是允许操作系统或 hypervisor 可以调整由计算机的固件在 MTRR 中指定的 cache 行为
+  * PAT 有 8 个条目来指定 cache 的行为，它的实体存储在一个 MSR 里
+  * 每个页表条目包含 3 bit 的索引，指向一个 PAT 条目，所以系统软件通过控制页表可以用一个非常细的粒度来指定 cache 的行为
 
 ## References
 
