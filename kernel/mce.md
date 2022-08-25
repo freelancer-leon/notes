@@ -768,6 +768,10 @@ static struct severity {
 2. 当 task 返回用户态/虚拟机时会调用`task_work_run()`去逐个执行`task_works`链表上的回调函数
 3. 所以对于 RIPV 的 MCE，发送信号的目的 task 就是当时 MCE handler 发现 memory failure 的 task，只是延后到了返回用户态时才进行`memory_failure()`处理
 
+## 系统配置
+```sh
+/sys/devices/system/machinecheck/machinecheck[n]
+```
 ## References
 
 - [怎样诊断Machine-check Exception](http://linuxperf.com/?p=105)

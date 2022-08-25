@@ -1,6 +1,9 @@
 # 中断
 
 ## Interrupt Descriptor Table (IDT)
+
+![Relationship of the IDTR and IDT](pic/idtr-idt.png)
+
 * 中断描述符表 Interrupt Descriptor Table (IDT) 与每个中断和异常向量关联
 * 每个表项是一个 8 字节的描述符，x86 有 256 个中断向量，因此需要 256 x 8 = 2048 字节来存储 IDT
 * `idtr`寄存器允许 IDT 被加载到内存中的任何位置
@@ -26,6 +29,8 @@
 
 ## x86的中断和异常的硬件处理
 
+![Interrupt Procedure Call](pic/intr-call.png)
+
 * 假设内核已经初始化并且 CPU 运行在保护模式
 * 在执行完一条指令之后，`cs`和`eip`寄存器会包含将要执行的下一条指令的逻辑地址
 * 在处理这条指令之前，CPU 控制单元会检查在执行上一条指令期间是否有中断或异常发生，如果有，CPU 控制单元会完成下列操作
@@ -37,7 +42,7 @@
   4. 确保发出中断/异常的来源是合法的
       - 比较存储在`cs`寄存器最后两位的 Current Privilege Level (CPL) 和 GDT 表中的段描述符的 Descriptor Privilege Level (DPL)。
       - 如果 CPL 比 DPL 低，产生一个 “General protection” 的异常，因为中断处理函数的特权级不能低于比引起中断的程序的特权级。
-      - 例如，只有在硬件中断发生时，CPU 特权级提升（到 0 级）后才能跳转到去执行中断处理代码，因此不会做此检查。而系统调用发生在用户态，因为系统调用所使用的陷阱门的 DPL=3，因此 CPL 为任何特权级的代码都可以发出系统调用。
+      - 例如，**只有在硬件中断发生时，CPU 特权级提升（到 0 级）后才能跳转到去执行中断处理代码，因此不会做此检查**。而系统调用发生在用户态，因为系统调用所使用的陷阱门的 DPL=3，因此 CPL 为任何特权级的代码都可以发出系统调用。
       - 对于编程异常，作进一步的安全检查：比较 CPL 和 IDT 表中的门描述符的 DPL，如果 DPL 比 CPL 低，产生一个 “General protection” 异常。
       - 因为要跳转到的目标代码（中断代码）优先级需要高于或等于被打断的代码（比如用户态的代码）
       - 第二个检查阻止了用户应用程序通过高优先级的陷阱门或中断门，只能通过低优先级的陷阱门（系统门和系统中断门）
@@ -50,6 +55,7 @@
   8. 如果异常带有硬件错误码，也将它保存到栈上
   9. 根据 IDT 第 i 项的门描述符中的 *段选择符* 和 *偏移*，将中断或异常 handler 第一条指令的逻辑地址加载地址到`cs`和`eip`
 
+* x86-32 位模式 CPU 的异常处理对栈的使用
 ![Stack Usage on Transfers to Interrupt and Exception-Handling Routines](pic/x86_stack_irq_exp.png)
 
 ## 中断初始化
@@ -605,7 +611,7 @@ irq_entries_start
            */
           movq    %rsp, %rdi
           incl    PER_CPU_VAR(irq_count)
-          cmovzq  PER_CPU_VAR(irq_stack_ptr), %rsp
+          cmovzq  PER_CPU_VAR(irq_stack_ptr), %rsp /* 中断栈的切换是由内核完成的 */
           pushq   %rdi
           /* We entered an interrupt context - irqs are off: */
           TRACE_IRQS_OFF
@@ -660,4 +666,3 @@ irq_entries_start
            */
           TRACE_IRQS_IRETQ
   ```
-
