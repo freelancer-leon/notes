@@ -12,6 +12,7 @@
 * 注意：`syscall`指令不会更新`RSP`寄存器的值，由操作系统去负责切换程序栈
 
 > The `SYSCALL` instruction does not save the stack pointer (`RSP`). If the OS system-call handler will change the stack pointer, it is the responsibility of software to save the previous value of the stack pointer. This might be done prior to executing `SYSCALL`, with software restoring the stack pointer with the instruction following `SYSCALL` (which will be executed after `SYSRET`). Alternatively, the OS system-call handler may save the stack pointer and restore it before executing `SYSRET`.
+>
 > -- SDM, Vol. 2B, SYSCALL -Fast System Call
 
 ## sysret 指令
