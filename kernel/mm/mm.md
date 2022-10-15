@@ -526,6 +526,33 @@ static inline void __kunmap_atomic(void *addr)
 * 注意：**不能在访问 Per-CPU 数据过程中睡眠**，否则，醒来可能在其他CPU上。
 * Per-CPU 的新接口并不兼容之前的内核。
 
+## 几个对齐宏
+* 页对齐
+  * include/linux/mm.h
+```c
+/* to align the pointer to the (next) page boundary */
+#define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE)
+
+/* to align the pointer to the (prev) page boundary */
+#define PAGE_ALIGN_DOWN(addr) ALIGN_DOWN(addr, PAGE_SIZE)
+
+/* test whether an address (unsigned long or pointer) is aligned to PAGE_SIZE */
+#define PAGE_ALIGNED(addr)  IS_ALIGNED((unsigned long)(addr), PAGE_SIZE)
+```
+* 指针对齐
+```c
+#define __ALIGN_KERNEL(x, a)        __ALIGN_KERNEL_MASK(x, (typeof(x))(a) - 1)
+#define __ALIGN_KERNEL_MASK(x, mask)    (((x) + (mask)) & ~(mask))
+...
+/* @a is a power of 2 value */
+#define ALIGN(x, a)     __ALIGN_KERNEL((x), (a))
+#define ALIGN_DOWN(x, a)    __ALIGN_KERNEL((x) - ((a) - 1), (a))
+#define __ALIGN_MASK(x, mask)   __ALIGN_KERNEL_MASK((x), (mask))
+#define PTR_ALIGN(p, a)     ((typeof(p))ALIGN((unsigned long)(p), (a)))
+#define PTR_ALIGN_DOWN(p, a)    ((typeof(p))ALIGN_DOWN((unsigned long)(p), (a)))
+#define IS_ALIGNED(x, a)        (((x) & ((typeof(x))(a) - 1)) == 0)
+```
+
 # 参考资料
 * [/PROC/MEMINFO之谜](http://linuxperf.com/?p=142)
 * [Linux内核高端内存](http://ilinuxkernel.com/?p=1013)

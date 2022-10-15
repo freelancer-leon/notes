@@ -7,7 +7,7 @@
 
 
 | Error Handling                                                                           | Category              |
-| ------------------------------------------------------------------------------------------ | ----------------------- |
+| ---------------------------------------------------------------------------------------- | --------------------- |
 | **System Reset** <br/>Multi-bit Error in Kernel                                          | Non-Recoverable/Fatal |
 | **OS Recoverable: System Available** <br/>Multi-bit Error in Application                 | Recoverable           |
 | **OS Corrected: Execution Continues** <br/>Patrol Scrub Error                            | Recoverable           |
