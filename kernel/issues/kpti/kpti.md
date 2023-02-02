@@ -619,7 +619,7 @@ do_fork()
          |                               KERNEL_PGD_PTRS);
          |            -> pgd_list_add(pgd)
          |               -> list_add(&page->lru, &pgd_list)
-         +-> dump_mmap(mm, oldmm)
+         +-> dup_mmap(mm, oldmm)
 ```
 * `mm`就是每个进程的`struct task_struct`的类型为`struct mm_struct *`的成员
 * `struct mm_struct`的成员`pgd_t * pgd`指向进程的顶级页表
@@ -838,7 +838,7 @@ do_fork()
          -> mm = allocate_mm()
          -> mm_init()
             -> mm_alloc_pgd(mm)
-         -> dump_mmap(mm, oldmm)
+         -> dup_mmap(mm, oldmm)
             -> copy_page_range()
                -> copy_p4d_range()
                   +-> p4d_alloc()
