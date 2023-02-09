@@ -53,3 +53,84 @@
   * 具体来说，该事件被报告为异常向量`20`且没有 error code 的硬件异常。正常来说，该字段的第`12`位（由于`IRET`导致 NMI 解锁）会被设置
 * 如果虚拟化异常间接导致 VM exit（因为异常位图中的`bit 20`为`0`，并且异常的传递会生成导致 VM exit 的事件），则有关异常的信息通常保存在 VMCS
   * 具体来说，该事件被报告为异常向量`20`且没有 error code 的硬件异常
+
+## 关于 Acknowledge Interrupt on VM-Exit
+* VMX 有一个 acknowledge interrupt on exit 特性，《系统虚拟化原理》5.3.2 曾提到该特性有助于更快地响应外部中断，具体怎么快没说
+* 该特性通过 VMCS 中的 VM-Exit 控制域的第 `15` 位 `Acknowledge interrupt on exit` 来启用，看看 SDM 怎么说：
+
+> This control affects VM exits due to external interrupts:
+> * If such a VM exit occurs and this control is `1`, the logical processor acknowledges the interrupt controller, acquiring the interrupt’s vector. The vector is stored in the VM-exit interruption-information field, which is marked valid.
+> * If such a VM exit occurs and this control is `0`, the interrupt is not acknowledged and the VM-exit interruption-information field is marked invalid.
+
+* 就是说，当 VM exit 发生的时候，如果该控制位设为 `1`，那么逻辑处理器会先应答中断控制器，获取中断向量并把它放在 VM-exit 的中断信息域；如果该控制位设为 `0`，那么 CPU 就不会应答该中断。这怎么就能加速外部中断的响应了呢？
+* Linux kernel 在以下 commit 中默认启用了该特性
+  ```git
+  commit a547c6db4d2f16ba5ce8e7054bffad6acc248d40
+  Author: Yang Zhang <yang.z.zhang@Intel.com>
+  Date:   Thu Apr 11 19:25:10 2013 +0800
+
+      KVM: VMX: Enable acknowledge interupt on vmexit
+
+      The "acknowledge interrupt on exit" feature controls processor behavior
+      for external interrupt acknowledgement. When this control is set, the
+      processor acknowledges the interrupt controller to acquire the
+      interrupt vector on VM exit.
+
+      After enabling this feature, an interrupt which arrived when target cpu is
+      running in vmx non-root mode will be handled by vmx handler instead of handler
+      in idt. Currently, vmx handler only fakes an interrupt stack and jump to idt
+      table to let real handler to handle it. Further, we will recognize the interrupt
+      and only delivery the interrupt which not belong to current vcpu through idt table.
+      The interrupt which belonged to current vcpu will be handled inside vmx handler.
+      This will reduce the interrupt handle cost of KVM.
+
+      Also, interrupt enable logic is changed if this feature is turnning on:
+      Before this patch, hypervior call local_irq_enable() to enable it directly.
+      Now IF bit is set on interrupt stack frame, and will be enabled on a return from
+      interrupt handler if exterrupt interrupt exists. If no external interrupt, still
+      call local_irq_enable() to enable it.
+
+      Refer to Intel SDM volum 3, chapter 33.2.
+  ```
+* 该 commit 主要做了以下事情支持该特性：
+  * 在代码中设置相应的 bit，默认启用了该特性
+  * 新增的 `vmx_handle_external_intr()` 作为 `kvm_x86_ops->handle_external_intr` 的方法
+  * 在 `vcpu_enter_guest()` 调用新增的 `vmx_handle_external_intr()`
+    * 在 VMX handler 中先根据 VMCS 中的中断退出信息找到外部中断向量
+    * 根据 vector 找到该中断的 host 侧的 handler
+    * 伪造一个中断发生时 CPU 的压栈现场
+    * 通过修改压到栈上的 `RFLAGS.IF` 位为 `1`，让将来在 `iret` 的时候顺带开启中断
+    * `call` 该中断的 host 侧的 handler
+* 再看看 SDM 对 VM-execution 域的 `external-interrupt exiting` 执行控制位的解释：
+
+> If this control is `1`, external interrupts cause VM exits. Otherwise, they are delivered normally through the guest interrupt-descriptor table (IDT). If this control is 1, the value of `RFLAGS.IF` does not affect interrupt blocking.
+> -- Table 24-5. Definitions of Pin-Based VM-Execution Controls
+
+  * 当设为 `1` 时，不透传给 Guest 的中断会导致 VM-exit
+  * 否则中断直接透传给 Guest，根据 VMCS 中的 Guest IDTR 找到 Guest IDT，然后从 Guest 的中断入口开始处理中断
+  * 这里说的，该位为 `1` 时，`RFLAGS.IF` 不影响中断的屏蔽，应该指的是 Guest 的 `RFLAGS.IF` 不影响 Host 侧的中断屏蔽与否
+
+* 仍然没有回答一个问题，或者说，不使用该特性到底慢在哪？问题的症结在于，`external-interrupt exiting` 执行控制位为 `1` 时，CPU 的行为和中断控制器的状态是怎么样的？
+* 在旧版本 SDM 还有这样一段话，新版本已经删掉了，给了我们一些启示：
+
+> **33.2 INTERRUPT HANDLING IN VMX OPERATION**
+> **Acknowledge interrupt on exit**. The “acknowledge interrupt on exit” VM-exit control in the controlling VMCS controls processor behavior for external interrupt acknowledgement. If the control is 1, the processor acknowledges the interrupt controller to acquire the interrupt vector upon VM exit, and stores the vector in the VM-exit interruption-information field. If the control is 0, the external interrupt is not acknowledged during VM exit. Since RFLAGS.IF is automatically cleared on VM exits due to external interrupts, VMM re-enabling of interrupts (setting RFLAGS.IF = 1) initiates the external interrupt acknowledgement and vectoring of the external interrupt through the monitor/host IDT
+
+* 看到最后一句话了吗？这意味着，
+  * 外部中断导致 VM-Exit 的时候，`RFLAGS.IF`会被自动清除，此时 host 侧中断必然是关着的！
+  * 需要 VMM 重新开启中断，从而完成应答外部中断和递交外部中断到 host 侧的 IDT 入口的过程
+* 也就是说（以 8259A 作为中断控制器举例），
+1. `Acknowledge Interrupt on Exit = 0` 会导致 VM-exit 后该中断在 8259A 的 `IRR` 中 pending
+2. 直到 VMM 使能中断，这个时候 CPU 通过管脚 `INTR` 知道 8259A 有中断等待处理，通过管脚 `INTA` 第一次中断应答
+3. 8259A 收到 CPU 发来的 `INTA` 信号后，置位最高优先级的中断在 `ISR(In-Service Register)` 中对应的位，并清空 `IRR` 中对应的位
+4. 通常，x86 CPU 会发送第二次 `INTA`，在收到第二次 `INTA` 后，8259A 会将中断向量号(vector)送上数据总线 `D0~D7`
+5. 如果 8259A 设置为 `AEOI(Automatic End Of Interrupt)` 模式，那么 8259A 复位 `ISR` 中对应的 bit，否则 `ISR` 中对应的 bit 一直保持到收到系统的中断服务程序发来的 `EOI` 命令
+6. 再往后就是 host 侧常规的中断处理过程，先根据 IDTR 找到 IDT table ......
+7. 在系统的中断服务程序处理完中断的最后，发来 `EOI` 命令，8259A 复位 `ISR` 中对应的 bit
+* 对比 `Acknowledge Interrupt on Exit = 1`，VM-exit 时就已经完成了第 1 ~ 5 步，并且 host 中断处于关闭状态，VM-exit 后处于 VMX handler 中，于是那个 commit 所要做的工作就是衔接上第 6 步就可以了。
+* 我的理解，虽然说 `vcpu_enter_guest()` 在没那个 commit 前在那个位置调用的也是 `local_irq_enable();` 来开始第 2 步，但理论上它也可以往后放。比起现在的响应方式终究还是慢一点吧。
+
+# References
+* [Linux中断虚拟化之二](https://www.51cto.com/article/693199.html)
+* [Intel SDM Chapter 29: APIC Virtualizaton & Virtual Interrupts](https://tcbbd.moe/ref-and-spec/intel-sdm/sdm-vmx-ch29/)
+* [StackOverflow - "Acknowledge interrupt on exit" control in VT-x causes CPU lockup](https://stackoverflow.com/questions/48030293/acknowledge-interrupt-on-exit-control-in-vt-x-causes-cpu-lockup)

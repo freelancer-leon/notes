@@ -80,7 +80,7 @@ start_kernel()
   => native_init_IRQ()
      -> idt_setup_apic_and_irq_gates()
         -> idt_setup_from_table(idt_table, apic_idts, ARRAY_SIZE(apic_idts), true);
-        -> int i = FIRST_EXTERNAL_VECTOR;
+        -> int i = FIRST_EXTERNAL_VECTOR; // 第一个外部中断向量，0x20
            for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR)
               set_intr_gate(i, irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR));
 ```
@@ -328,12 +328,12 @@ start_kernel()
   ```
 * 数组`def_idts[]`中的向量都会在`system_vectors`位图中设置相应的位
 * arch/x86/kernel/traps.c
-  ```c
+  ```cpp
   DECLARE_BITMAP(system_vectors, NR_VECTORS);
   ```
 * `__ro_after_init`是编译器属性，定义如下
 * include/linux/cache.h
-  ```c
+  ```cpp
   /*
    * __ro_after_init is used to mark things that are read-only after init (i.e.
    * after mark_rodata_ro() has been called). These are effectively read-only,
@@ -355,7 +355,7 @@ start_kernel()
   #define CPU_ENTRY_AREA_BASE     (CPU_ENTRY_AREA_PGD << P4D_SHIFT) //0xfffffe0000000000
   ```
 * arch/x86/include/asm/cpu_entry_area.h
-  ```c
+  ```cpp
   #define CPU_ENTRY_AREA_RO_IDT           CPU_ENTRY_AREA_BASE //0xfffffe0000000000
   ...
   #define CPU_ENTRY_AREA_RO_IDT_VADDR     ((void *)CPU_ENTRY_AREA_RO_IDT)  //0xfffffe0000000000
@@ -548,7 +548,7 @@ irq_entries_start
   }
   ```
 * arch/x86/entry/entry_64.S
-  ```c
+  ```cpp
   /*
    * Build the entry stubs with some assembler magic.
    * We pack 1 stub into every 8-byte block.
