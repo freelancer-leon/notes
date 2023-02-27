@@ -332,8 +332,8 @@ Process context, cannot sleep | Use `GFP_ATOMIC`, or perform your allocations wi
 Interrupt handler | Use `GFP_ATOMIC`.
 Softirq | Use `GFP_ATOMIC`.
 Tasklet | Use `GFP_ATOMIC`.
-Need DMA-able memory, can sleep | Use `(GFP_DMA | GFP_KERNEL)`.
-Need DMA-able memory, cannot sleep | Use `(GFP_DMA | GFP_ATOMIC)`, or perform your allocation at an earlier point when you can sleep.
+Need DMA-able memory, can sleep | Use `(GFP_DMA \| GFP_KERNEL)`.
+Need DMA-able memory, cannot sleep | Use `(GFP_DMA \| GFP_ATOMIC)`, or perform your allocation at an earlier point when you can sleep.
 
 ## kfree()
 * `kfree()`释放`kmalloc()`分配出来的内存块
