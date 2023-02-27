@@ -104,6 +104,7 @@
 * 再看看 SDM 对 VM-execution 域的 `external-interrupt exiting` 执行控制位的解释：
 
 > If this control is `1`, external interrupts cause VM exits. Otherwise, they are delivered normally through the guest interrupt-descriptor table (IDT). If this control is 1, the value of `RFLAGS.IF` does not affect interrupt blocking.
+>
 > -- Table 24-5. Definitions of Pin-Based VM-Execution Controls
 
   * 当设为 `1` 时，不透传给 Guest 的中断会导致 VM-exit
@@ -114,6 +115,7 @@
 * 在旧版本 SDM 还有这样一段话，新版本已经删掉了，给了我们一些启示：
 
 > **33.2 INTERRUPT HANDLING IN VMX OPERATION**
+>
 > **Acknowledge interrupt on exit**. The “acknowledge interrupt on exit” VM-exit control in the controlling VMCS controls processor behavior for external interrupt acknowledgement. If the control is 1, the processor acknowledges the interrupt controller to acquire the interrupt vector upon VM exit, and stores the vector in the VM-exit interruption-information field. If the control is 0, the external interrupt is not acknowledged during VM exit. Since RFLAGS.IF is automatically cleared on VM exits due to external interrupts, VMM re-enabling of interrupts (setting RFLAGS.IF = 1) initiates the external interrupt acknowledgement and vectoring of the external interrupt through the monitor/host IDT
 
 * 看到最后一句话了吗？这意味着，
