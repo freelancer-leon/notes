@@ -815,5 +815,7 @@ echo '-:dosysopen1' > /sys/kernel/debug/tracing/kprobe_events
 * [Debugging the kernel using Ftrace - part 1](https://lwn.net/Articles/365835/)
 * [Debugging the kernel using Ftrace - part 2](https://lwn.net/Articles/366796/)
 * [Secrets of the Ftrace function tracer](https://lwn.net/Articles/370423/)
-* [Kprobe-based Event Tracing — The Linux Kernel documentation](https://www.kernel.org/doc/html/latest/trace/kprobetrace.html)
+* [ftrace - Function Tracer — The Linux Kernel documentation](https://www.kernel.org/doc/html/latest/trace/ftrace.html)
+* [Event Tracing — The Linux Kernel documentation](https://www.kernel.org/doc/html/latest/trace/events.html)
 * [Kernel Probes (Kprobes) — The Linux Kernel documentation](https://www.kernel.org/doc/html/latest/trace/kprobes.html)
+* [Kprobe-based Event Tracing — The Linux Kernel documentation](https://www.kernel.org/doc/html/latest/trace/kprobetrace.html)

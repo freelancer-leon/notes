@@ -1016,3 +1016,5 @@ again:
 * http://linuxperf.com/?p=42
 * [TIF_NEED_RESCHED: Why Is It Needed](http://www.linuxinternals.org/blog/2016/03/20/tif-need-resched-why-is-it-needed/)
 * [What Does an Idle CPU Do?](http://duartes.org/gustavo/blog/post/what-does-an-idle-cpu-do/)
+- [LWN：Linux 新的 EEVDF 调度器！](https://mp.weixin.qq.com/s/MqAzzGU8JCV90wUUWUJbyQ)
+- [An EEVDF CPU scheduler for Linux](https://lwn.net/Articles/925371/)
