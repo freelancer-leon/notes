@@ -237,9 +237,7 @@ start_kernel()
   #endif
   ```
 * 所以最后看到的中断处理函数`exc_machine_check()`的定义是这样的：
-
   * arch/x86/kernel/cpu/mce/core.c
-
   ```c
   ...
   #ifdef CONFIG_X86_64
@@ -767,6 +765,70 @@ static struct severity {
 1. 对于用户态的 UCNA 错误，MCE hanlder 会利用 task_work facility 把会调用`memory_failure()`的回调函数挂在`task_struct`的`task_works`链表上
 2. 当 task 返回用户态/虚拟机时会调用`task_work_run()`去逐个执行`task_works`链表上的回调函数
 3. 所以对于 RIPV 的 MCE，发送信号的目的 task 就是当时 MCE handler 发现 memory failure 的 task，只是延后到了返回用户态时才进行`memory_failure()`处理
+
+## MCE 在内核中的处理
+* 本地的 machine check 可能会更早地知道是否会 panic
+* 广播的 machine check 会复杂一些，各 CPU 首先会在 `mce_start()` 汇合，然后遍历所有 bank，排除其他 CPU。这样我们就不会报告共享 bank 的重复事件，因为第一个看到它的人会清除它
+1. 如果是 MCE 广播，进入 `mce_start()` 中选出 Monarch
+2. Monarch 需要等其他 CPU callin `mce_callin`，其他 CPU 成为 Subject，从 `mce_callin` 原子地得到它的 `order` 同时增加 `mce_callin`
+3. Monarch 开始先执行 bank 扫描，Subject 按照 callin 的顺序等待轮到自己扫描
+4. Monarch 扫描完后进入 `mce_end()`，允许其他 Subject 开始扫描
+5. Monarch 在 `mce_end()` 等待其他 Subject 完成扫描
+6. Monarch 在 `mce_end()` 开始 `mce_reign()`，其他 Subject 等待 Monarch reign 完成
+   * 如果条件 `atomic_read(&mce_executing) != 0` 不成立，Subject 等待
+   (1) 此时，其他 Subject 都扫描完了，Monarch 可以从中选出最严重的错误
+   (2) 如果最严重的错误严重程度 `>= MCE_PANIC_SEVERITY`，那么在此触发 `mce_panic("Fatal machine check")`
+   (3) 如果最严重的错误严重程度在 `MCE_KEEP_SEVERITY` 与 `MCE_PANIC_SEVERITY` 之间，必定有一些外部的源或某个 CPU hung 住了，触发 `mce_panic("Fatal machine check from unknown source")`
+   (4) 现在清除所有 CPU 的 `mces_seen`，这样它们就不会再出现在下一个 mce 上
+7. Monarch 清楚所有的全局状态 `global_nwo`、`mce_callin`
+8. Monarch 完成 reign，在 `mce_end()` 的末尾 `atomic_set(&mce_executing, 0)`，结束 Subject 的等待
+
+## MCE gen_pool
+* `mce_panic()` 的时候会通过 `mce_gen_pool_prepare_records()` 得到一个 `struct mce` 链表，然后把链表上的节点携带的 `struct mce` 实例传给 `mce_print()` 打印出来
+* 这个链表存在通过 `struct gen_pool * mce_evt_pool` 指向的 gen_pool 上
+```cpp
+mce_gen_pool_init()
+-> mce_gen_pool_create()
+   -> tmpp = gen_pool_create(ilog2(sizeof(struct mce_evt_llist)), -1);
+      mce_evt_pool = tmpp;
+```
+* 在扫描 MC banks 的时候会通过 `mce_gen_pool_add()` 加入链表
+```c
+do_machine_check()
+-> __mc_scan_banks()
+   -> mce_log()
+         if (!mce_gen_pool_add(m))
+         -> irq_work_queue(&mce_irq_work);
+```
+* 这一系列调用，就是为了调用 `mce_gen_pool_process()`。但 `#MC` NMI 上下文，不能调 `mce_schedule_work()`，只能通过 `mce_irq_work_cb()` 去调用它，再由它去调度 `mce_gen_pool_process()` 所在的 `mce_work`
+```c
+static void mce_schedule_work(void)
+{
+    if (!mce_gen_pool_empty())
+        schedule_work(&mce_work);
+}
+
+static void mce_irq_work_cb(struct irq_work *entry)
+{
+    mce_schedule_work();
+}
+...
+int __init mcheck_init(void)
+{
+    mce_register_decode_chain(&early_nb);
+    mce_register_decode_chain(&mce_uc_nb);
+    mce_register_decode_chain(&mce_default_nb);
+
+    INIT_WORK(&mce_work, mce_gen_pool_process);
+    init_irq_work(&mce_irq_work, mce_irq_work_cb);
+
+    return 0;
+}
+```
+* `mce_gen_pool_process()` 负责调用 `blocking_notifier_call_chain(&x86_mce_decoder_chain, 0, mce)` 去调用之前在 `mcheck_init(()` 调用的 `mce_register_decode_chain()` 去注册的三个 notifier blocking 的 `.notifier_call` 回调函数。随后释放 gen_pool 里的 `struct mce` 实例
+* `mce_panic()` 的时候，如果 `struct mce_evt_llist` 链表上有 `struct mce` 实例，应该也会打出来
+  * 但通常应该没有，因为在上一个步骤被释放掉了
+  * 有可能打印出来的是 `do_machine_check()` 最开始调用 `mce_gather_info(&m, regs)` 收集到的 `struct mce *final`
 
 ## 系统配置
 ```sh

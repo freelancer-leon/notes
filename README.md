@@ -3,6 +3,13 @@
 # Architectures
 ## ARM
 - [ARM64 的一些基本概念](arch/arm64/basic.md)
+
+## Intel
+- [AMX](arch/intel/amx.md)
+- [APIC](arch/intel/apic.md)
+- [Buslock](arch/intel/buslock.md)
+- [Multi-Processors Management](arch/intel/MP_management.md)
+
 # Computer Science
 - [Cache](computer_science/cache.md)
 - [TLB](computer_science/tlb.md)
@@ -18,9 +25,13 @@
 - [设备模型](kernel/dev_model.md)
 - [Linux 图形](kernel/graphic/Linux-Graphic.md)
 - [中断](kernel/irq.md)
-- [NMI](kernel/nmi)
+- [中断 - x86](kernel/irq_x86-64.md)
+- [NMI](kernel/nmi/nmi.md)
+- [IPI](kernel/ipi.md)
 - [Kexec](kernel/kexec.md)
+- [Kexec - x86](kernel/kexec_x86.md)
 - [Kdump](kernel/kdump.md)
+- [MCE](kernel/mce.md)
 
 ## 锁
 - [锁的基本知识](kernel/lock/Lock-1.md)
@@ -78,3 +89,6 @@
 
 # Virtualization
 - [docker](virtualization/docker/docker.md)
+## KVM
+- [虚拟化异常](virtualization/kvm/exception.md)
+- [TDP MMU 缺页](virtualization/kvm/tdp_page_fault.md)

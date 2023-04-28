@@ -667,6 +667,7 @@ tdp_mmu_set_spte_atomic()
       -> handle_changed_spte(kvm, kvm_mmu_page_as_id(sp), gfn, old_spte, REMOVED_SPTE, level, shared)
          -> __handle_changed_spte()
 ```
+* `__handle_changed_spte()` 的 `shared` 参数表明此操作可能不会在独占使用 MMU 锁的情况下运行，并且该操作必须与可能正在修改 SPTE 的其他线程同步
 * 不再有 `kvm->arch.tdp_mmu_pages` 链表了
 ```c
 commit d25ceb9264364dca0683748b301340097fdab6c7
