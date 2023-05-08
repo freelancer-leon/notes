@@ -1,4 +1,4 @@
-# Multiple-Processor Management
+# Multiple-Processors Management
 
 ### 8.4.1 BSP 和 AP 处理器
 * MP 初始化协议定义了两类处理器：bootstrap processor (BSP) 和 application processors (AP)
@@ -85,7 +85,30 @@
 14. 等待 INIT IPI
 
 ## Linux 的 MP 唤醒实现
-
+```cpp
+#0  do_boot_cpu (apicid=apicid@entry=1, cpu=cpu@entry=1, idle=idle@entry=0xff1100000570a040,
+    cpu0_nmi_registered=cpu0_nmi_registered@entry=0xffa0000000013d34) at linux/arch/x86/kernel/smpboot.c:1076
+#1  0xffffffff81119bc0 in native_cpu_up (cpu=1, tidle=0xff1100000570a040) at linux/arch/x86/kernel/smpboot.c:1230
+#2  0xffffffff811b1a18 in __cpu_up (tidle=0xff1100000570a040, cpu=1) at linux/arch/x86/include/asm/smp.h:83
+#3  bringup_cpu (cpu=1) at linux/kernel/cpu.c:608
+#4  0xffffffff811b1ea1 in cpuhp_invoke_callback (cpu=cpu@entry=1, state=CPUHP_BRINGUP_CPU, bringup=bringup@entry=true,
+    node=node@entry=0x0 <fixed_percpu_data>, lastp=lastp@entry=0x0 <fixed_percpu_data>) at linux/kernel/cpu.c:192
+#5  0xffffffff811b20c6 in __cpuhp_invoke_callback_range (bringup=bringup@entry=true, cpu=cpu@entry=1, st=st@entry=0xff1100007fb1b6e0,
+    target=target@entry=CPUHP_BRINGUP_CPU, nofail=nofail@entry=false) at linux/kernel/cpu.c:678
+#6  0xffffffff811b2edf in cpuhp_invoke_callback_range (target=CPUHP_BRINGUP_CPU, st=0xff1100007fb1b6e0, cpu=1, bringup=true)
+    at linux/kernel/cpu.c:702
+#7  cpuhp_up_callbacks (target=CPUHP_BRINGUP_CPU, st=0xff1100007fb1b6e0, cpu=1) at linux/kernel/cpu.c:733
+#8  _cpu_up (cpu=cpu@entry=1, tasks_frozen=tasks_frozen@entry=0, target=CPUHP_BRINGUP_CPU, target@entry=CPUHP_ONLINE)
+    at linux/kernel/cpu.c:1411
+#9  0xffffffff811b30e2 in cpu_up (target=CPUHP_ONLINE, cpu=1) at linux/kernel/cpu.c:1447
+#10 cpu_up (cpu=<optimized out>, target=CPUHP_ONLINE) at linux/kernel/cpu.c:1419
+#11 0xffffffff811b36ff in bringup_nonboot_cpus (setup_max_cpus=8192) at linux/kernel/cpu.c:1513
+#12 0xffffffff83eb2c16 in smp_init () at linux/kernel/smp.c:1112
+#13 0xffffffff83e78bd2 in kernel_init_freeable () at linux/init/main.c:1629
+#14 0xffffffff8209c2d6 in kernel_init (unused=<optimized out>) at linux/init/main.c:1526
+#15 0xffffffff81002129 in ret_from_fork () at linux/arch/x86/entry/entry_64.S:308
+#16 0x0000000000000000 in ?? ()
+```
 * arch/x86/kernel/smpboot.c
 ```cpp
 /*
