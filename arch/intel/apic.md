@@ -1,8 +1,76 @@
 # APIC
 
+## 11.1 Local 和 I/O APIC 概览
+* 每个 local APIC 由一组 APIC 寄存器（见表 11-1）和相关硬件组成，这些硬件控制 *中断向处理器核的递交* 和 *IPI 消息的生成*。
+* APIC 寄存器是内存映射的，可以使用 `MOV` 指令读取和写入。
+* Local APIC 可以从以下来源接收中断：
+* **Locally connected I/O devices**：这些中断起源于直接连接到处理器的本地中断引脚（`LINT0` 和 `LINT1`）的 I/O 设备的边沿或电平 asserted。
+  * I/O 设备也可以连接到 8259 型中断控制器，后者又通过本地中断引脚之一连接到处理器。
+* **Externally connected I/O devices**：这些中断起源于连接到 I/O APIC 的中断输入引脚的 I/O 设备的边沿或电平 asserted。
+  * 中断作为 I/O 中断消息从 I/O APIC 发送到系统中的一个或多个处理器。
+* **Inter-processor interrupts (IPIs)**：Intel 64 或 IA-32 处理器可以使用 IPI 机制来中断系统总线上的另一个处理器或一组处理器。
+  * IPI 用于软件自中断、中断转发或抢占式调度。
+* **APIC timer generated interrupts**：local APIC 计时器可以编程为在达到编程计数时向其关联的处理器发送本地中断（参见第 11.5.4 节“APIC Timer”）。
+* **Performance monitoring counter interrupts**：P6 系列、奔腾 4 和 Intel Xeon 处理器提供了在性能监控计数器溢出时向其相关处理器发送中断的能力。
+* **Thermal Sensor interrupts**：Pentium 4 和 Intel Xeon 处理器能够在内部温度传感器触发时向自身发送中断。
+* **APIC internal error interrupts**：当在 local APIC 中识别出错误条件时（例如尝试访问未实现的寄存器），APIC 可以被编程为向其关联的处理器发送中断。
+* 在这些中断源中：处理器的 `LINT0` 和 `LINT1` 引脚、APIC 定时器、性能监控计数器、温度传感器和内部 APIC 错误检测器被称为 **本地中断源**。
+  * 从本地中断源接收到信号后，local APIC 使用中断递交协议将中断递交到处理器核，该协议已通过一组称为 **本地向量表（local vector table）** 或 **LVT** 的 APIC 寄存器设置（参见第 11.5.1 节， “Local Vector Table”）。
+  * 本地向量表中为每个本地中断源提供了一个单独的条目，这允许为每个中断源设置特定的中断递交协议。
+    * 例如，如果 `LINT1` 引脚要用作 NMI 引脚，则可以设置本地向量表中的 `LINT1` 条目以向处理器核提供向量号为 `2` 的中断（NMI 中断）。
+* Local APIC 通过其 IPI 消息处理设施处理来自其他两个中断源（externally connected I/O 设备和 IPI）的中断。
+* 处理器可以通过在其 local APIC 中编程 Interrupt Command Register（`ICR`）来生成 IPI。
+  * 写入 `ICR` 的行为会导致在系统总线（对于奔腾 4 和英特尔至强处理器）或 APIC 总线（对于奔腾和 P6 系列处理器）上生成并发布一条 IPI 消息。
+* IPI 可以发送到系统中的其他处理器或自己（自中断）。当目标处理器接收到 IPI 消息时，其 local APIC 会自动处理该消息（使用消息中包含的信息，例如向量号和触发模式）。
+* Local APIC 还可以通过 I/O APIC 接收来自外部连接设备的中断（见图 11-1）。I/O APIC 负责接收系统硬件和 I/O 设备产生的中断，并将其作为中断消息转发给 local APIC。
+* 可以对 I/O APIC 上的各个引脚进行编程，以在 asserted 时生成特定的中断向量。
+* I/O APIC 还有一个“virtual wire mode”，允许它与标准 8259A 型外部中断控制器通信。
+* 注意，可以禁用 local APIC（请参阅第 11.4.3 节，“Enabling or Disabling the Local APIC”）。这允许关联的处理器核直接从 8259A 中断控制器接收中断。
+* Local APIC 和 I/O APIC 都是为在 MP 系统中运行而设计的（见图 11-2 和 11-3）。
+  * 每个 local APIC 处理来自 I/O APIC 的中断、来自系统总线上处理器的 IPI，以及自生成的中断。
+  * 中断也可以通过本地中断引脚传送到各个处理器；然而，这种机制通常不用于 MP 系统。
+
+![Figure 11-2. Local APICs and I/O APIC When Intel Xeon Processors Are Used in Multiple-Processor Systems](pic/apic-lapic_ioapic_mp.png)
+
+![Figure 11-3. Local APICs and I/O APIC When P6 Family Processors Are Used in Multiple-Processor Systems](pic/apic-lapic_ioapic_mp_p6.png)
+
+* IPI 机制通常用于 MP 系统，用于向系统总线上的处理器发送 fixed 中断（针对特定向量号的中断）和专用中断。例如，
+  * local APIC 可以使用 IPI 将 fixed 中断转发给另一个处理器进行服务。
+  * 专用 IPI（包括 NMI、INIT、SMI 和 SIPI IPI）允许系统总线上的一个或多个处理器执行系统范围的启动和控制功能。
+
+## 11.4 Local APIC
 ![Local APIC Structure](pic/lapic_structure.png)
 
+## 11.5 处理本地中断
+* 以下部分描述了 local APIC 中提供的用于处理本地中断的设施。其中包括：处理器的 LINT0 和 LINT1 引脚、APIC 定时器、性能监控计数器、Intel Processor Trace、热传感器和内部 APIC 错误检测器。
+* 本地中断处理设施包括：LVT、错误状态寄存器 (ESR)、除法配置寄存器 (DCR) 以及初始计数和当前计数寄存器。
+
+### 11.5.1 本地向量表（Local Vector Table）
+* 本地向量表（LVT）允许软件指定将本地中断传送到处理器核的方式。它由以下 32 位 APIC 寄存器组成（见图 11-8），每个本地中断一个：
+
 ![Local Vector Table](pic/apic-lvt.png)
+
+* **Delivery Mode**：指定要发送到处理器的中断类型。某些递交模式只有在与特定触发模式结合使用时才会按预期运行。允许的递交方式如下：
+  * **111（ExtINT）**：使处理器响应中断，就好像中断源自外部连接的（8259A 兼容的）中断控制器
+    * 对应于 ExtINT 的特殊 INTA 总线 cycle 被路由到外部控制器。期望外部控制器提供 *Vector* 信息
+    * APIC 体系结构在一个系统中只支持一个 ExtINT 源，通常包含在兼容桥中
+    * 系统中只有一个处理器应该有一个 LVT 条目配置为使用 ExtINT 递交模式
+    * 不支持 LVT CMCI 寄存器、LVT 温度监控寄存器或 LVT 性能计数器寄存器
+* **Delivery Status（Read Only）**：指示中断递交状态如下：
+    * **0（Idle）**：此中断源当前没有活动，或者来自此源的先前中断已传送到处理器核并被接受
+    * **1（Send Pengding）**：表示来自该源的中断已传送至处理器核但尚未被接受
+
+### 11.5.2 有效中断向量
+* Intel 64 和 IA-32 架构定义了 `256` 个向量编号，范围从 `0` 到 `255`（参见第 6.2 节“Exception and Interrupt Vectors”）。
+  * local 和 I/O APIC 支持 `240` 个这样的向量（在 `16` 到 `255` 的范围内）作为有效中断。
+  * 当通过 local APIC 发送或接收范围为 `0` 到 `15` 的中断向量时，APIC 会在其错误状态寄存器（Error Status Register）中指示非法向量（参见第 11.5.3 节“Error Handling”）。
+  * Intel 64 和 IA-32 架构保留向量 `16` 到 `31` 用于预定义中断、异常和 Intel 保留的 encodings（参见表 6-1）。但是，local APIC 不会将此范围内的向量视为非法。
+* 当一个非法向量值（`0` 到 `15`）被写入 LVT 条目并且递交模式是 fixed 的（bit `8-11` 等于 `0`）时，APIC 可能会发出非法向量错误信号，而不管掩码位是否被设置或是否实际在输入上看到了中断。
+
+### 11.5.5 本地中断的接受
+* 当本地中断被发送到处理器核时，它受制于图 11-17 中中断接受流程图中指定的接受标准。
+  * 如果中断被接受，它会被记录到 `IRR` 寄存器中，并由处理器根据其优先级进行处理（参见第 11.8.4 节，“Interrupt Acceptance for Fixed Interrupts”）
+  * 如果中断未被接受，则将其发送回 local APIC 并重试
 
 ### ICR 的组成
 * 对于 xAPIC 是 MMIO 映射的寄存器地址 `0xFEE0 0300`（0-31 bit）和 `0xFEE0 0310`（32-63 bit）
@@ -29,24 +97,23 @@
   * **110 (Start-Up)**：向目标处理器发送一个特殊的“start-up”IPI（称为 SIPI）。该向量通常指向作为 BIOS 引导代码一部分的启动例程（请参阅第 8.4 节“多处理器 (MP) 初始化”）。如果源 APIC 无法交付使用此 delivery mode 发送的 IPI，则不会自动重试。由软件确定 SIPI 是否未成功交付，并在必要时重新发布 SIPI
     * 目标会从物理地址 `0x000VV000` 开始执行，其中 `0xVV`为 *Vector* 的值
 
-
 ## 设置 Local APIC
 
 ### BSP 设置 Local APIC
 ```cpp
-arch/x86/kernel/head_64.S
+//arch/x86/kernel/head_64.S
 secondary_startup_64
-   init/main.c
+   //init/main.c
 -> start_kernel()
-      arch/x86/kernel/time.c
+      //arch/x86/kernel/time.c
    -> time_init()
           late_time_init = x86_late_time_init;
       if (late_time_init)
    ->       late_time_init()
-      arch/x86/kernel/time.c
+      //arch/x86/kernel/time.c
    => x86_late_time_init()
       -> x86_init.irqs.intr_mode_init()
-         arch/x86/kernel/apic/apic.c
+         //arch/x86/kernel/apic/apic.c
       => apic_intr_mode_init()
             switch (apic_intr_mode)
             case APIC_SYMMETRIC_IO:
@@ -76,12 +143,12 @@ struct x86_init_ops x86_init __initdata = {
 ### AP 设置 Local APIC
 * 启动地址变为 `start_secondary` 见 [Multiple-Processors Management](MP_management.md)
 ```cpp
-arch/x86/kernel/head_64.S
+//arch/x86/kernel/head_64.S
 secondary_startup_64
-   arch/x86/kernel/smpboot.c
+   //arch/x86/kernel/smpboot.c
 -> start_secondary()
    -> smp_callin()
-         arch/x86/kernel/apic/apic.c
+         //arch/x86/kernel/apic/apic.c
       -> apic_ap_setup()
          -> setup_local_APIC()
 ```
@@ -219,3 +286,174 @@ void perf_events_lapic_init(void)
     apic_write(APIC_LVTPC, APIC_DM_NMI);
 }
 ```
+
+## 11.8 处理中断
+* 当 local APIC 收到来自本地源的中断、来自 I/O APIC 或 IPI 的中断消息时，它处理消息的方式取决于处理器实现，如以下部分所述。
+### 11.8.1 Pentium 4 and Intel Xeon Processors 的中断处理
+* 对于 Pentium 4 和 Intel Xeon 处理器，local APIC 处理本地中断、中断消息和它接收到的 IPI，如下所示：
+
+![Figure 11-16. Interrupt Acceptance Flow Chart for the Local APIC (Pentium 4 and Intel Xeon Processors)](pic/apic-irq_acceptance.png)
+
+1. 确定它是否是指定的目的地（见图 11-16）。如果是指定的目的地，则接受消息；如果不是，则丢弃该消息。
+2. 如果 local APIC 确定它是中断的指定目的地，并且如果中断请求是 NMI、SMI、INIT、ExtINT 或 SIPI，则中断将直接发送到处理器核进行处理。
+3. 如果 local APIC 确定它是中断的指定目的地，但中断请求不是步骤 2 中给出的中断之一，则 local APIC 会在 `IRR` 中设置适当的位。
+4. 当中断在 `IRR` 寄存器中挂起时，local APIC 根据它们的优先级和 `PPR` 中的当前处理器优先级，将它们一次分派一个给处理器（请参阅第 11.8.3.1 节，“Task and Processor Priorities”）。
+5. 当一个 fixed 中断被分派到处理器核进行处理时，处理例程的完成由指令处理程序代码中的一条指令指示，该指令写入 local APIC 中的 end-of-interrupt（`EOI`）寄存器（参见第 11.8.5，“Signaling Interrupt Servicing Completion”）。
+   * 写入 `EOI` 寄存器的行为导致 local APIC 从其 `ISR` 队列中删除中断，并（对于电平触发的中断）在总线上发送一条消息，指示中断处理已完成。
+   * 对 `EOI` 寄存器的写入不得包含在 NMI、SMI、INIT、ExtINT 或 SIPI 的处理程序例程中。
+
+### 11.8.2 P6 Family and Pentium Processors 的中断处理
+* 对于 P6 系列和奔腾处理器，local APIC 处理本地中断、中断消息和它接收到的 IPI，如下所示（见图 11-17）。
+
+![Figure 11-17. Interrupt Acceptance Flow Chart for the Local APIC (P6 Family and Pentium Processors)](pic/apic-irq_acceptance-p6.png)
+
+1. （仅限 IPI）local APIC 检查 IPI 消息以确定它是否是 IPI 的指定目标，如第 11.6.2 节 “Determining IPI Destination.” 中所述。
+   * 如果是指定的目的地，则继续其接受程序；如果不是目的地，则丢弃 IPI 消息。
+   * 当消息指定 lowest-priority 递交模式时，local APIC 将与指定为 IPI 消息接收者的其他处理器进行仲裁（请参阅第 11.6.2.4 节，“Lowest Priority Delivery Mode”）。
+2. 如果 local APIC 确定它是中断的指定目的地，并且如果中断请求是 NMI、SMI、INIT、ExtINT 或 INIT-deassert 中断，或 MP 协议 IPI 消息（BIPI、FIPI 和 SIPI）之一 ，中断直接送到处理器核处理。
+3. 如果 local APIC 确定它是中断的指定目的地，但中断请求不是步骤 2 中给出的中断之一，则 local APIC 从包含在 `IRR` 和 `ISR` 寄存器中的两个未决中断队列之一中寻找一个空槽（见图 11-20）。
+   * 如果插槽可用（请参阅第 11.8.4 节，“Interrupt Acceptance for Fixed Interrupts”），则将中断放入插槽中。
+   * 如果插槽不可用，它会拒绝中断请求并将其与重试消息一起发送回发送方。
+4. 当中断在 `IRR` 寄存器中挂起时，local APIC 根据它们的优先级和 `PPR` 中的当前处理器优先级，将它们一次分派一个给处理器（参见第 11.8.3.1 节，“Task and Processor Priorities”）
+5. 当 fixed 中断已被分派到处理器核进行处理时，处理程序例程的完成由指令处理程序代码中的一条指令指示，该指令写入 end-of-interrupt（`EOI`）寄存器（参见第 11.8.5，“Signaling Interrupt Servicing Completion”）。
+   * 写入 `EOI` 寄存器的行为导致 local APIC 从其队列中删除中断，并（对于电平触发的中断）在总线上发送一条消息，指示中断处理已完成。
+   * 对 `EOI` 寄存器的写入不得包含在 NMI、SMI、INIT、ExtINT 或 SIPI 的处理程序例程中。
+* 以下部分更详细地描述了 local APIC 和处理器对中断的接受及其处理。
+
+### 11.8.3 中断、任务和处理器优先级
+* 通过 local APIC 传递给处理器的每个中断都有一个基于其向量号的优先级。Local APIC 使用此优先级来确定相对于处理器的其他活动（包括其他中断的服务）何时服务中断。
+* 每个中断向量都是一个 `8` bit 的值。
+  * **中断优先级（interrupt-priority class）** 是中断向量的 `7:4` bit 的值。
+  * 最低的中断优先级是 `1`，最高的是 `15`；
+  * 范围在 `0-15` 内的中断（中断优先级为 `0`）向量是非法的，永远不会被传送。
+  * 因为向量 `0-31` 保留给 Intel 64 和 IA-32 架构专用，所以软件应该配置中断向量以使用 `2-15` 范围内的中断优先级。
+* 每个中断优先级包含 `16` 个向量。interrupt-priority class 中，中断的相对优先级由向量号的 `3:0` bit 的值决定。
+  * 这些位的值越高，该中断优先级中的优先级就越高。
+  * 因此，每个中断向量由两部分组成，高 `4` 位表示其 interrupt-priority class，低 `4` 位表示其在中断优先级中的排名
+
+#### 11.8.3.1 任务和处理器优先级
+* Local APIC 还定义了 **任务优先级（task priority）** 和 **处理器优先级（processor priority）**，它们决定了处理中断的顺序。
+* 任务优先级（task-priority class）是 **任务优先级寄存器（task-priority register，`TPR`）** 的第 `7:4` 位的值，可以用软件写入（`TPR` 是一个读/写寄存器）
+
+![Figure 11-18. Task-Priority Register (TPR)](pic/apic-tpr.png)
+
+* 注意：在本讨论中，术语“任务”指的是软件定义的任务、进程、线程、程序或由操作系统分派以在处理器上运行的例程。它不涉及 IA-32 架构定义的任务，如第 8 章“Task anagement”中所述。
+
+* 任务优先级允许软件为中断处理器（interrupting the processor）设置一个优先级阈值。
+  * 这种机制使操作系统能够暂时阻止低优先级中断干扰处理器正在进行的高优先级工作。
+  * 使用任务优先级阻止此类中断的能力源于 `TPR` 控制 *处理器优先级寄存器（processor-priority register，`PPR`）* 的值的方式。
+    * `TPR` 还决定了本地处理器的仲裁优先级
+* **处理器优先级（processor-priority class）** 是一个 `0-15` 范围内的值，保存在 *处理器优先级寄存器（`PPR`）* 的 bit `7:4` 中；参见图 11-19。
+  * `PPR` 是一个只读寄存器。*处理器优先级* 表示处理器正在执行的当前优先级。
+
+![Figure 11-19. Processor-Priority Register (PPR)](pic/apic-ppr.png)
+
+* `PPR` 的值基于 `TPR` 的值和 `ISRV` 的值；
+  * `ISRV` 是 `ISR` 中设置的最高优先级位的向量号，如果 `ISR` 中未设置任何位，则为 `0x00`
+* `PPR` 的值确定如下：
+  * `PPR[7:4]`（处理器优先级）`TPR[7:4]`（任务优先级）和 `ISRV[7:4]`（在服务中的最高优先级中断的优先级）中的最大值。
+  * `PPR[3:0]`（处理器优先级子类）确定如下：
+    * 如果 `TPR[7:4]` > `ISRV[7:4]`，`PPR[3:0]` 是 `TPR[3:0]`（任务优先级子类）。
+    * 如果 `TPR[7:4]` < `ISRV[7:4]`，`PPR[3:0]` 为 `0`。
+    * 如果 `TPR[7:4]` = `ISRV[7:4]`，`PPR[3:0]` 可能是 `TPR[3:0]` 或 `0`。实际行为是 model-specific 的。
+
+* 处理器优先级决定了中断处理器（interrupting the processor）的优先级阈值。
+  * 处理器将只递交那些中断优先级高于 `PPR` 中处理器优先级的中断。
+  * 如果处理器优先级为 `0`，则 `PPR` 不禁止传递任何中断；
+  * 如果它是 `15`，则处理器禁止传递所有中断。
+    * 处理器优先机制不影响 NMI、SMI、INIT、ExtINT、INIT-deassert 和启动递交模式的中断传递。
+* 处理器不使用处理器优先级子类来确定递交和禁止哪些中断。（处理器仅使用处理器优先级子类来满足 `PPR` 的读取。）
+
+### 11.8.4 Fixed 中断的中断接受
+* Local APIC 有两个中断挂起寄存器：中断请求寄存器（`IRR`）或 in-service 寄存器（`ISR`），local APIC 将它在二者之一中接受的 fixed 中断排队。
+  * 这两个 `256` 位只读寄存器如图 11-20 所示。
+  * 这些寄存器中的 `256` 位代表 `256` 个可能的向量；
+  * 向量 `0` 到 `15` 由 APIC 保留
+* 注意：所有具有 NMI、SMI、INIT、ExtINT、start-up 或 INIT-deassert 递交模式的中断都会绕过 `IRR` 和 `ISR` 寄存器，并直接发送到处理器核以进行服务。
+
+![Figure 11-20. IRR, ISR, and TMR Registers](pic/apic-irr-isr-tmr.png)
+
+* `IRR` 包含已被接受但尚未分派给处理器进行服务的活动中断请求。
+  * 当 local APIC 接受中断时，它会设置 `IRR` 中对应于已接受中断向量的位。
+  * 当处理器核准备好处理下一个中断时，local APIC 清除已设置的最高优先级 `IRR` 位并设置相应的 `ISR` 位。
+  * 然后将 `ISR` 中设置的最高优先级位的向量分派给处理器核进行服务。
+* 当处理器为最高优先级中断服务时，local APIC 可以通过设置 `IRR` 中的位来发送额外的 fixed 中断。
+  * 当中断服务例程向 `EOI` 寄存器发出写操作时，local APIC 通过清除设置的最高优先级 `ISR` 位来响应。
+  * 然后重复清除 `IRR` 中最高优先级位并设置 `ISR` 中相应位的过程。
+  * 然后，处理器核开始为 `ISR` 中设置的最高优先级位执行服务路由。
+* 如果使用相同的向量号生成多个中断，则 local APIC 可以在 `IRR` 和 `ISR` 中设置向量的位。
+  * 这意味着对于 Pentium 4 和 Intel Xeon 处理器，`IRR` 和 `ISR` 可以为每个中断向量排队两个中断：一个在 `IRR` 中，一个在 `ISR` 中。
+  * 为同一中断向量发出的任何其他中断都将折叠到 `IRR` 中的单个位中。
+* 对于 P6 系列和奔腾处理器，`IRR` 和 `ISR` 寄存器可以为每个中断向量排队不超过两个中断，并且将拒绝在同一向量内接收到的其他中断。
+* 如果 local APIC 接收到中断优先级高于当前正在服务的中断的中断，并且处理器核中启用了中断，则 local APIC 立即将更高优先级的中断分派给处理器（无需等待写入到 `EOI` 寄存器）。
+  * 当前正在执行的中断处理程序随后被中断，以便可以处理更高优先级的中断。
+  * 当更高优先级的中断处理完成后，被中断的中断服务将恢复。
+* 触发模式寄存器（trigger mode register，`TMR`）指示中断的触发模式（见图11-20）。
+  * 在 `IRR` 中接受中断后，相应的 `TMR` 位将针对边沿触发的中断清零并设置为电平触发的中断。
+  * 如果在生成相应中断向量的 `EOI` cycle 时设置了 `TMR` 位，则会向所有 I/O APIC 发送 EOI 消息。
+
+### 11.8.5 Signaling Interrupt Servicing Completion
+* 对于除以 NMI、SMI、INIT、ExtINT、start-up 或 INIT-Deassert 递交模式递交的中断之外的所有中断，中断处理程序必须包括对 end-of-interrupt `EOI` 寄存器的写入
+  * 此写入必须发生在处理程序例程的末尾，在 `IRET` 指令之前的某个时间。
+  * 此操作表明当前中断的服务已完成，local APIC 可以从 `ISR` 发出下一个中断。
+
+![Figure 11-21. EOI Register](pic/apic-eoi.png)
+
+* 收到 EOI 后，APIC 会清除 `ISR` 中的最高优先级位，并将下一个最高优先级中断分派给处理器。
+* 如果终止的中断是电平触发的中断，则 local APIC 还会向所有 I/O APIC 发送 end-of-interrupt 消息。
+* 系统软件可能更愿意将 EOI 定向到特定的 I/O APIC，而不是让 local APIC 将 end-of-interrupt 消息发送到所有 I/O APIC。
+* 软件可以通过设置 Spurious Interrupt 向量寄存器的第 `12` 位来禁止 EOI 消息的广播。
+  * 如果设置了该位，即使相关的 `TMR` 位指示当前中断是电平触发的，也不会在 EOI cycle 生成广播 EOI。
+  * 该位的默认值为 `0`，表示执行 EOI 广播。
+* 如果处理器不支持抑制 EOI 广播，则 Spurious Interrupt 向量寄存器的第 `12` 位保留为 `0`。
+  * 在 local APIC 版本寄存器的第 `24` 位中报告了对 EOI 广播抑制的支持（参见第 11.4.8 节）；如果该位设置为 `1`，则支持该功能。
+  * 支持时，该功能在 xAPIC 模式和 x2APIC 模式下均可用。
+* 希望为 *电平触发中断* 执行定向 EOI 的系统软件应设置 Spurious Interrupt 向量寄存器的第 `12` 位，并跟随每个 EOI 到 local xAPIC 以获取具有定向 EOI 到生成中断的 I/O APIC 的电平触发中断（ 这是通过写入 I/O APIC 的 `EOI` 寄存器来完成的）。
+* 执行定向 EOI 的系统软件必须保留一个映射，将电平触发的中断与系统中的 I/O APIC 相关联。
+
+### 11.8.6 Task Priority in IA-32e Mode
+* 在 IA-32e 模式下，操作系统可以使用任务优先级寄存器（`TPR`）显式管理 16 个 interrupt-priority classes（参见第 11.8.3 节“Interrupt, Task, and Processor Priority”）。
+* 操作系统可以使用 `TPR` 暂时阻止特定（低优先级）中断打断高优先级任务。这是通过将一个值加载到 `TPR` 来完成的，其中 task-priority class 对应于要被阻止的最高interrupt-priority class。 例如：
+  * 加载 task-priority class 为 `8` (`01000`B) 的 `TPR` 会阻止所有中断优先级为 `8` 或更低的中断，同时允许所有 interrupt-priority class 为 `9` 或更高的中断被识别。
+  * 加载任务优先级为 `0` 的 `TPR` 可启用所有外部中断。
+  * 使用任务优先级 `0x0F`（`01111`B）加载 `TPR` 会禁用所有外部中断。
+* `TPR`（如图 11-18 所示）在复位时被清零。
+  * 在 64 位模式下，软件可以使用备用接口 `MOV CR8` 指令读写 `TPR`。
+  * 当 `MOV CR8` 指令执行完成时，新的任务优先级被建立。
+  * 使用 `MOV CR8` 加载 `TPR` 后，软件不需要强制序列化。
+* 使用 `MOV CRn` 指令需要特权级 0。
+  * 以 *大于 0* 的特权级运行的程序无法读取或写入 `TPR`。尝试这样做会导致一般保护异常。
+* `TPR` 是从中断控制器 (IC) 中抽象出来的，它优先处理和管理向处理器递交的外部中断。
+  * IC可以是外部设备，例如 APIC 或 8259。通常，IC 提供与 `TPR` 相似或相同的优先级机制。
+  * 然而，IC 被认为依赖于实现，其底层优先级机制可能会发生变化。
+  * 相比之下，`CR8` 是 Intel 64 架构的一部分。软件可以依赖这个定义保持不变。
+* `CR8` 当前仅使用低四位。其余 `60` 位保留，必须写入零。不这样做会导致 `#GP`。
+
+#### 11.8.6.1 CR8 和 APIC 之间任务优先级的交互
+* Intel 64 位架构的第一个实现包括一个本地高级可编程中断控制器 (APIC)，它类似于以前 IA-32 处理器使用的 APIC。Local APIC 的某些方面会影响架构定义的任务优先级寄存器和使用 `CR8` 的编程接口的操作。
+* 值得注意的 `CR8` 和 APIC 相互作用是：
+  * 处理器启动并启用本地APIC。
+  * APIC 必须启用，`CR8` 才能用作于 `TPR`。写入 `CR8` 会反映到 APIC 任务优先级寄存器中。
+  * `APIC.TPR[bits 7:4] = CR8[bits 3:0]`，`APIC.TPR[bits 3:0] = 0`。读取 `CR8` 返回一个 64 位值，即 `TPR[bits 7:4]]` 的值，零扩展到 64 位。
+* `APIC.TPR` 和 `CR8` 的直接更新之间没有排序机制。
+  * 操作系统软件应实现直接 `APIC TPR` 更新或 `CR8` 样式的 `TPR` 更新，但不要混合使用它们。
+  * 软件可以使用序列化指令（例如，`CPUID`）来序列化 `MOV CR8` 和存储到 APIC 之间的更新。
+
+## 11.9 Spurious Interrupt
+* 当处理器将其任务优先级提高到大于或等于 *处理器 `INTR` 信号当前被 asserted 的中断* 的级别时，可能会发生特殊情况。
+  * 如果在发出 `INTA` cycle 时，要分配的中断已被屏蔽（由软件编程），则 local APIC 将提供一个伪中断向量（Spurious Interrupt Vector）。
+  * 分配（dispensing）伪中断向量不会影响 `ISR`，因此该向量的处理程序应该在没有 `EOI` 的情况下返回。
+* 伪中断向量的向量号在伪中断向量寄存器中指定：
+
+![Spurious-Interrupt Vector Register (SVR)](pic/apic-svr.png)
+
+* 该寄存器中各字段的作用如下：
+* **Spurious Vector**：确定当 local APIC 生成伪向量时要传送给处理器的向量号。
+  * （Pentium 4 和 Intel Xeon 处理器）该字段的 bit `0` 到 `7` 可由软件编程。
+  * （P6 系列和奔腾处理器）该字段的 bit `4` 到 `7` 可由软件编程，bit `0` 到 `3` 硬连线为逻辑 `1`。软件写入位 `0` 到 `3` 无效。
+* **APIC Software Enable/Disable**：允许软件临时启用（`1`）或禁用（`0`）local APIC（请参阅第 11.4.3 节，“Enabling or Disabling the Local APIC”）
+* **Focus Processor Checking**：确定在使用最低优先级交付模式时是启用（`0`）还是禁用（`1`）焦点处理器检查。在 Pentium 4 和 Intel Xeon 处理器中，该位保留，应清零。
+* **Suppress EOI Broadcasts**：确定电平触发中断的 `EOI` 是否导致 `EOI` 消息广播到 I/O APIC（`0`）或（`1`）。请参阅第 11.8.5 节。该位的默认值为 `0`，表示执行 `EOI` 广播。如果处理器不支持 `EOI` 广播抑制，则此位保留为 `0`
+* **注意** 即使设置了掩码位，也不要使用伪向量对 `LVT` 或 IOAPIC `RTE` 进行编程。
+  * 伪向量 `ISR` 不执行 `EOI`
+  * 如果出于某种原因由 `LVT` 或 `RTE` 条目生成中断，则 in-service 寄存器中的位将保留为伪向量设置。这将屏蔽所有具有相同或较低优先级的中断

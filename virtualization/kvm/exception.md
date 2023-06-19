@@ -132,6 +132,59 @@
 * 对比 `Acknowledge Interrupt on Exit = 1`，VM-exit 时就已经完成了第 1 ~ 5 步，并且 host 中断处于关闭状态，VM-exit 后处于 VMX handler 中，于是那个 commit 所要做的工作就是衔接上第 6 步就可以了。
 * 我的理解，虽然说 `vcpu_enter_guest()` 在没那个 commit 前在那个位置调用的也是 `local_irq_enable();` 来开始第 2 步，但理论上它也可以往后放。比起现在的响应方式终究还是慢一点吧。
 
+## VMX Posted Interrupt Processing
+
+* arch/x86/include/asm/vmxfeatures.h
+```cpp
+#define VMX_FEATURE_POSTED_INTR     ( 0*32+  7) /* Posted Interrupts */
+```
+* arch/x86/include/asm/vmx.h
+```cpp
+#define VMCS_CONTROL_BIT(x) BIT(VMX_FEATURE_##x & 0x1f)
+...
+#define PIN_BASED_POSTED_INTR                   VMCS_CONTROL_BIT(POSTED_INTR)
+```
+* arch/x86/kvm/vmx/vmx.c
+```cpp
+static u32 vmx_pin_based_exec_ctrl(struct vcpu_vmx *vmx)
+{
+    u32 pin_based_exec_ctrl = vmcs_config.pin_based_exec_ctrl;
+
+    if (!kvm_vcpu_apicv_active(&vmx->vcpu))
+        pin_based_exec_ctrl &= ~PIN_BASED_POSTED_INTR;
+
+    if (!enable_vnmi)
+        pin_based_exec_ctrl &= ~PIN_BASED_VIRTUAL_NMIS;
+
+    if (!enable_preemption_timer)
+        pin_based_exec_ctrl &= ~PIN_BASED_VMX_PREEMPTION_TIMER;
+
+    return pin_based_exec_ctrl;
+}
+...
+static void init_vmcs(struct vcpu_vmx *vmx)
+{
+...
+    /* Control */
+    pin_controls_set(vmx, vmx_pin_based_exec_ctrl(vmx));
+
+    exec_controls_set(vmx, vmx_exec_control(vmx));
+...
+    if (enable_apicv && lapic_in_kernel(&vmx->vcpu)) {
+        vmcs_write64(EOI_EXIT_BITMAP0, 0);
+        vmcs_write64(EOI_EXIT_BITMAP1, 0);
+        vmcs_write64(EOI_EXIT_BITMAP2, 0);
+        vmcs_write64(EOI_EXIT_BITMAP3, 0);
+
+        vmcs_write16(GUEST_INTR_STATUS, 0);
+
+        vmcs_write16(POSTED_INTR_NV, POSTED_INTR_VECTOR);  //设置 posted interrupt notification vector
+        vmcs_write64(POSTED_INTR_DESC_ADDR, __pa((&vmx->pi_desc))); //设置 posted interrupt descriptor 的物理地址
+    }
+...
+}
+```
+
 # References
 * [Linux中断虚拟化之二](https://www.51cto.com/article/693199.html)
 * [Intel SDM Chapter 29: APIC Virtualizaton & Virtual Interrupts](https://tcbbd.moe/ref-and-spec/intel-sdm/sdm-vmx-ch29/)

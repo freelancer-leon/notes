@@ -443,6 +443,57 @@ static inline void __kunmap_atomic(void *addr)
 * `kmap_atomic()`建立一个临时映射。
 * `kmap_atomic()`禁止内核抢占，因为映射对每个处理器都是唯一的。
 * `kunmap_atomic()`取消映射。
+* 如果因为要从一个页面复制到另一个页面而需要映射两个页面，则需要严格嵌套 `kmap_atomic()` 调用，例如：
+  ```cpp
+  vaddr1 = kmap_atomic(page1);
+  vaddr2 = kmap_atomic(page2);
+  
+  memcpy(vaddr1, vaddr2, PAGE_SIZE);
+  
+  kunmap_atomic(vaddr2);
+  kunmap_atomic(vaddr1);
+  ```
+* kmap atomic map 使用一小组 address slots 中的一个 slot 进行映射，并且该映射仅在创建它的 CPU 上有效
+  * 这种设计意味着持有这些映射之一的代码必须在原子上下文中运行（因此得名 `kmap_atomic()`）
+  * 如果它要休眠或被转移到另一个 CPU，混乱和数据损坏几乎是必然的结果
+  * 因此，每当在内核空间中运行的代码创建原子映射时，它就不能再被抢占或迁移，并且不允许休眠，直到所有原子映射都被释放
+## 本地临时映射
+* *临时映射* 的实现引入了其使用区间需要禁用抢占的要求，这会降低系统的实时性能，为解决这个问题，引入了新增的本地临时映射 `kmap_local_page()` 
+  * 在之前的内核中，这些 slot 被存储在一个 per-CPU 数据结构中，因此它们会被运行在同一个 CPU 上的所有线程共享。这也是为什么在持有 atomic mapping 时不能允许抢占的原因之一。正在运行的进程和抢占它的进程可能都会试图使用相同的 slot，结果一般都会导致出现各种错误了
+  * 在新的方案中，mapping 被存储在 task_struct 结构中，因此它们对每个线程来说是唯一的
+* local page mapping 仍然只会在 local CPU 上被建立起来，这意味着持有这种映射的进程如果要做迁移的话肯定是自找麻烦。因此，虽然当内核代码建立 local mapping 时抢占仍然是允许的，但从一个 CPU 到另一个 CPU 的迁移动作是被禁止的
+* `kmap_atomic()` 和 `kmap_local()` 都是 local thread 和 local CPU 的，它们之间唯一的区别将是持有 mapping 时的执行上下文：
+  * atomic mapping 仍然禁用抢占
+  * 而 local mapping 只禁用迁移
+  * 除此以外，这两种 mapping 效果是相同的
+* 所以这个讨论 [Re [PATCH v2] x86_sgx Replace kmap_kunmap_atomic calls - Thomas Gleixner](https://lore.kernel.org/all/87zgcqo94z.ffs@tglx/#t) tglx 要表明的是：
+  * 禁止抢占和缺页是因为 `kmap_atomic()` 旧实现的依赖于此，而不是其适用的上下文需要这么它这么做，比如中断上下文。这个因果关系要搞清楚
+  * 利用 `kmap_atomic()` 会禁止抢占和缺页的副作用来实现的功能是愚蠢的
+  * 用 `kmap_atomic()` 都可以用 `kmap_local()` 替换。但需要分析替换为 `kmap_local()` 是否还需要附加禁抢占，如果还需要，那相当于还是用 `kmap_atomic()`
+* 为什么这么说，看看现在 `kmap_atomic()` 和 `kmap_local()` 的实现，其实最终调用的都是 `__kmap_local_page_prot()`
+  * include/linux/highmem-internal.h
+```cpp
+static inline void *kmap_local_page(struct page *page)
+{
+    return __kmap_local_page_prot(page, kmap_prot);
+}
+...
+static inline void *kmap_atomic_prot(struct page *page, pgprot_t prot)
+{
+    if (IS_ENABLED(CONFIG_PREEMPT_RT))
+        migrate_disable();
+    else
+        preempt_disable();
+
+    pagefault_disable();
+    return __kmap_local_page_prot(page, prot);
+}
+
+static inline void *kmap_atomic(struct page *page)
+{
+    return kmap_atomic_prot(page, kmap_prot);
+}
+```
 
 # Per-CPU
 
@@ -557,3 +608,5 @@ static inline void __kunmap_atomic(void *addr)
 * [/PROC/MEMINFO之谜](http://linuxperf.com/?p=142)
 * [Linux内核高端内存](http://ilinuxkernel.com/?p=1013)
 * [Per-CPU variables](https://0xax.gitbooks.io/linux-insides/content/Concepts/linux-cpu-1.html)
+* [High Memory Handling — The Linux Kernel documentation](https://www.kernel.org/doc/html/next/mm/highmem.html)
+* [LWN：把atomic kmap改成local kmap！_LinuxNews搬运工](https://blog.csdn.net/Linux_Everything/article/details/110016935)
