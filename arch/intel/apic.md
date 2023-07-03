@@ -39,7 +39,36 @@
   * 专用 IPI（包括 NMI、INIT、SMI 和 SIPI IPI）允许系统总线上的一个或多个处理器执行系统范围的启动和控制功能。
 
 ## 11.4 Local APIC
+
+### 11.4.1 The Local APIC Block Diagram
+
 ![Local APIC Structure](pic/lapic_structure.png)
+
+* 图 11-4 给出了 Local APIC 的功能框图。
+* 软件通过读取和写入 local APIC 的寄存器来与 local APIC 交互。
+* APIC 寄存器内存映射到处理器物理地址空间的 `4 KB` 区域，初始起始地址为 `0xFEE00000`。
+* 为了正确的 APIC 操作，该地址空间必须映射到已指定为强不可缓存（UC）的内存区域。请参阅第 12.3 节 “Methods of Caching Available.”。
+* 在 MP 系统配置中，系统总线上 Intel 64 或 IA-32 处理器的 APIC 寄存器最初映射到 **物理地址空间的相同 `4 KB` 区域。**
+  * 软件可以选择将所有 local APIC 的初始映射更改为一个其他的 `4 KB` 区域，或者将每个 local APIC 的 APIC 寄存器映射到其自己的 `4 KB` 区域。第 11.4.5 节 “重定位 Local APIC 寄存器” 描述了如何重定位 APIC 寄存器的基地址。
+* 在支持 x2APIC 架构的处理器上（由 `CPUID.01H:ECX[21] = 1` 指示），local APIC 支持 xAPIC 模式和（如果由软件启用）x2APIC 模式下的操作。x2APIC 模式提供扩展的处理器寻址能力（参见第 11.12 节）
+**注意**：
+* 对于 P6 系列、Pentium 4 和 Intel Xeon 处理器，APIC 在内部处理对 `4 KB` APIC 寄存器空间内的地址的所有内存访问，并且不产生外部总线周期。
+* 对于带有片上 APIC 的 Pentium 处理器，会产生总线周期来访问 APIC 寄存器空间。因此，对于打算在 Pentium 处理器上运行的软件，系统软件不应明确地将 APIC 寄存器空间映射到常规系统内存。这样做可能会导致生成无效操作码异常（`#UD`）或不可预测的执行
+
+### 11.4.4 Local APIC 状态和位置
+* Local APIC 的状态和位置包含在 `IA32_APIC_BASE` MSR 中（见图 11-5）。MSR位功能描述如下：
+
+![IA32_APIC_BASE MSR (APIC_BASE_MSR in P6 Family)](pic/apic-base-msr.png)
+
+* **BSP flag, bit 8** — 指示处理器是否为引导处理器 (BSP)。请参见第 9.4 节“MultipleProcessor (MP) Initialization”。上电或复位后，对于选择作为 BSP 的处理器，该标志设置为 `1`，对于其余处理器 (AP)，该标志设置为 `0`。
+* **APIC Global Enable flag, bit 11** — 启用或禁用 local APIC（请参见第 11.4.3 节 “Enabling or
+Disabling the Local APIC”）。此标志在 Pentium 4、Intel Xeon 和 P6 系列处理器中可用。不保证在未来的 Intel 64 或 IA-32 处理器中可用或在同一位置可用。
+* **APIC Base field, bits 12 到 35** — 指定 APIC 寄存器的基地址。该 24 位值再扩展低 12 位以形成基地址。这会自动在 `4 KB` 边界上对齐地址。上电或复位后，该字段设置为 `0xFEE0 0000`。
+* `IA32_APIC_BASE` MSR 中的 bit `0` 到 `7`、bit `9` 和 `10` 以及 bit `MAXPHYADDR` 到 `63` 被保留。
+  * 对于不支持 CPUID leaf `0x80000008` 的处理器，`MAXPHYADDR` 为 bit `36`，或者对于支持 CPUID leaf `0x80000008` 的处理器，由 `CPUID.80000008H:EAX[bit 7:0]` 指示。
+
+### 11.4.5 重定位 Local APIC 寄存器
+* Pentium 4、Intel Xeon 和 P6 系列处理器允许通过修改 `IA32_APIC_BASE` MSR 基地址字段中的值将 APIC 寄存器的起始地址从 `0xFEE00000` 重定位到另一个物理地址。 * APIC 架构的这种扩展旨在帮助解决与现有系统内存映射的冲突，并允许 MP 系统中的各个处理器将其 APIC 寄存器映射到物理内存中的不同位置。
 
 ## 11.5 处理本地中断
 * 以下部分描述了 local APIC 中提供的用于处理本地中断的设施。其中包括：处理器的 LINT0 和 LINT1 引脚、APIC 定时器、性能监控计数器、Intel Processor Trace、热传感器和内部 APIC 错误检测器。
@@ -98,6 +127,46 @@
     * 目标会从物理地址 `0x000VV000` 开始执行，其中 `0xVV`为 *Vector* 的值
 
 ## 设置 Local APIC
+
+### 注册 LAPIC 地址
+```cpp
+   //init/main.c
+-> start_kernel()
+   //arch/x86/kernel/setup.c
+   -> setup_arch()
+         //arch/x86/kernel/apic/apic.c
+      -> init_apic_mappings()
+         -> detect_init_APIC()
+               mp_lapic_addr = APIC_DEFAULT_PHYS_BASE; //#define APIC_DEFAULT_PHYS_BASE 0xfee00000
+            apic_phys = mp_lapic_addr;
+         -> register_lapic_address(apic_phys)
+            -> set_fixmap_nocache(FIX_APIC_BASE, address);
+```
+* 用 MMIO 的方式读写 LAPIC 寄存器就是在 `APIC_DEFAULT_PHYS_BASE` 的基础上加上寄存器的偏移
+* arch/x86/include/asm/apicdef.h
+```cpp
+#define APIC_BASE (fix_to_virt(FIX_APIC_BASE))
+#define APIC_BASE_MSR   0x800
+```
+* arch/x86/include/asm/apic.h
+```cpp
+static inline void native_apic_mem_write(u32 reg, u32 v)
+{
+    volatile u32 *addr = (volatile u32 *)(APIC_BASE + reg);
+
+    alternative_io("movl %0, %P1", "xchgl %0, %P1", X86_BUG_11AP,
+               ASM_OUTPUT2("=r" (v), "=m" (*addr)),
+               ASM_OUTPUT2("0" (v), "m" (*addr)));
+}
+
+static inline u32 native_apic_mem_read(u32 reg)
+{
+    return *((volatile u32 *)(APIC_BASE + reg));
+}
+```
+
+#### 应答 APIC 中断
+* 比如说应答中断 `ack_APIC_irq()`
 
 ### BSP 设置 Local APIC
 ```cpp

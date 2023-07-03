@@ -388,5 +388,40 @@ idt_setup_from_table(gate_desc *idt, const struct idt_data *t, int size, bool sy
 ---
 > To check if the IPIs are enable you have to check the `IF` flag, the *Spurious Interrupt Vector Register* and the `IA32_APIC_BASE` MSR.
 
+* 例如 kdump 会用到的 `apic_send_IPI_allbutself(NMI_VECTOR)`
+```cpp
+//arch/x86/kernel/reboot.c
+nmi_shootdown_cpus()
+   //arch/x86/kernel/apic/ipi.c
+-> apic_send_IPI_allbutself(NMI_VECTOR)
+   -> apic->send_IPI_allbutself(vector)
+      //arch/x86/kernel/apic/x2apic_phys.c
+   => x2apic_send_IPI_allbutself()
+      ->  __x2apic_send_IPI_shorthand(vector, APIC_DEST_ALLBUT)
+             //
+          -> __prepare_ICR(which, vector, 0)
+             //arch/x86/include/asm/apic.h
+          -> native_x2apic_icr_write(cfg, 0)
+```
+* 对于 `NMI_VECTOR` 向量，ICR 的 Delivery Mode 类型被设置为了 `APIC_DM_NMI`
+* arch/x86/kernel/apic/local.h
+```cpp
+static inline unsigned int __prepare_ICR(unsigned int shortcut, int vector,
+                     unsigned int dest)
+{
+    unsigned int icr = shortcut | dest;
+
+    switch (vector) {
+    default:
+        icr |= APIC_DM_FIXED | vector;
+        break;
+    case NMI_VECTOR:
+        icr |= APIC_DM_NMI;
+        break;
+    }
+    return icr;
+}
+```
+
 # References
 - [Intel SDM Chapter 10 APIC tcbbd的博客](https://tcbbd.moe/ref-and-spec/intel-sdm/sdm-basic-ch10/)
