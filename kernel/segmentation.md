@@ -15,3 +15,4 @@
 * [CVE-2017-17053(Linux kernel LDT use after free) 漏洞分析](https://www.anquanke.com/post/id/90295)
 * [Intel 80386 Reference Programmer's Manual](https://pdos.csail.mit.edu/6.828/2005/readings/i386/toc.htm)
 * [Memory Translation and Segmentation](https://manybutfinite.com/post/memory-translation-and-segmentation/)
+* [x86-64处理器的几种运行模式](https://zhuanlan.zhihu.com/p/69334474)
