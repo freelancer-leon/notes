@@ -118,7 +118,7 @@ static inline void kvm_vcpu_trigger_posted_interrupt(struct kvm_vcpu *vcpu,
     kvm_vcpu_wake_up(vcpu);
 }
 ```
-* 通过 posted interrupt 方式向 vcpu 发送中断会遇到的情况：
+* 虚拟设备通过 posted interrupt 方式向 vcpu 发送中断会遇到的情况：
   1. 如果目标 vcpu 正在运行（non-root mode），则向 vcpu 发送 posted interrupt notification，硬件将自动将 `PIR` 同步到 `vIRR`。
   2. 如果目标 vcpu 未运行（root mode），则启动它以在下一个 VM entry 中从 `PIR` 获取中断。
 * 在 `vcpu_enter_guest()` 中设置 `vcpu->mode` 之后，`pi_test_and_set_on()` 中隐含的屏障与 `smp_mb_*()` 配对。因此，如果触发 posted interrupt “失败”，vCPU 保证看到 `PID.ON=1` 并将 `PIR` 同步到 `IRR`，因为 `vcpu->mode != IN_GUEST_MODE`。

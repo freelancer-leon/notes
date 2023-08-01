@@ -5,10 +5,17 @@
 
 ### 25.4.1 Guest Register State
 ### 25.4.2 Guest Non-Register State
-
-#### Interruptibility state（32 bits）
-* IA-32 体系结构包括允许某些事件在一段时间内被屏蔽的功能。该域包含有关此类屏蔽的信息
-* Table 25-3. Interruptibility State 的格式
+* 除了第 25.4.1 节中描述的寄存器状态之外，guest 状态区域还包括以下表征 guest 状态但不对应于处理器寄存器的域：
+* **Activity state**（32 位）。该域标识逻辑处理器的活动状态。当逻辑处理器正常执行指令时，它处于 **activity state**。某些指令的执行和某些事件的发生可能导致逻辑处理器转变到停止（cease）执行指令的 **inactive state**。定义了以下 activity states：
+  * `MWAIT` 指令的执行可以将逻辑处理器置于 inactive state。但是，此 VMCS 域从未反映此状态。参见第 28.1 节。
+  - 0：**Active**：逻辑处理器正在正常执行指令。
+  - 1：**HLT**：逻辑处理器处于 inactive state，因为它执行了 `HLT` 指令。
+  - 2：**Shutdown**：逻辑处理器处于 inactive state，因为它发生了 **triple fault** 或某些其他严重错误。
+  - 3：**Wait-for-SIPI**：逻辑处理器处于 inactive state，因为它正在等待 startup-IPI（SIPI）。
+  * 当逻辑处理器在尝试递交 double fault 时遇到异常时，就会发生 triple fault。
+  * 未来的处理器可能包括对其他活动状态的支持。软件应读取 VMX capability MSR `IA32_VMX_MISC`（请参阅附录 A.6）以确定支持哪些 activity states。
+* **Interruptibility state**（32 位）。IA-32 体系结构包括允许某些事件在一段时间内被屏蔽的功能。该域包含有关此类屏蔽的信息。
+  * Table 25-3. Interruptibility State 的格式
 
 Bit 位置 | bit 名称             | 描述
 ---------|---------------------|-----------------------------------------
@@ -17,7 +24,16 @@ Bit 位置 | bit 名称             | 描述
 2       | 被 SMI 屏蔽           | 设置此位表示 SMI 的屏蔽生效
 3       | 被 NMI 屏蔽           | 传递不可屏蔽中断 (NMI) 或系统管理中断 (SMI) 会阻止后续 NMI，直到下一次执行 `IRET`。请参阅第 26.3 节了解 `IRET` 的这种行为在 VMX non-root operation 中如何改变。设置该位表示 NMI 屏蔽生效。清除该位并不意味着 NMI 不会（暂时）因其他原因而被屏蔽。如果 “virtual NMIs” VM 执行控制域（参见第 25.6.1 节）为 `1`，则该位不控制 NMI 的屏蔽。相反，它指的是 “virtual-NMI blocking”（guest 软件还没有为 NMI 做好准备）
 4       | Enclave interruption | 如果在逻辑处理器处于 enclave 模式时发生 VM exit，则设置为 `1`。此类 VM exit 包括由中断、不可屏蔽中断、系统管理中断、INIT 信号和 enclave 模式中发生的异常以及在将此类事件事件传递到 enclave 模式期间遇到的异常引起的退出。与 VM entry 注入的事件交付相关的 VM exit 不修改该位
-5       | 保留                 | 如果这些位不为 `0`，VM entry 将会失败
+31:5    | 保留                 | 如果这些位不为 `0`，VM entry 将会失败
+
+* **Pending debug exceptions**（64 位；不支持 Intel 64 架构的处理器上为 32 位）。
+* **VMCS link pointer**（64 位）。
+* **VMX-preemption timer value**（32 位）。
+* **Page-directory-pointer-table entries**（PDPTEs；每个 64 位）。
+* **Guest interrupt status**（16 位）。此域仅在 “virtual-interrupt delivery” VM 执行控制域设置为 `1` 的处理器上支持。它表征了 guest 虚拟 APIC 状态的一部分，不对应于任何处理器或 APIC 寄存器。它包括两个 8 位子域：
+  - **Requesting virtual interrupt（RVI）**：这是 guest interrupt status 的低字节。处理器将此值视为请求服务的最高优先级虚拟中断的向量。（值为 `0` 表示没有此类中断。）
+  - **Servicing virtual interrupt（SVI）**：这是 guest interrupt status 的高字节。处理器将此值视为正在服务的最高优先级虚拟中断的向量。（值为 `0` 表示没有此类中断。）
+* **PML index**（16 位）。
 
 ## 25.6 VM-Execution Control Field
 

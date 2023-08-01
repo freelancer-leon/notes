@@ -778,7 +778,7 @@ static struct severity {
    * 如果条件 `atomic_read(&mce_executing) != 0` 不成立，Subject 等待
    (1) 此时，其他 Subject 都扫描完了，Monarch 可以从中选出最严重的错误
    (2) 如果最严重的错误严重程度 `>= MCE_PANIC_SEVERITY`，那么在此触发 `mce_panic("Fatal machine check")`
-   (3) 如果最严重的错误严重程度在 `MCE_KEEP_SEVERITY` 与 `MCE_PANIC_SEVERITY` 之间，必定有一些外部的源或某个 CPU hung 住了，触发 `mce_panic("Fatal machine check from unknown source")`
+   (3) 如果最严重的错误严重程度 `<= MCE_KEEP_SEVERITY`，必定有一些外部的源或某个 CPU hung 住了，触发 `mce_panic("Fatal machine check from unknown source")`
    (4) 现在清除所有 CPU 的 `mces_seen`，这样它们就不会再出现在下一个 mce 上
 7. Monarch 清楚所有的全局状态 `global_nwo`、`mce_callin`
 8. Monarch 完成 reign，在 `mce_end()` 的末尾 `atomic_set(&mce_executing, 0)`，结束 Subject 的等待

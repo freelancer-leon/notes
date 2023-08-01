@@ -61,14 +61,22 @@
 ![IA32_APIC_BASE MSR (APIC_BASE_MSR in P6 Family)](pic/apic-base-msr.png)
 
 * **BSP flag, bit 8** — 指示处理器是否为引导处理器 (BSP)。请参见第 9.4 节“MultipleProcessor (MP) Initialization”。上电或复位后，对于选择作为 BSP 的处理器，该标志设置为 `1`，对于其余处理器 (AP)，该标志设置为 `0`。
-* **APIC Global Enable flag, bit 11** — 启用或禁用 local APIC（请参见第 11.4.3 节 “Enabling or
-Disabling the Local APIC”）。此标志在 Pentium 4、Intel Xeon 和 P6 系列处理器中可用。不保证在未来的 Intel 64 或 IA-32 处理器中可用或在同一位置可用。
+* **APIC Global Enable flag, bit 11** — 启用或禁用 local APIC（请参见第 11.4.3 节 “Enabling or Disabling the Local APIC”）。此标志在 Pentium 4、Intel Xeon 和 P6 系列处理器中可用。不保证在未来的 Intel 64 或 IA-32 处理器中可用或在同一位置可用。
 * **APIC Base field, bits 12 到 35** — 指定 APIC 寄存器的基地址。该 24 位值再扩展低 12 位以形成基地址。这会自动在 `4 KB` 边界上对齐地址。上电或复位后，该字段设置为 `0xFEE0 0000`。
 * `IA32_APIC_BASE` MSR 中的 bit `0` 到 `7`、bit `9` 和 `10` 以及 bit `MAXPHYADDR` 到 `63` 被保留。
   * 对于不支持 CPUID leaf `0x80000008` 的处理器，`MAXPHYADDR` 为 bit `36`，或者对于支持 CPUID leaf `0x80000008` 的处理器，由 `CPUID.80000008H:EAX[bit 7:0]` 指示。
 
 ### 11.4.5 重定位 Local APIC 寄存器
 * Pentium 4、Intel Xeon 和 P6 系列处理器允许通过修改 `IA32_APIC_BASE` MSR 基地址字段中的值将 APIC 寄存器的起始地址从 `0xFEE00000` 重定位到另一个物理地址。 * APIC 架构的这种扩展旨在帮助解决与现有系统内存映射的冲突，并允许 MP 系统中的各个处理器将其 APIC 寄存器映射到物理内存中的不同位置。
+
+### 11.4.7 Local APIC 状态
+
+#### 11.4.7.3 在 INIT Reset 之后的 Local APIC 状态（“Wait-for-SIPI” 状态）
+* 处理器的 INIT Reset 可以通过以下两种方式之一启动：
+  * 通过 asserting 处理器的 `INIT #` Pin
+  * 通过给处理器发送一个 INIT IPI（delivery mode 设置为 `INIT` 的 IPI）
+* 通过这些机制之一接收到 INIT 后，处理器会通过开始处理器核和 local APIC 的初始化过程来进行响应。
+* INIT Reset 后 local APIC 的状态与上电或硬件复位后的状态相同，只是 APIC ID 和仲裁 ID 寄存器不受影响。该状态也称为 **“wait-for-SIPI”状态**（另请参见：第 9.4.2 节“MP Initialization Protocol Requirements and Restrictions”）。
 
 ## 11.5 处理本地中断
 * 以下部分描述了 local APIC 中提供的用于处理本地中断的设施。其中包括：处理器的 LINT0 和 LINT1 引脚、APIC 定时器、性能监控计数器、Intel Processor Trace、热传感器和内部 APIC 错误检测器。

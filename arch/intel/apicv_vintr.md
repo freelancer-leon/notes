@@ -63,9 +63,6 @@ FI;
   2. `TPR` 虚拟化；
   3. `EOI` 虚拟化。
 * `PPR` 虚拟化使用 guest interrupt status（特别是 `SVI`；请参阅第 25.4.2 节）和 `VTPR`。
-* **Guest interrupt status**（16 位）。此字段仅在 “virtual-interrupt delivery” VM 执行控制域设置为 `1` 的处理器上受支持。它表征了 guest 虚拟 APIC 状态的一部分，不对应于任何处理器或 APIC 寄存器。它包括两个 8 位子字段：
-  * **Requesting virtual interrupt（RVI）**：这是 guest interrupt status 的低字节。处理器将此值视为请求服务的最高优先级虚拟中断的向量。（值为 `0` 表示没有此类中断。）
-  * **Servicing virtual interrupt（SVI）**：这是 guest interrupt status 的高字节。处理器将此值视为正在服务的最高优先级虚拟中断的向量。（值为 `0` 表示没有此类中断。）
 * 以下伪代码详细描述了 PPR 虚拟化的行为：
 ```vb
 IF VTPR[7:4] ≥ SVI[7:4]
