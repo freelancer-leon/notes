@@ -158,7 +158,7 @@ ELSE IF T ≤ last PID-pointer index
 ELSE APIC-write VM exit; // virtual APIC ID beyond end of tables
 FI;
 ```
-* Notification IPI 的发送由所选 PID 中的字段指示：NDST（Notification destination `PID[319:288]`）和 NV（Notification vector `PID[279:272]`）：
+* Notification IPI 的发送由所选 PID 中的字段指示：`NDST`（Notification destination `PID[319:288]`）和 `NV`（Notification vector `PID[279:272]`）：
   * 如果 local APIC 处于 xAPIC 模式，这是通过将 `NDST[15:8]`（`PID[303:296]`）写入 `ICR_HI[31:24]`（从 `IA32_APIC_BASE` 偏移 `0x310`）然后写入生成的 IPI NV 到 `ICR_LO`（从 `IA32_APIC_BASE` 偏移 `0x300`）。
   * 如果 local APIC 处于 x2APIC 模式，则这是通过 `ECX = 0x830`（`ICR`）、`EAX = NV` 和 `EDX = NDST` 执行 `WRMSR` 生成的 IPI。
 * 如果伪代码指定 APIC 写入 VM exit，则此 VM exit 的发生就像在 APIC access page 上对页面偏移量 `0x300` 进行了写访问一样（参见第 30.4.3.3 节）

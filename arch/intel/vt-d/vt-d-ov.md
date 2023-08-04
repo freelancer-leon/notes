@@ -188,7 +188,7 @@ Data Bits | 字段      | 描述
 * 对于使用 End-of-Interrupt（EOI）广播的平台，I/OxAPIC RTE 中用于电平触发中断的 `Vector` 字段（即 I/OxAPIC RTE 中的 `Trigger Mode` 字段被设置，且 I/OxAPIC RTE 引用的 IRTE 中的 `Trigger Mode` 字段也被设置），必须与引用的 IRTE 中编程的 `Vector` 字段匹配。这是正确处理 I/OxAPIC 广播的 End-of-Interrupt（EOI）所必需的。
 * I/OxAPIC RTE 中所有其他字段的编程不受中断重映射的影响。
 
-#### 5.1.5.2 编程 MSI and MSI-X Register
+#### 5.1.5.2 编程 MSI 与 MSI-X 寄存器
 * 下图说明了 MSI/MSI-X address 和 data 寄存器的编程，以支持消息信号中断的重映射。
 
 ![MSI-X Programming](pic/vt-d-msix-pgm.png)
@@ -364,7 +364,7 @@ Posted Interrupt Descriptor 的原子更新 | 1      | WB
 `287:280` | R: 保留                         | 保留。软件必须将这些位编程为 `0`。
 `279:272` | NV: Notification Vector        | 该字段指定用于通知事件的物理向量。通知事件作为物理中断发出，触发模式为“边沿”，触发模式 level 为“Asserted”。
 `271:258` | R: 保留                         | 保留。软件必须将这些位编程为 `0`。
-`257`     | SN: Suppress Notification      | 该字段指示在向该描述符发布非紧急中断时是否必须抑制通知事件。</br> * `0`：不抑制通知事件。</br> * `1`：抑制通知事件。</br> *非紧急中断* 是通过 *设置* `IM` 字段和 *清除* `URG` 字段的 IRTE 条目处理的中断请求。</br> 如果在硬件向 `PIR` 字段发布非紧急中断时该字段中的值为 `1`b，则硬件将按照 `Outstanding Notification（ON）` 字段值为 `1`b 的方式运行（即，硬件不执行不生成通知事件，也不修改 `ON` 字段）。
+`257`     | SN: Suppress Notification      | 该字段指示在向该描述符 posting 非紧急中断时是否必须抑制通知事件。</br> * `0`：不抑制通知事件。</br> * `1`：抑制通知事件。</br> *非紧急中断* 是通过 *设置* `IM` 字段和 *清除* `URG` 字段的 IRTE 条目处理的中断请求。</br> 如果在硬件向 `PIR` 字段 posting 非紧急中断时该字段中的值为 `1`b，则硬件将按照 `Outstanding Notification（ON）` 字段值为 `1`b 的方式运行（即，硬件不生成通知事件，也不修改 `ON` 字段）。
 `256`     | ON: Outstanding Notification   | 该字段指示该 posted interrupt descriptor 的通知事件是否 outstanding（等待 CPU 或软件的处理）。</br> * `0`：此描述符没有 outstanding 的通知事件。</br> * `1`：此描述符有一个通知事件 outstanding 。</br> 如果在硬件向 `PIR` 字段发出中断时该字段被清除，则硬件将设置它并生成通知事件。如果在硬件将中断发送到 `PIR` 字段时该字段已被设置，则不会生成通知事件。
 `255:0`   | PIR: Posted Interrupt Requests | 该 `256` 位字段（每个向量一位）为发往特定虚拟处理器的 posted interrupts 提供存储。</br> 当与 IRTE 中的向量值相对应的 bit 在该字段中设置时，通过 IRTE 重新映射用于 posted interrupt（具有 `IM` 字段设置的 IRTE）的中断请求被视为由硬件 posted。
 
