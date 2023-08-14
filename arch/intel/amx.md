@@ -1,12 +1,15 @@
 # AMX
 
 ## Extended Feature Disable (XFD)
+
+![XCR0](pic/xcr0.png)
+
 * 扩展功能禁用（Extended Feature Disable，XFD）的扩展是 XSAVE 功能集的扩展，它允许操作系统启用功能，同时阻止 *特定用户线程* 使用该功能
   * 如果 `XCR0[i] = IA32_XFD[i] = 1`，则为状态组件 `i` *启用 XFD*
   * 如果 `XCR0[i] = 0`，`IA32_XFD[i]` 不影响处理器操作
   * 当为状态组件 **启用 XFD** 时，任何指令将访问该状态的组件不会执行，而是生成设备不可用 Device-not-available 异常（`#NM`）
 * 当 XFD 导致指令生成 `#NM` 时，处理器加载 `IA32_XFD_ERR` MSR 以识别被禁用的状态组件
-  * 具体来说，MSR 加载了 `IA32_XFD MSR` 的逻辑与和错误指令所需的状态组件对应的位图
+  * 具体来说，MSR 加载了 `IA32_XFD` MSR 的逻辑与和错误指令所需的状态组件对应的位图
   * Intel AMX 指令需要启用 `XTILECFG` 状态和 `XTILEDATA` 状态
 * 不是由 XFD 引起的 Device-not-available 异常，例如那些因将 `CR0.TS` 设置为 `1` 而产生的异常，不会修改 `IA32_XFD_ERR` MSR
 

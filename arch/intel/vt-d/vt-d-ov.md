@@ -247,6 +247,9 @@ Data Bits | 字段      | 描述
   * `Notification Destination（NDST）` 字段指定通知事件的目标逻辑处理器的物理 APIC-ID。
 
 ### 5.2.3 Interrupt-Posting 硬件操作
+
+![VT-d: Steps for Interrupt Posting](pic/vt-d-steps-intr-posting.png)
+
 * 可重映射格式的中断请求由硬件处理，如第 5.1.4 节所述。
 * 当此类处理遇到 posted 格式（`IM=1`）的 IRTE 条目时，将通过 posting（而不是重映射）处理中断请求。下面提供了 interrupt-posting 硬件操作的功能概述：
 * 如果检索到的 IRTE 已设置模式字段（`IM=1`）
