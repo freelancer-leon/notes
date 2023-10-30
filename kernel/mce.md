@@ -767,21 +767,22 @@ static struct severity {
 3. 所以对于 RIPV 的 MCE，发送信号的目的 task 就是当时 MCE handler 发现 memory failure 的 task，只是延后到了返回用户态时才进行`memory_failure()`处理
 
 ## MCE 在内核中的处理
+* 由于同一封装/核上的逻辑处理器之间可能共享机器检查 MSR 资源，因此 MCE handler 可能需要与接收机器检查错误的其他处理器同步，并在分析、记录时串行化对机器检查寄存器的访问 ，并清除机器检查寄存器中的信息
 * 本地的 machine check 可能会更早地知道是否会 panic
 * 广播的 machine check 会复杂一些，各 CPU 首先会在 `mce_start()` 汇合，然后遍历所有 bank，排除其他 CPU。这样我们就不会报告共享 bank 的重复事件，因为第一个看到它的人会清除它
-1. 如果是 MCE 广播，进入 `mce_start()` 中选出 Monarch
-2. Monarch 需要等其他 CPU callin `mce_callin`，其他 CPU 成为 Subject，从 `mce_callin` 原子地得到它的 `order` 同时增加 `mce_callin`
+1. 如果是 MCE 广播，收到 MCE 的 CPU 会进入 `mce_start()`，从 `mce_callin` 原子地得到它的 `order` 同时增加 `mce_callin`
+2. 等待其他 CPU 的 callin `mce_callin`，最先进入的 CPU 被选为 **Monarch**，其他 CPU 成为 **Subject**
 3. Monarch 开始先执行 bank 扫描，Subject 按照 callin 的顺序等待轮到自己扫描
 4. Monarch 扫描完后进入 `mce_end()`，允许其他 Subject 开始扫描
-5. Monarch 在 `mce_end()` 等待其他 Subject 完成扫描
+5. Monarch 在 `mce_end()` 等待其他 Subject 完成扫描 `while (atomic_read(&mce_executing) <= cpus)`
 6. Monarch 在 `mce_end()` 开始 `mce_reign()`，其他 Subject 等待 Monarch reign 完成
    * 如果条件 `atomic_read(&mce_executing) != 0` 不成立，Subject 等待
-   (1) 此时，其他 Subject 都扫描完了，Monarch 可以从中选出最严重的错误
-   (2) 如果最严重的错误严重程度 `>= MCE_PANIC_SEVERITY`，那么在此触发 `mce_panic("Fatal machine check")`
-   (3) 如果最严重的错误严重程度 `<= MCE_KEEP_SEVERITY`，必定有一些外部的源或某个 CPU hung 住了，触发 `mce_panic("Fatal machine check from unknown source")`
-   (4) 现在清除所有 CPU 的 `mces_seen`，这样它们就不会再出现在下一个 mce 上
-7. Monarch 清楚所有的全局状态 `global_nwo`、`mce_callin`
-8. Monarch 完成 reign，在 `mce_end()` 的末尾 `atomic_set(&mce_executing, 0)`，结束 Subject 的等待
+   1. 此时，其他 Subject 都扫描完了，Monarch 可以从中选出最严重的错误
+   2. 如果最严重的错误严重程度 `>= MCE_PANIC_SEVERITY`，那么在此触发 `mce_panic("Fatal machine check")`
+   3. 如果最严重的错误严重程度 `<= MCE_KEEP_SEVERITY`，必定有一些外部的源或某个 CPU hung 住了，触发 `mce_panic("Fatal machine check from unknown source")`
+   4. 现在清除所有 CPU 的 `mces_seen`，这样它们就不会再出现在下一个 mce 上
+7. Monarch 清除所有的全局状态 `global_nwo`、`mce_callin`
+8. Monarch 完成 reign，在 `mce_end()` 的末尾 `atomic_set(&mce_executing, 0)`，结束 Subject 在 `mce_end()` 的等待
 
 ## MCE gen_pool
 * `mce_panic()` 的时候会通过 `mce_gen_pool_prepare_records()` 得到一个 `struct mce` 链表，然后把链表上的节点携带的 `struct mce` 实例传给 `mce_print()` 打印出来

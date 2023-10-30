@@ -102,7 +102,9 @@
 	...*```
 	```
 
-## 抢占计数preempt_count
+## 抢占计数 preempt_count
+
+![Preempt Count](pic/preemt_count.png)
 
 * `preempt_count_add()`和`preempt_count_sub()`调用可重载的`__preempt_count_add()`和`__preempt_count_sub()`
 * 目前就x86重载`__preempt_count_add()`和`__preempt_count_sub()`的实现
@@ -180,7 +182,7 @@
 	...*```
 	```
 
-### x86的preempt_count
+### x86 的 preempt_count
 * x86的`thread_info`结构里并没有`preempt_count`成员，而是通过Per-CPU变量`__preempt_count`存储的。
 * arch/x86/include/asm/thread_info.h
 	```c
@@ -227,10 +229,10 @@
 	{
 	    raw_cpu_add_4(__preempt_count, -val);
 	}
-	...__```
+	...
 	```
 
-### ARM的preempt_count
+### ARM 的 preempt_count
 * ARM的`thread_info`结构有`preempt_count`成员，这和x86的不一样。
 * arch/arm/include/asm/thread_info.h
 	```c
@@ -530,3 +532,6 @@ resume_kernel:
 	        exception_exit(prev_state);
 	}
 	```
+
+# References
+* [Revisiting the kernel's preemption model, part 2 - LWN](https://lwn.net/Articles/945422/)
