@@ -2,9 +2,16 @@
 
 * Machine Check Exception 是一类由硬件错误触发的异常，譬如当 CPU 检测到总线，chipset，内存，cache，TLB 等硬件出现致命错误时会触发这类异常。
 * 一般来说这些错误对系统的稳定性危害极大而且无法恢复，通常会触发系统的复位操作。这些错误在一个大型的服务器环境 如服务器集群或者是云计算的环境下是不可避免的，因此必须对此有相应的处理机制。
+* 处理器通过生成 machine-check 异常（`#MC`）来指示检测到未更正的 machine-check 错误，该异常是 abort 类异常。machine-check architecture 的实现通常不允许处理器在生成 machine-check 异常后可靠地重新启动。但是，machine-check 异常处理程序可以从 machine-check MSR 收集有关 machine-check 错误的信息。
+
+## Interrupt 18 — Machine-Check Exception (`#MC`)
+* 异常类别：Abort
+* 指示处理器检测到内部机器错误或总线错误，或者外部代理检测到总线错误。Machine-check exception 是特定于型号的，可在 Pentium 及后续几代处理器上使用。
+  * 不同处理器系列之间机器检查异常的实现方式不同，这些实现方式可能与未来的 Intel 64 或 IA-32 处理器不兼容。（使用 `CPUID` 指令来确定是否存在此功能。）
+* 外部 agents 检测到的总线错误通过专用引脚发送给处理器：Pentium 4、Intel Xeon 和 P6 系列处理器上的 `BINIT#` 和 `MCERR#` 引脚以及 Pentium 处理器上的 `BUSCHK#` 引脚。
+  * 当这些引脚之一被使能时，置位该引脚会导致错误信息加载到 machine-check 寄存器中，并生成 machine-check 异常。
 
 ## MCA 错误分类分级表
-
 
 | Error Handling                                                                           | Category              |
 | ---------------------------------------------------------------------------------------- | --------------------- |
@@ -835,6 +842,50 @@ int __init mcheck_init(void)
 ```sh
 /sys/devices/system/machinecheck/machinecheck[n]
 ```
+
+## 一些疑问
+### `#MC` 是不是不可屏蔽的？
+* `#MC` 是 NMI-like 异常，并不属于 NMI。但仍然会通过 `nmi_enter()` 把它装成 NMI 上下文环境。
+```c
+commit 0d00449c7a28a1514595630735df383dec606812
+Author: Peter Zijlstra <peterz@infradead.org>
+Date:   Wed Feb 19 09:46:43 2020 +0100
+
+    x86: Replace ist_enter() with nmi_enter()
+
+    A few exceptions (like #DB and #BP) can happen at any location in the code,
+    this then means that tracers should treat events from these exceptions as
+    NMI-like. The interrupted context could be holding locks with interrupts
+    disabled for instance.
+
+    Similarly, #MC is an actual NMI-like exception.
+
+    All of them use ist_enter() which only concerns itself with RCU, but does
+    not do any of the other setup that NMIs need. This means things like:
+
+            printk()
+              raw_spin_lock_irq(&logbuf_lock);
+              <#DB/#BP/#MC>
+                 printk()
+                   raw_spin_lock_irq(&logbuf_lock);
+
+    are entirely possible (well, not really since printk tries hard to
+    play nice, but the concept stands).
+
+    So replace ist_enter() with nmi_enter(). Also observe that any nmi_enter()
+    caller must be both notrace and NOKPROBE, or in the noinstr text section.
+
+    Signed-off-by: Peter Zijlstra (Intel) <peterz@infradead.org>
+    Signed-off-by: Thomas Gleixner <tglx@linutronix.de>
+    Reviewed-by: Alexandre Chartre <alexandre.chartre@oracle.com>
+    Link: https://lkml.kernel.org/r/20200505134101.525508608@linutronix.de
+```
+* Linux kernel 的 `#MC` 处理程序是通过中断门实现的，因此进入处理程序的时候中断是关闭的，后面会在有的场景开启中断。
+* 因此，`#MC` 处理程序运行期间很多时候 `preempt_count` 的 NMI 和 HARDIRQ 相应的 bit 都是置位的。
+* 个人理解，`#MC` 作为 abort 类异常，本质上是不可屏蔽的，甚至无法在 NMI 处理期间阻止 `#MC` 的递交，只能通过软件的方式来避免一些由此产生的问题。
+  * 我们常说的屏蔽中断指的是屏蔽外部中断，而异常来自三个方面。
+  * NMI 处理期间不能嵌套，需要等 `iret` 指令（有心的或无意的）结束 NMI 的处理，才能处理新的 NMI。
+
 ## References
 
 - [怎样诊断Machine-check Exception](http://linuxperf.com/?p=105)

@@ -294,6 +294,8 @@ struct kvm_mmu_page {
 * `write_flooding_count`：在写保护模式下，对于任何一个页的写都会导致 KVM 进行一次 emulation
    * 对于叶子节点（真正指向数据页的节点），可以使用 unsync 状态来保护频繁的写操作不会导致大量的 emulation
    * 但是对于非叶子节点（paging structure节点）则不行。对于非叶子节点的写 emulation 会修改该域，如果写 emulation 非常频繁，KVM 会 unmap 该页以避免过多的写 emulation
+* `nx_huge_page_disallowed`：该影子页面（非页表页）无法被替换为（host 侧）一个同等的巨页，因为它在 guest 中被用于映射一个可执行的页，而该 VM 的不可执行巨页的缓解措施被启用（见后面的详解）
+
 ### 转换函数 `to_shadow_page()` 和 `sptep_to_sp()`
 * 两个频繁用到的转换函数 `to_shadow_page()` 和 `sptep_to_sp()`
 * `to_shadow_page()` 用于将 HPA 转为 KVM 中指向其对应的 `struct kvm_mmu_page` 结构实例的指针，利用了 `struct page` 结构中 `page->private` 域会反向指向该`struct kvm_mmu_page` 的特性
@@ -717,6 +719,7 @@ Date:   Wed Oct 19 16:56:15 2022 +0000
 * 为了缓解 iTLB Multihit CPU 漏洞（Documentation/admin-guide/hw-vuln/multihit.rst），KVM 可以用 module 参数 `nx_huge_pages=force|auto` 来强制软件不允许使用可执行的巨页
   * 如果缓解已启用，在这种情况下，缓解措施在 Linux 内核 KVM 模块中实现了不可执行的大页。EPT 中的所有大页都被标记为 **不可执行**
   * 如果 guest 试图在其中一个页面中执行，该页面将被分解为 4K 页面，然后将其标记为 **可执行**
+  * **注意**：数据页在启用缓解措施的时候还是允许大页的
 * 巨页在非虚拟化场景下一般都用作存储，所以这个问题比较少。但在虚拟化场景下，整个 VM 都在巨页上，包括可执行代码段，这就很可能受该漏洞的困扰
 * 可以用 per-VM 的 `ioctl(..., KVM_CAP_VM_DISABLE_NX_HUGE_PAGES)` 来禁用以上缓解措施以获得性能上的提升，前提是该 VM 的 workload 是受信任的
 ```c
@@ -725,6 +728,104 @@ Author: Ben Gardon <bgardon@google.com>
 Date:   Mon Jun 13 21:25:21 2022 +0000
 
     KVM: x86/MMU: Allow NX huge pages to be disabled on a per-vm basis
+```
+
+* 这里涉及到的几个页面级别：
+  * `host_level`：本地变量，host 映射所用的页面大小
+  * `kvm_page_fault.max_level`：可以为该缺页创建的最大页面的大小，作为 `FNAME(fetch)`、`__direct_map()` 和 `kvm_tdp_mmu_map()` 的输入
+  * `kvm_page_fault.req_level`：基于 `max_leve` 和 host 映射所用的页面大小计算出的 *缺页可以创建的页面大小*
+  * `kvm_page_fault.goal_level`：基于 `req_level` 和 `huge_page_disallowed` 计算出的 *缺页将要创建的页面大小*
+* `kvm_page_fault.huge_page_disallowed`：标识该缺页是否可以创建一个大于 4KB 的页（`false`）或者由于不可执（NX）行巨页而被禁止创建巨页（`true`）
+
+* `kvm_mmu_max_mapping_level()` 根据传入的信息选择 `gfn` 所能支持的最大页面级别
+  * 在缺页路径上，传入的 `fault.max_level = KVM_MAX_HUGEPAGE_LEVEL`
+```cpp
+int kvm_mmu_max_mapping_level(struct kvm *kvm,
+                  const struct kvm_memory_slot *slot, gfn_t gfn,
+                  int max_level)
+{
+    struct kvm_lpage_info *linfo;
+    int host_level;
+    //从当前传入的最大页面级别和 EPT 所能支持的最大巨页级别中选出最小值
+    max_level = min(max_level, max_huge_page_level);
+    for ( ; max_level > PG_LEVEL_4K; max_level--) { //比如说级别从 512G -> 1G -> 2M 级别依次遍历
+        linfo = lpage_info_slot(gfn, slot, max_level); //根据 GFN 找到在 slot 上某个大页级别上对应的是否在该级别上允许大页的信息
+        if (!linfo->disallow_lpage) //比如在 512G 级别上该 GFN 无法支持大页，则尝试 1G 大页，如果支持 1G 则结束遍历
+            break;
+    }
+    //此时的大页级别是在 slot 上能支持的最大级别，比如能支持 1G 自然也就能支持 2M。但 4K 就没必要再往下调查了
+    if (max_level == PG_LEVEL_4K)
+        return PG_LEVEL_4K;
+    //该函数根据 GFN 和 slot 找到 HVA，然后返回该 HVA 在 host 侧映射的级别
+    host_level = host_pfn_mapping_level(kvm, gfn, slot);
+    return min(host_level, max_level); //由此可见，此处 guest 所能支持的页面级别同时受限于其 host 侧的映射的页面级别
+}
+```
+
+* `kvm_mmu_hugepage_adjust()` 对缺页时所使用的巨页进行调整
+  * 如果缺页异常是因为取指令而不是取数据引起的（见 `kvm_mmu_do_page_fault()` 和 SDM）且启用缓解措施，那么设置不允许巨页的标志 `huge_page_disallowed`
+  * 可见数据页在启用缓解措施的时候还是允许大页的
+```cpp
+void kvm_mmu_hugepage_adjust(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
+{
+    struct kvm_memory_slot *slot = fault->slot;
+    kvm_pfn_t mask;
+    //如果缺页异常是因为取指令而不是取数据引起的且启用缓解措施，那么设置不允许巨页的标志
+    fault->huge_page_disallowed = fault->exec && fault->nx_huge_page_workaround_enabled;
+    //本来就设置了页面级别只能是 4K 页，无需调整，返回
+    if (unlikely(fault->max_level == PG_LEVEL_4K))
+        return;
+    //该 GPA 无法转化为 HPA，由于该 HPA 是错误的页帧或无对应的 slot
+    if (is_error_noslot_pfn(fault->pfn))
+        return;
+    //和虚拟机热迁移有关，该 slot 正在被 track
+    if (kvm_slot_dirty_track_enabled(slot))
+        return;
+    //返回该 GFN 在该 slot 上所能使用的最大大页级别
+    /*
+     * Enforce the iTLB multihit workaround after capturing the requested
+     * level, which will be used to do precise, accurate accounting.
+     */
+    fault->req_level = kvm_mmu_max_mapping_level(vcpu->kvm, slot,
+                             fault->gfn, fault->max_level);
+    if (fault->req_level == PG_LEVEL_4K || fault->huge_page_disallowed)//如果可以使用的页面级别是 4K 或者启用缓解措施
+        return;                                                        //没什么好调整的
+
+    /*
+     * mmu_invalidate_retry() was successful and mmu_lock is held, so
+     * the pmd can't be split from under us.
+     */
+    fault->goal_level = fault->req_level; //调整缺页的目标层级，有可能升级，比如说默认映射一个 4K 的页面，现在被升为 2M 的页面
+    mask = KVM_PAGES_PER_HPAGE(fault->goal_level) - 1;     //层级变化调整对应的物理地址掩码
+    VM_BUG_ON((fault->gfn & mask) != (fault->pfn & mask)); //GFN 和 PFN 不应该相等（MMIO 时可能会相等吗？）
+    fault->pfn &= ~mask;                                   //层级变化调整对应的 faultin 时产生的物理地址
+}
+```
+
+* `disallowed_hugepage_adjust()` 在前面的 `kvm_tdp_mmu_map()` 会调用到，它根据是否不允许巨页的配置进行页面级别的调整
+  * 此 `pfn` 存在一个小 SPTE，但 `FNAME(fetch)`、`direct_map()` 或 `kvm_tdp_mmu_map()` 希望创建一个大的 PTE：
+  * 只需强制它们下降到另一个级别，并为它们修补回 `pfn` 下一级的 `9` 位地址。
+```cpp
+void disallowed_hugepage_adjust(struct kvm_page_fault *fault, u64 spte, int cur_level)
+{
+    if (cur_level > PG_LEVEL_4K &&        //如果当前遍历到的级别在 4K 以上
+        cur_level == fault->goal_level && //当前级别正是要创建页面的级别
+        is_shadow_present_pte(spte) &&    //遍历到的 SPTE 已映射
+        !is_large_pte(spte) &&            //遍历到的 SPTE 不是大页
+        spte_to_child_sp(spte)->nx_huge_page_disallowed) { //SPTE 的子页表页采用了缓解措施
+        /*
+         * A small SPTE exists for this pfn, but FNAME(fetch),
+         * direct_map(), or kvm_tdp_mmu_map() would like to create a
+         * large PTE instead: just force them to go down another level,
+         * patching back for them into pfn the next 9 bits of the
+         * address.
+         */
+        u64 page_mask = KVM_PAGES_PER_HPAGE(cur_level) -
+                KVM_PAGES_PER_HPAGE(cur_level - 1);
+        fault->pfn |= fault->gfn & page_mask; //因降级而修补缺页的 9 bit 地址
+        fault->goal_level--;                  //降低缺页所需创建页面的目标级别
+    }
+}
 ```
 
 ### KVM MMU Memory Cache
