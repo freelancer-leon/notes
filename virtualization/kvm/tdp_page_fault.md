@@ -590,7 +590,7 @@ int kvm_tdp_mmu_map(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 	//以先序遍历的方式逐级建立映射
 	tdp_mmu_for_each_pte(iter, mmu, fault->gfn, fault->gfn + 1) {
 		int r;
-		//如果使能了不可执行巨页的 workaround（见后面简介）需要对巨页的缺页处理进行拆分，用小的页代替巨页
+		//如果启用了不可执行巨页的缓解措施（见后面介绍）可能需要对创建巨页的请求进行调整，用小的页拆分巨页
 		if (fault->nx_huge_page_workaround_enabled)
 			disallowed_hugepage_adjust(fault, iter.old_spte, iter.level);
 		//如果 SPTE 已经被另一个线程冻结，直接放弃重试，避免不必要的页表分配和释放
@@ -721,6 +721,14 @@ Date:   Wed Oct 19 16:56:15 2022 +0000
   * 如果 guest 试图在其中一个页面中执行，该页面将被分解为 4K 页面，然后将其标记为 **可执行**
   * **注意**：数据页在启用缓解措施的时候还是允许大页的
 * 巨页在非虚拟化场景下一般都用作存储，所以这个问题比较少。但在虚拟化场景下，整个 VM 都在巨页上，包括可执行代码段，这就很可能受该漏洞的困扰
+```c
+commit b8e8c8303ff28c61046a4d0f6ea99aea609a7dc0
+Author: Paolo Bonzini <pbonzini@redhat.com>
+Date:   Mon Nov 4 12:22:02 2019 +0100
+
+    kvm: mmu: ITLB_MULTIHIT mitigation
+```
+
 * 可以用 per-VM 的 `ioctl(..., KVM_CAP_VM_DISABLE_NX_HUGE_PAGES)` 来禁用以上缓解措施以获得性能上的提升，前提是该 VM 的 workload 是受信任的
 ```c
 commit 084cc29f8bbb034cf30a7ee07a816c115e0c28df
@@ -765,6 +773,7 @@ int kvm_mmu_max_mapping_level(struct kvm *kvm,
 * `kvm_mmu_hugepage_adjust()` 对缺页时所使用的巨页进行调整
   * 如果缺页异常是因为取指令而不是取数据引起的（见 `kvm_mmu_do_page_fault()` 和 SDM）且启用缓解措施，那么设置不允许巨页的标志 `huge_page_disallowed`
   * 可见数据页在启用缓解措施的时候还是允许大页的
+* `fault.goal_level` 被初始化为 `PG_LEVEL_4K`，在启用缓解措施的情况下，取指令引起的缺页走不到 `fault->goal_level = fault->req_level`，因此无需提升 `fault.goal_level`，始终保持 `PG_LEVEL_4K`。这会促使后面的迭代一直拆分可执行的大页
 ```cpp
 void kvm_mmu_hugepage_adjust(struct kvm_vcpu *vcpu, struct kvm_page_fault *fault)
 {
