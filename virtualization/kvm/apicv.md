@@ -136,22 +136,6 @@ arch/x86/kvm/x86.c|10445| <<kvm_arch_mmu_notifier_invalidate_range>> kvm_make_al
 
 ## Virtual APIC Page
 ### 分配 Virtual APIC Page
-* arch/x86/kvm/vmx/vmx.c
-```cpp
-static void init_vmcs(struct vcpu_vmx *vmx)
-{
-...
-    if (cpu_has_vmx_tpr_shadow()) {
-        vmcs_write64(VIRTUAL_APIC_PAGE_ADDR, 0);
-        if (cpu_need_tpr_shadow(&vmx->vcpu))
-            vmcs_write64(VIRTUAL_APIC_PAGE_ADDR,
-                     __pa(vmx->vcpu.arch.apic->regs));
-        vmcs_write32(TPR_THRESHOLD, 0);
-    }
-...
-}
-```
-### 设置 Virtual APIC Page
 * arch/x86/kvm/lapic.c
 ```cpp
 int kvm_create_lapic(struct kvm_vcpu *vcpu, int timer_advance_ns)
@@ -173,5 +157,21 @@ int kvm_create_lapic(struct kvm_vcpu *vcpu, int timer_advance_ns)
         goto nomem_free_apic;
     }
     ...
+}
+```
+### 设置 Virtual APIC Page
+* arch/x86/kvm/vmx/vmx.c
+```cpp
+static void init_vmcs(struct vcpu_vmx *vmx)
+{
+...
+    if (cpu_has_vmx_tpr_shadow()) {
+        vmcs_write64(VIRTUAL_APIC_PAGE_ADDR, 0);
+        if (cpu_need_tpr_shadow(&vmx->vcpu))
+            vmcs_write64(VIRTUAL_APIC_PAGE_ADDR,
+                     __pa(vmx->vcpu.arch.apic->regs));
+        vmcs_write32(TPR_THRESHOLD, 0);
+    }
+...
 }
 ```

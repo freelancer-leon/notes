@@ -640,13 +640,13 @@ FETCHARGS | 探测点的参数，每个探测点可以有最多 128 个参数
 ---------------|-----
 `%REG`         | 获取寄存器`REG`的值
 `@ADDR`        | 获取内存地址`ADDR`处的值（`ADDR`应处于内核地址空间）
-`@SYM[+|-offs]`| 获取符号偏移`SYM +|- offs`的值（`SYM`应为数据符号）
+`@SYM[+\|-offs]`| 获取符号偏移`SYM +\|- offs`的值（`SYM`应为数据符号）
 `$stackN`      | 获取栈上的第 N 个条目（N >= 0）
 `$stack`       | 获取栈顶的地址
 `$argN`        | 获取函数的第 N 个参数（仅用于安置在函数上的探针）
 `$retval`      | 获取函数的返回值（仅用于 *返回探针*）
 `$comm`        | 获取当前进程的名字
-`+|-[u]OFFS(FETCHARG)`| 获取 FETCHARG 偏移 `+|- OFFS` 地址处的值（可用于获取数据结构的域；`u`表示用户空间的解引用）
+`+\|-[u]OFFS(FETCHARG)`| 获取 FETCHARG 偏移 `+\|- OFFS` 地址处的值（可用于获取数据结构的域；`u`表示用户空间的解引用）
 `\IMM`         | 将立即数存入参数
 `NAME=FETCHARG`| 将`NAME`设置为 FETCHARG 的参数名
 `FETCHARG:TYPE`| 将 FETCHARG 的类型设置为`TYPE`

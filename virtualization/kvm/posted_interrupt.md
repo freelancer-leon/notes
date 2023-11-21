@@ -65,7 +65,7 @@ DEFINE_IDTENTRY_SYSVEC_SIMPLE(sysvec_kvm_posted_intr_nested_ipi)
   //arch/x86/kvm/vmx/vmx.c
   => vmx_deliver_interrupt()
   ```
-* 虚拟向量已在 `PIR` 中设置。发送 notification 事件以传递虚拟中断，除非 **vCPU 是当前正在运行的 vCPU**（`vcpu != kvm_get_running_vcpu()`，此时是处于 root mode），即该事件是从快速路径 VM-Exit handler 发送的，在这种情况下，`PIR` 将在重新进入 guest 虚拟机之前同步到 `vIRR`。
+* 虚拟向量已在 `PIR` 中设置。发送 notification 事件以传递虚拟中断，除非 **vCPU 是当前正在运行的 vCPU**（`vcpu == kvm_get_running_vcpu()`，此时是处于 root mode），即该事件是从快速路径 VM-Exit handler 发送的，在这种情况下，`PIR` 将在重新进入 guest 虚拟机之前同步到 `vIRR`。
   * 所以可不发 IPI 就 `return`，这就是第一个 `return`
 * 当目标不是正在运行的 vCPU 时，会出现以下可能性：
   * 情况 1：vCPU 处于 non-root 模式。发送 notification 事件将中断发布（post）到 vCPU。
@@ -576,7 +576,7 @@ void vmx_vcpu_pi_load(struct kvm_vcpu *vcpu, int cpu)
     struct pi_desc old, new;
     unsigned long flags;
     unsigned int dest;
-    //如果未启用 APIC 虚拟化，local APIC 的模拟也不在 kernel 侧，意味则不支持 PI，直接返回
+    //如果未启用 APIC 虚拟化，local APIC 的模拟也不在 kernel 侧，意味着不支持 PI，直接返回
     //为了简化热插拔和 APICv 的动态切换，即使没有分配的设备或者由于动态禁止位例如，Hyper-V 的 SyncIC，而未激活 APICv，也要保持 PI.NDST 和 PI.SN 的更新。
     /*
      * To simplify hot-plug and dynamic toggling of APICv, keep PI.NDST and
@@ -654,7 +654,7 @@ after_clear_sn:
 ```
 ##### 为什么 vCPU 因为停止（halted、睡眠、阻塞）只更新了 `PID.NV` 为 `WNV` 而不更新 `PID.NDST` 了？难道不怕 vCPU 被迁移到其他 pCPU 上无法在旧 pCPU 上被唤醒吗？
 * 其实原因就在 `vmx_vcpu_pi_load()` 这个函数，对于被 vCPU 被迁移这种情况它要做以下几个事情：
-  1. vCPU 线程被从就 pCPU 的唤醒队列 `wakeup_vcpus_on_cpu` 上拿下来了
+  1. vCPU 线程被从旧 pCPU 的唤醒队列 `wakeup_vcpus_on_cpu` 上拿下来了
   2. `PID.NV` 被恢复为 `ANV`
   3. `PID.NDST` 被更新为现在 vCPU 所在的 pCPU
 * 也就是说，即便它在其他 CPU 上被 load 就没打算再睡了，在哪个 pCPU 上被唤醒就在哪个 pCPU 上接着处理中断（如果有的话），而不是回到原来的 pCPU 上去处理。
@@ -814,7 +814,7 @@ case KVM_RUN:
                        => vmx_vcpu_run(vcpu)
                           -> vmx_vcpu_enter_exit(vcpu, __vmx_vcpu_run_flags(vmx))
                                 //arch/x86/kvm/vmx/vmenter.S
-                             -> __vmx_vcpu_run(vmx, (unsigned long *)&vcpu->arch.regs, flags);s
+                             -> __vmx_vcpu_run(vmx, (unsigned long *)&vcpu->arch.regs, flags);
                        }
             } else {
                 r = vcpu_block(vcpu);

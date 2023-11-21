@@ -288,7 +288,7 @@ Data Bits | 字段      | 描述
   * 这个简化的使用示例假设 VMM 软件通常在中断 masked 的情况下运行，除非将逻辑 CPU 置于低功耗状态。此处所示的示例可以扩展以涵盖其他使用场景。
 * VMM 软件可以为虚拟机启用 interrupt-posting，如下所示：
 * 对于虚拟机中的每个虚拟处理器，VMM 软件可以分配一个 Posted Interrupt Descriptor。每个这样的描述符用于 posting 要传递给相应虚拟处理器的所有中断。
-  * 软件必须阻止设备访问 Posted Interrupt Descriptors 所在的内存。实现此目的的一种方法是设置重映射表，以便重映射硬件阻止从设备到 Posted InterruptDescriptors 的访问。
+  * 软件必须阻止设备访问 Posted Interrupt Descriptors 所在的内存。实现此目的的一种方法是设置重映射表，以便重映射硬件阻止从设备到 Posted Interrupt Descriptors 的访问。
   * 如果设备能够写入 Posted Interrupt Descriptor，则无法保证发布中断操作的原子性。
 * VMM 软件为通知事件分配两个物理中断向量（跨平台中的所有逻辑 CPU）。
   * 该物理向量之一可以用作 **“活动通知向量”（Active Notification Vector，ANV）**，当往处于活动状态（正在执行）的任何虚拟处理器 posting 一个中断时，用于向其 posted 中断通知。
@@ -336,7 +336,7 @@ Data Bits | 字段      | 描述
 
 ## 5.3 内存类型和 snoop 行为摘要
 * 下表总结了中断 translation 过程中内存访问的缓存 snooping 行为。该表还总结了在 coherent link 上进行访问时使用的存储器类型。on-coherent link 不使用硬件提供的存储器类型值。
-  * 值 `1` 表示内存访问 snoops 处理器高速缓存。值 `0` 表示内存访问不会s noops 处理器缓存。
+  * 值 `1` 表示内存访问 snoops 处理器高速缓存。值 `0` 表示内存访问不会 snoops 处理器缓存。
   * `ECAP.C` 是 Extended Capability Register（ECAP_REG）中的 `Page-walk Coherency` 字段。
   *  报告 Memory Type Support（ECAP_REG 中的 `MTS=1`）的硬件实现必须使用回写（WB）内存类型进行 IRTE 和 PID 访问。
 
