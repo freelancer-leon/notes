@@ -16,10 +16,10 @@
 * cpuset 提供了一个把 CPU 分成子集被一个进程或者或一组进程使用的机制。
 * 几个 cpuset 可以重叠。
 * 如果没有其他的 cpuset 包含重叠的 CPU，这个 cpuset 被称为“*互斥的（exclusive）*”，。
-* 每个互斥的 cpuset 定义了一个与其他 cpuset 或 CPU 分离的 **孤岛域（isolated domain，也叫作 root domain）**。
+* 每个互斥的 cpuset 定义了一个与其他 cpuset 或 CPU 分离的 **隔离域（isolated domain，也叫作 root domain）**。
 * 与每个 root domian 有关的信息存在 `struct root_domain` 结构（对象）中：
 * kernel/sched/sched.h
-```c
+```cpp
 #ifdef CONFIG_SMP
 
 /*
@@ -63,12 +63,12 @@ extern struct root_domain def_root_domain;
 
 #endif /* CONFIG_SMP */
 ```
-* `refcount` root domain 的引用计数，当 root domain 被运行队列引用时加一，反之减一。
-* `span` *属于该 root domain 的运行队列* 的 *可用 CPU* 的范围，`cpumask_var_t`掩码。
-* `overload` 表明该 root domain 有任一 CPU 有多于一个的可运行任务。
-* `rto_mask` 某 CPU 有多于一个的可运行实时任务，对应的位被设置，`cpumask_var_t`掩码。
-* `rto_count` 过载的（overload）的 CPU 的数目。
-* `cpupri` 包含在 root domain 中的 *CPU 优先级管理* 结构成员，详见下文。
+* `refcount`：root domain 的引用计数，当 root domain 被运行队列引用时加一，反之减一。
+* `span`：*属于该 root domain 的运行队列* 的 *可用 CPU* 的范围，`cpumask_var_t`掩码。
+* `overload`：表明该 root domain 有任一 CPU 有多于一个的可运行任务。
+* `rto_mask`：某 CPU 有多于一个的可运行实时任务，对应的位被设置，`cpumask_var_t`掩码。
+* `rto_count`：过载的（overload）的 CPU 的数目。
+* `cpupri`：包含在 root domain 中的 *CPU 优先级管理* 结构成员，详见下文。
 * 这些 root domain 被用于减小 per-domain 变量的全局变量的范围。
 * 无论何时一个互斥 cpuset 被创建，一个新 root domain 对象也会被创建，信息来自 CPU 成员。
 * 缺省情况下，一个单独的高层次的 root domain 被创建，并把所有 CPU 作为成员。
@@ -76,7 +76,7 @@ extern struct root_domain def_root_domain;
 
 # CPU优先级管理
 * CPU 优先级管理（CPU Priority Management）跟踪系统中每个 CPU 的优先级，为了让进程迁移的决定更有效率。
-* CPU 优先级有 102 个:
+* CPU 优先级有 `102` 个:
 
 cpupri | prio
 ---|---
@@ -87,7 +87,7 @@ CPUPRI_NORMAL (1) | MAX_RT_PRIO ~ MAX_PRIO-1 (100~139)
 
 * `prio`转`cpupri`的函数如下：
   * kernel/sched/cpupri.c
-```c
+```cpp
 /* Convert between a 140 based task->prio, and our 102 based cpupri */
 static int convert_prio(int prio)
 {
@@ -113,7 +113,7 @@ static int convert_prio(int prio)
   2. 在某个优先级上的 CPU
 * 通过`cpupri_find()`和`cpupri_set()`来查找和设置 CPU 优先级是实时负载均衡快速找到要迁移的任务的关键。
 * kernel/sched/cpupri.h
-```c
+```cpp
 #define CPUPRI_NR_PRIORITIES    (MAX_RT_PRIO + 2)
 ...
 struct cpupri_vec {
@@ -138,7 +138,7 @@ struct cpupri {
 * `cpupri_find()` 查找系统（root domain）中最佳（优先级最低）的 CPU。
 * 成功找到返回 1，找不到返回 0，结果通过`lowest_mask`返回。
 * kernel/sched/cpupri.c
-```c
+```cpp
 /**
  * cpupri_find - find the best (lowest-pri) CPU in the system
  * @cp: The cpupri context
@@ -247,7 +247,7 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
 ## cpupri_set()
 * 设置 CPU 的优先级
 * kernel/sched/cpupri.c
-```c
+```cpp
 /**
  * cpupri_set - update the cpu priority setting
  * @cp: The cpupri context
@@ -361,7 +361,7 @@ void cpupri_set(struct cpupri *cp, int cpu, int newpri)
 ## 推任务的实现
 * 先从`push_rt_tasks()`的实现看起。
 * kernel/sched/rt.c
-```c
+```cpp
 /* Only try algorithms three times */
 #define RT_MAX_TRIES 3
 ...
@@ -684,31 +684,31 @@ static void push_rt_tasks(struct rq *rq)
 * 最坏的情况是，这可能导致许多被拉到目标运行队列的任务之后有可能被推到其他 CPU，导致任务弹跳。任务弹跳被认为是一种稀有事件。
 
 ## 实时运行队列进程迁移相关的成员
-* 是时候观察进程进入或移出实时运行队列时，对`rt_rq`相关成员的处理了
-* 在进程进入`rt_rq`时会调用`inc_rt_migration()`
-```
+* 是时候观察进程进入或移出实时运行队列时，对 `rt_rq` 相关成员的处理了
+* 在进程进入 `rt_rq` 时会调用 `inc_rt_migration()`
+```c
 __enqueue_rt_entity()
-	-> inc_rt_tasks()
-		-> inc_rt_prio()
-		-> inc_rt_migration()
-			-> update_rt_migration()
-		-> inc_rt_group()
+-> inc_rt_tasks()
+   -> inc_rt_prio()
+      -> inc_rt_migration()
+         -> update_rt_migration()
+      -> inc_rt_group()
 ```
-* 在进程移出`rt_rq`时会调用`dec_rt_migration()`
+* 在进程移出 `rt_rq` 时会调用 `dec_rt_migration()`
 * kernel/sched/rt.c
-```
+```c
 __dequeue_rt_entity()
-	-> dec_rt_tasks()
-		-> dec_rt_prio()
-		-> dec_rt_migration()
-			-> update_rt_migration()
-		-> dec_rt_group()
+-> dec_rt_tasks()
+   -> dec_rt_prio()
+      -> dec_rt_migration()
+         -> update_rt_migration()
+      -> dec_rt_group()
 ```
-* `inc_rt_migration()`和`dec_rt_migration()`会更新实时运行队列`rt_rq`的下面几个域
-	* `rt_nr_total`：增加或减小该实时运行队列`rt_rq`的 **实时任务数**
-	* `rt_nr_migratory`：如果该任务允许在多于一个 CPU 上运行，增加或减小该实时运行队列`rt_rq`的 **可迁移的实时任务数**
-	* `overloaded`：调用共用函数`update_rt_migration()`更新 **队列过载标志**
-	* `rt_nr_running`在`inc_rt_tasks()`或`dec_rt_tasks()`时已经更新过了
+* `inc_rt_migration()` 和 `dec_rt_migration()` 会更新实时运行队列 `rt_rq` 的下面几个域
+  * `rt_nr_total`：增加或减小该实时运行队列 `rt_rq` 的 **实时任务数**
+  * `rt_nr_migratory`：如果该任务允许在多于一个 CPU 上运行，增加或减小该实时运行队列 `rt_rq` 的 **可迁移的实时任务数**
+  * `overloaded`：调用共用函数 `update_rt_migration()` 更新 **队列过载标志**
+  * `rt_nr_running` 在 `inc_rt_tasks()` 或 `dec_rt_tasks()` 时已经更新过了
 * kernel/sched/rt.c
 ```c
 static inline void rt_set_overload(struct rq *rq)
@@ -755,7 +755,7 @@ static void update_rt_migration(struct rt_rq *rt_rq)
 ```
 
 ## 拉任务的实现
-* 先从`pull_rt_task()`的实现看起。
+* 先从 `pull_rt_task()` 的实现看起。
 * kernel/sched/rt.c
 ```c
 static inline int rt_overloaded(struct rq *rq)
@@ -798,7 +798,7 @@ static void pull_rt_task(struct rq *this_rq)
 	bool resched = false;
 	struct task_struct *p;
 	struct rq *src_rq;
-	/*如果当前队列的 root_domain 的 rto_count 不为 0，说明已经过载了，无需拉任务进来*/
+	/*如果当前队列所在 root domain 没有过载的 CPU，无需通过拉任务的方式来在 root domain 内进行均衡*/
 	if (likely(!rt_overloaded(this_rq)))
 		return;
 
@@ -830,9 +830,9 @@ static void pull_rt_task(struct rq *this_rq)
 		 */
 		/*如果源运行队列的可推送任务链表上的最高优先级任务优先级低于或等于当前队列的最高优先级任务
 		  优先级，跳过该源队列。源运行队列的已排队最高优先级任务马上有机会被调度，不需要拉过来。
-			因为它比当前队列排第一的任务优先级还低，拉过来也是要等。
-			注意这里取源运行队列数据的时候没有占用 src_rq->lock 的锁，原因见上面注释。主要的意思是，
-			即便是在临界区时优先级变高了，源队列会推过来，而不是拉。如果变低了，那也不用拉。*/
+		  因为它比当前队列排第一的任务优先级还低，拉过来也是要等。
+		  注意这里取源运行队列数据的时候没有占用 src_rq->lock 的锁，原因见上面注释。主要的意思是，
+		  即便是在临界区时优先级变高了，源队列会推过来，而不是拉。如果变低了，那也不用拉。*/
 		if (src_rq->rt.highest_prio.next >=
 		    this_rq->rt.highest_prio.curr)
 			continue;
@@ -842,7 +842,7 @@ static void pull_rt_task(struct rq *this_rq)
 		 * double_lock_balance, and another CPU could
 		 * alter this_rq
 		 */
-		/*double_lock_balance()潜在地会丢失 this_rq 的锁，其他 CPU 有可能趁此修改了 this_rq*/
+		/*double_lock_balance() 潜在地会丢失 this_rq 的锁，其他 CPU 有可能趁此修改了 this_rq*/
 		double_lock_balance(this_rq, src_rq);
 
 		/*
@@ -858,7 +858,7 @@ static void pull_rt_task(struct rq *this_rq)
 		 * the to-be-scheduled task?
 		 */
 		/*如果将要拉过来的任务优先级比当前队列的最高优先级高。这里需要再次比较是因为
-		  double_lock_balance()会先释放 this_rq 的锁再加锁，因此有变化的可能*/
+		  double_lock_balance() 会先释放 this_rq 的锁再加锁，因此有变化的可能*/
 		if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
 			WARN_ON(p == src_rq->curr); /*将要拉的任务是源队列上当前运行的任务，警告*/
 			WARN_ON(!task_on_rq_queued(p)); /*任务的状态不是“已排队”，警告*/
@@ -909,19 +909,19 @@ skip:
 * `pull_rt_task()`还会被`queue_pull_task()`放入`balance_callback()`的链表，以间接的方式触发
 * 采用间接方式调用总要等到调用`balance_callback()`的时候才会进行拉负载均衡
 1. 当通过系统调用`sched_setscheduler`，`sched_setparam`或`sched_setattr`引起任务调度器参数变化的时候，例如
-	```
-	SYSCALL_DEFINE3(sched_setscheduler, ...)
-		-> do_sched_setscheduler()
-			-> sched_setscheduler()
-				-> _sched_setscheduler()
-					+->__sched_setscheduler()
-					|		-> check_class_changed()
-					|				-> p->sched_class->prio_changed()
-					|				= prio_changed_rt()
-					|					-> queue_pull_task()
-					|						-> queue_balance_callback(..., pull_rt_task)
-					+-> balance_callback
-	```
+```c
+SYSCALL_DEFINE3(sched_setscheduler, ...)
+-> do_sched_setscheduler()
+   -> sched_setscheduler()
+      -> _sched_setscheduler()
+         +->__sched_setscheduler()
+         |  -> check_class_changed()
+         |     -> p->sched_class->prio_changed()
+         |     => prio_changed_rt()
+         |        -> queue_pull_task()
+         |           -> queue_balance_callback(..., pull_rt_task)
+         +-> balance_callback
+```
 2. `normalize_rt_tasks()` —— 通过 sysrq 将实时进程变为普通进程的时候。
 	* `SysRq`+`Alt`+ `n` —— `nice-all-RT-tasks(n)`
 	* drivers/tty/sysrq.c
@@ -939,11 +939,12 @@ skip:
 	```
 	* `normalize_rt_tasks()` -> `__sched_setscheduler()` -> `check_class_changed()`
 3. 通过实时互斥量 RT Mutex 设置优先级的时候。
-	```
-	rt_mutex_setprio()
-		-> check_class_changed()
-		-> balance_callback()
-	```
+   ```c
+   rt_mutex_setprio()
+   -> check_class_changed()
+   -> balance_callback()
+   ```
+
 ### 几个关键函数
 
 ![pic/sched_rt_chk_cls_chg.png](pic/sched_rt_chk_cls_chg.png)
@@ -954,7 +955,7 @@ skip:
 * 回忆`pull_rt_task()`或`push_rt_tasks()`期间，调用`double_lock_balance()`函数的时候有可能会丢掉`rq->lock`锁
 * 如果进程调度器类和优先级同时改变，也只会调用一次`queue_pull_task()`，注意，用的是`if ... else if ...`
 * kernel/sched/core.c
-```c
+```cpp
 /*
  * switched_from, switched_to and prio_changed must _NOT_ drop rq->lock,
  * use the balance_callback list if you want balancing.
@@ -981,7 +982,7 @@ static inline void check_class_changed(struct rq *rq, struct task_struct *p,
 #### switched_from_rt()
 * 当进程从实时队列切换出去的时候，可以 *有条件地* 考虑从其他运行队列拉一些实时进程过来
 * kernel/sched/rt.c
-```c
+```cpp
 /*
  * When switch from the rt queue, we bring ourselves to a position
  * that we might want to pull RT tasks from other runqueues.
@@ -1008,7 +1009,7 @@ static void switched_from_rt(struct rq *rq, struct task_struct *p)
 * 如果发生这种情况，我们尽可能把过载的进程推到其他运行队列去
 * 可见，提升进程的调度策略有可能造成进程被迁移到其他 CPU 上运行
 * kernel/sched/rt.c
-```c
+```cpp
 /*
  * When switching a task to RT, we may overload the runqueue
  * with RT tasks. In this case we try to push them off to
@@ -1043,7 +1044,7 @@ static void switched_to_rt(struct rq *rq, struct task_struct *p)
 
 #### prio_changed_rt()
 * 任务优先级的改变会 *有条件地* 引起一次负载均衡
-```c
+```cpp
 /*
  * Priority of the task has changed. This may cause
  * us to initiate a push or pull.
@@ -1096,42 +1097,42 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio)
 
 ## 数据结构
 * `struct callback_head`
-	* include/linux/types.h
-	```c
-	/**
-	 * struct callback_head - callback structure for use with RCU and task_work
-	 * @next: next update requests in a list
-	 * @func: actual update function to call after the grace period.
-	 *
-	 * The struct is aligned to size of pointer. On most architectures it happens
-	 * naturally due ABI requirements, but some architectures (like CRIS) have
-	 * weird ABI and we need to ask it explicitly.
-	 *
-	 * The alignment is required to guarantee that bits 0 and 1 of @next will be
-	 * clear under normal conditions -- as long as we use call_rcu(),
-	 * call_rcu_bh(), call_rcu_sched(), or call_srcu() to queue callback.
-	 *
-	 * This guarantee is important for few reasons:
-	 *  - future call_rcu_lazy() will make use of lower bits in the pointer;
-	 *  - the structure shares storage spacer in struct page with @compound_head,
-	 *    which encode PageTail() in bit 0. The guarantee is needed to avoid
-	 *    false-positive PageTail().
-	 */
-	struct callback_head {
-	        struct callback_head *next;
-	        void (*func)(struct callback_head *head);
-	} __attribute__((aligned(sizeof(void *))));
-	#define rcu_head callback_head
-	```
+  * include/linux/types.h
+```cpp
+/**
+        * struct callback_head - callback structure for use with RCU and task_work
+        * @next: next update requests in a list
+        * @func: actual update function to call after the grace period.
+        *
+        * The struct is aligned to size of pointer. On most architectures it happens
+        * naturally due ABI requirements, but some architectures (like CRIS) have
+        * weird ABI and we need to ask it explicitly.
+        *
+        * The alignment is required to guarantee that bits 0 and 1 of @next will be
+        * clear under normal conditions -- as long as we use call_rcu(),
+        * call_rcu_bh(), call_rcu_sched(), or call_srcu() to queue callback.
+        *
+        * This guarantee is important for few reasons:
+        *  - future call_rcu_lazy() will make use of lower bits in the pointer;
+        *  - the structure shares storage spacer in struct page with @compound_head,
+        *    which encode PageTail() in bit 0. The guarantee is needed to avoid
+        *    false-positive PageTail().
+        */
+struct callback_head {
+        struct callback_head *next;
+        void (*func)(struct callback_head *head);
+} __attribute__((aligned(sizeof(void *))));
+#define rcu_head callback_head
+```
 * 运行队列`struct rq`的`balance_callback`成员
-	* kernel/sched/sched.h
-	```c
-	struct rq {
-			...
-			struct callback_head *balance_callback;
-			...
-	}
-	```
+  * kernel/sched/sched.h
+```cpp
+struct rq {
+                ...
+                struct callback_head *balance_callback;
+                ...
+}
+```
 
 ## 回调函数链表
 * `balance_callback()`调用时遍历的链表是 **per-CPU** 的
@@ -1140,7 +1141,7 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio)
 * 这些链表上的负载均衡函数会等到调用`balance_callback()`时执行均衡负载，遍历的是调用函数时所在运行队列`balance_callback`链表上的操作，而不是遍历各个 CPU 上的`balance_callback`
 * 尽管排队操作的是本运行队列，然而负载均衡结果却会影响到其他队列
 * kernel/sched/rt.c
-```c
+```cpp
 static inline int has_pushable_tasks(struct rq *rq)
 {
         return !plist_head_empty(&rq->rt.pushable_tasks);
@@ -1161,7 +1162,7 @@ static inline void queue_push_tasks(struct rq *rq)
 }
 
 static inline void queue_pull_task(struct rq *rq)
-{i      /*插入一个拉操作到所在 rq->balance_callback 链表头*/
+{       /*插入一个拉操作到所在 rq->balance_callback 链表头*/
         queue_balance_callback(rq, &per_cpu(rt_pull_head, rq->cpu), pull_rt_task);
 }
 ```
@@ -1230,7 +1231,7 @@ static inline void balance_callback(struct rq *rq)
   * [Inter Processor Interrupt usage](http://stackoverflow.com/questions/15091165/inter-processor-interrupt-usage)
 * `RT_PUSH_IPI` feature
   * kernel/sched/features.h
-  ```c
+  ```cpp
   #ifdef HAVE_RT_PUSH_IPI
   /*
    * In order to avoid a thundering herd attack of CPUs that are
@@ -1251,10 +1252,10 @@ static inline void balance_callback(struct rq *rq)
   ```
 * `RT_PUSH_IPI` 的引入 [[RFC,v4] sched/rt: Use IPI to trigger RT task push migration instead of pulling](https://patchwork.kernel.org/patch/5894821/)
 * 开启或关闭该功能
-  ```
-  # mount -t debugfs nodev /sys/kernel/debug
-  # echo RT_PUSH_IPI > /sys/kernel/debug/sched_features
-  # echo NO_RT_PUSH_IPI > /sys/kernel/debug/sched_features
+  ```sh
+  mount -t debugfs nodev /sys/kernel/debug
+  echo RT_PUSH_IPI > /sys/kernel/debug/sched_features
+  echo NO_RT_PUSH_IPI > /sys/kernel/debug/sched_features
   ```
 * 如果 IPI 请求发给所有 RT overload list 上的 CPU，我们还会遇到相同的问题，只不过方向相反
 * 所以只把 IPI 发给第一个过载的 CPU，当它把所有能推出去的任务推走后，再找下一个能把任务推给源 CPU 的过载的 CPU
@@ -1264,7 +1265,7 @@ static inline void balance_callback(struct rq *rq)
 * 这里的顺序是按 root domain 中 rto_mask 的位置为顺序，和 CPU 优先级没关系
 * `struct rt_rq` 新增 4 个相关的成员
 * kernel/sched/sched.h
-```c
+```cpp
 /* Real-Time classes' related field in a runqueue: */
 struct rt_rq {
 ...
@@ -1278,7 +1279,7 @@ struct rt_rq {
 };
 ```
 * kernel/sched/rt.c
-```c
+```cpp
 /*
  * The search for the next cpu always starts at rq->cpu and ends
  * when we reach rq->cpu again. It will never return rq->cpu.
@@ -1388,7 +1389,7 @@ static void tell_cpu_to_push(struct rq *rq)
 }
 ```
 * kernel/irq_work.c
-```c
+```cpp
 /*
  * Enqueue the irq_work @work on @cpu unless it's already pending
  * somewhere.
@@ -1416,23 +1417,23 @@ EXPORT_SYMBOL_GPL(irq_work_queue_on);
 ```
 * `rq->rt.push_work`是在初始化实时任务运行队列的时候进行的初始化
   * kernel/sched/rt.c
-  ```c
-  void init_rt_rq(struct rt_rq *rt_rq)
-  {
-  ...
-  #ifdef HAVE_RT_PUSH_IPI
-          rt_rq->push_flags = 0;
-          rt_rq->push_cpu = nr_cpu_ids; /*初始化 push_cpu*/
-          raw_spin_lock_init(&rt_rq->push_lock);
-          init_irq_work(&rt_rq->push_work, push_irq_work_func); /*在此初始化 irq work*/
-  #endif
-  ...
-  }
-  ```
+```cpp
+void init_rt_rq(struct rt_rq *rt_rq)
+{
+...
+#ifdef HAVE_RT_PUSH_IPI
+        rt_rq->push_flags = 0;
+        rt_rq->push_cpu = nr_cpu_ids; /*初始化 push_cpu*/
+        raw_spin_lock_init(&rt_rq->push_lock);
+        init_irq_work(&rt_rq->push_work, push_irq_work_func); /*在此初始化 irq work*/
+#endif
+...
+}
+```
 * 当指定的推 CPU 收到触发的 IPI 后，会调用`raised_list`链表上的工作的回调函数处理 irq 工作
 * `push_irq_work_func()`在执行推任务的 CPU 收到 IPI 后异步地调用
 * kernel/sched/rt.c
-```c
+```cpp
 /* Called from hardirq context */
 static void try_to_push_tasks(void *arg)
 {
@@ -1501,7 +1502,7 @@ static void push_irq_work_func(struct irq_work *work)
 }
 ```
 * 调用`push_irq_work_func()`的函数是`irq_work_run_list()`，它也是 irq 工作队列的遍历函数，比如，会在时钟中断的处理过程中被调用
-  ```
+  ```c
   update_process_times()
     -> irq_work_tick()
         -> irq_work_run_list()
