@@ -838,9 +838,82 @@ int __init mcheck_init(void)
   * 但通常应该没有，因为在上一个步骤被释放掉了
   * 有可能打印出来的是 `do_machine_check()` 最开始调用 `mce_gather_info(&m, regs)` 收集到的 `struct mce *final`
 
+## Soft Offline Page
+* `/sys/devices/system/memory/soft_offline_page` 文件的处理函数的入口为 `soft_offline_page_store()`
+```cpp
+/* Soft offline a page */
+static ssize_t soft_offline_page_store(struct device *dev,
+                       struct device_attribute *attr,
+                       const char *buf, size_t count)
+{
+    int ret;
+    u64 pfn;
+    if (!capable(CAP_SYS_ADMIN))
+        return -EPERM;
+    if (kstrtoull(buf, 0, &pfn) < 0)
+        return -EINVAL;
+    pfn >>= PAGE_SHIFT;
+    ret = soft_offline_page(pfn, 0); //Soft offline page 主处理函数的入口
+    return ret == 0 ? count : ret;
+}
+...
+static DEVICE_ATTR_WO(soft_offline_page);
+```
+### Soft offline page 主处理函数的入口 `soft_offline_page()`
+1. 根据 PFN 得到 `page`：`page = pfn_to_online_page(pfn)`
+2. 如果 `page` 的 `HWPoison` 已经设置，则返回 `0`
+3. 得到要内存错误处理的页面引用计数：`get_hwpoison_page(page, flags | MF_SOFT_OFFLINE)`
+4. 该 `page` 是否通过 hwpoison-inject module 过滤：`hwpoison_filter(page)`
+   * 如果已过滤，则返回 `-EOPNOTSUPP`
+5. 如果要内存错误处理的页面引用计数大于零，表示将要 soft offline 一个 **正在使用** 的页面：`soft_offline_in_use_page(page)`
+   * `soft_offline_in_use_page(page)` 处理大页和非大页的情况
+     * 如果页面是干净且未映射的 page cache，简单地使其无效即可
+     * 如果页面已经映射了，将它的内容移开
+   * 5.1. 如果页面不是大页，那么它是不是透明巨页？如果是，尝试拆分透明巨页
+     * 如果拆分成功，将页面 `page` 作为其所属复合页的头页 `hpage = page`
+   * 5.2. 如果页面不是大页，等待页面写回 `wait_on_page_writeback(page)`
+   * 5.3. 如果 `page` 的 `HWPoison` 已经设置，则返回 `0`
+   * 5.4. 如果页面不是大页，且是干净且未映射的 page cache，使其无效：`invalidate_inode_page(page)`
+     * 5.4.1. 使 **单个干净** 页面无效成功，对其进行毒化处理：`page_handle_poison(page, false, true)`
+       * 设置页面的 `HWPoison` 标志：`SetPageHWPoison(page)`
+       * 放回页面：`put_page(page)`
+       * 增加页面的引用计数：`page_ref_inc(page)`
+       * 增加已毒化页面的统计计数：`num_poisoned_pages_inc(page_to_pfn(page))`
+   * 5.5. **隔离页面**，将被隔离的页面放到 `pagelist` 链表：`isolate_page(hpage, &pagelist)`
+     * 5.5.1. 隔离成功，**迁移页面**：`migrate_pages(&pagelist, alloc_migration_target, NULL, (unsigned long)&mtc, MIGRATE_SYNC, MR_MEMORY_FAILURE, NULL)`
+       * 5.5.1.1. 如果迁移成功，对其进行毒化处理：`page_handle_poison(page, huge, !huge)`
+         * 如果是大页，继续如下毒化处理 `__page_handle_poison(page)`
+           * 如果毒化处理失败，例如，由于竞争的页面分配，我们可能无法从 buddy 那里取下目标页面。但这是可以接受的，因为 soft-offlined 的页面并没有损坏，如果有人真的想使用它，他们应该可以拿走它。返回 `false`
+         * 如果不是大页，或者大页毒化处理成功
+           * 设置页面的 `HWPoison` 标志：`SetPageHWPoison(page)`
+           * 如果是 **单个** 页面，放回页面：`put_page(page)`；否则是大页，不放回页面
+           * 增加页面的引用计数：`page_ref_inc(page)`
+           * 增加已毒化页面的统计计数：`num_poisoned_pages_inc(page_to_pfn(page))`
+         * 以上毒化处理失败，设置返回值为 `-EBUSY`
+       * 5.5.1.2. 如果迁移不成功，
+         * 如果被隔离页面的链表上有隔离不成功的页面，把它们放回合适的链表：`putback_movable_pages(&pagelist)`
+         * 打印 `"soft offline: %#lx: %s migration failed %ld, type %pGp\n", pfn, msg_page[huge], ret, &page->flags)`
+         * 设置返回值为 `-EBUSY`
+     * 5.5.2. 隔离失败，打印如下信息：
+       * `"soft offline: %#lx: %s isolation failed, page count %d, type %pGp\n", pfn, msg_page[huge], page_count(page), &page->flags`
+       * 设置返回值为 `-EBUSY`
+   * 5.6. 返回返回值
+6. 如果要内存错误处理的页面引用计数等于零，soft offline 一个 **未在使用** 的页面 `page_handle_poison(page, true, false)`
+   * 调用 `__page_handle_poison(page)` 毒化页面
+   * 设置页面的 `HWPoison` 标志：`SetPageHWPoison(page)`
+   * 无需放回页面
+   * 增加页面的引用计数：`page_ref_inc(page)`
+   * 如果毒化失败，重试一次
+   * 如果重试一次仍然失败，不再重试，设置返回值为 `-EBUSY`
+7. 返回返回值
+
+### 毒化大页或未使用的页 `__page_handle_poison(page)`
+
 ## 系统配置
 ```sh
 /sys/devices/system/machinecheck/machinecheck[n]
+/sys/devices/system/memory/soft_offline_page
+/sys/devices/system/memory/hard_offline_page
 ```
 
 ## 一些疑问
@@ -881,7 +954,7 @@ Date:   Wed Feb 19 09:46:43 2020 +0100
     Link: https://lkml.kernel.org/r/20200505134101.525508608@linutronix.de
 ```
 * Linux kernel 的 `#MC` 处理程序是通过中断门实现的，因此进入处理程序的时候中断是关闭的，后面会在有的场景开启中断。
-* 因此，`#MC` 处理程序运行期间很多时候 `preempt_count` 的 NMI 和 HARDIRQ 相应的 bit 都是置位的。
+* 因此，`#MC` 处理程序运行期间很多时候 `preempt_count` 的 `NMI` 和 `HARDIRQ` 相应的 bit 都是置位的。
 * 个人理解，`#MC` 作为 abort 类异常，本质上是不可屏蔽的，甚至无法在 NMI 处理期间阻止 `#MC` 的递交，只能通过软件的方式来避免一些由此产生的问题。
   * 我们常说的屏蔽中断指的是屏蔽外部中断，而异常来自三个方面。
   * NMI 处理期间不能嵌套，需要等 `iret` 指令（有心的或无意的）结束 NMI 的处理，才能处理新的 NMI。

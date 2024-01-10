@@ -294,3 +294,47 @@ FI;
   * 在所有其他情况下，访问都会导致 APIC access VM exit。
 * **来自虚拟化的 APIC access page 的读取访问从 *虚拟 APIC 页面* 上的相应页面偏移返回数据。**
   * 用于从 *虚拟 APIC 页* 读取的访问的内存类型在 `IA32_VMX_BASIC` MSR 的 bit `53:50` 中报告（请参阅附录 A.1）。
+
+### 30.6 Posted-interrupt Processing
+* Posted-interrupt processing 是处理器通过在虚拟 APIC 页面上将虚拟中断记录为 pending 来处理虚拟中断的功能。
+* 通过设置“process posted interrupts” VM 执行控制来启用 posted-interrupt processing。
+* 该处理是响应具有 **posted-interrupt notification vector** 的中断的到来而执行的。
+* 为了响应这种中断，处理器需处理记录在称为 **posted-interrupt descriptor** 的数据结构中的虚拟中断。
+* *Posted-interrupt notification vector* 和 *posted-interrupt descriptor 的地址* 是 VMCS 中的域。
+* 如果“process posted interrupts” VM 执行控制为`1`，则逻辑处理器使用位于 *posted-interrupt descriptor 地址* 的 `64-byte` *posted-interrupt descriptor*。
+* *Posted-interrupt descriptor* 具有以下格式：
+
+Bit 位置 | 名称 | 描述
+--------|----------------------|--------------------
+255:0   | Posted-interrupt 请求 | 每个中断向量一位。如果相应的 bit 为 `1`，该向量有一个 posted-interrupt 请求
+256     | Outstanding 通知      | 如果设置了该位，则在 `255:0` bits 中存在一个或多个 posted interrupts 的未完成通知
+511:257 | 保留给软件或其他 agent | 这些位可由软件和系统中的其他代理（例如芯片组）使用。处理器不会修改这些位
+
+* 缩写 **PIR**（posted-interrupt requests）指的是 posted-interrupt descriptor 中的 `256` 个 posted-interrupt 位。
+* Posted-interrupt descriptor 的使用与 VMCS 中指针引用的其他数据结构的使用不同。
+  * 一般需要软件确保，只有在没有 *引用当前 VMCS 的逻辑处理器* 处于 VMX non-root operation 时，才修改每个这样的数据结构。
+  * 该要求不适用于 posted-interrupt descriptor。但是，需要使用锁定的 read-modify-write 指令来完成此类修改。
+
+* 仅当“external-interrupt exiting” VM 执行控制位也为 `1` 时，VM entry 确保“process posted interrupts” VM 执行控制位为 `1`
+* 如果“external-interrupt exiting” VM 执行控制位为 `1`，则任何未屏蔽的外部中断都会导致 VM exit。
+* 如果“process posted interrupts” VM 执行控制位也是 `1`，则此行为会改变，处理器会按如下方式处理外部中断：
+1. 本地 APIC 被确认；这为处理器核提供了一个中断向量，这里称为 **物理向量**。
+2. 如果 *物理向量* 等于 posted-interrupt notification 向量，则逻辑处理器继续下一步。否则，由于外部中断，通常会发生 VM exit；该向量保存在 VM-exit 中断信息字段中。
+3. 处理器清除 posted-interrupt descriptor 中的 outstanding-notification 位。这是以原子方式完成的，以使描述符的其余部分保持不变（例如，使用锁定的`AND`操作）。
+4. 处理器将零写入本地 APIC 中的 EOI 寄存器；这将解除来自本地 APIC 的 posted-interrupt notification 向量的中断。
+5. 逻辑处理器将 PIR 与 VIRR 执行 *逻辑或*，并清除 PIR。在读取 PIR 位（以确定要用什么和 VIRR 进行或运算）和清除它之间，没有其他代理可以读取或写入 PIR 位（或一组位）。
+6. 逻辑处理器将 RVI 设置为 RVI 的旧值和 PIR 中设置的所有位的最高索引中的最大值；如果在 PIR 中没有设置任何位，则 RVI 保持不变。
+7. 逻辑处理器 evaluates pending 的虚拟中断，如第 29.2.1 节所述。
+* 逻辑处理器以不可中断的方式执行上述步骤。如果第 7 步导致识别出虚拟中断，处理器可以立即传递该中断。
+* 当中断控制器向 CPU 核提供未屏蔽的外部中断时，会发生上述 1 到 7 步。
+* 以下 iterms 考虑了某些中断传递的情况：
+  * 中断传递可以发生在以 `REP` 为前缀的指令的迭代之间（在至少一个迭代完成之后但在所有迭代完成之前）。如果发生这种情况，以下 items 会在 posted-interrupt 处理完成后和 guest 执行恢复之前表征处理器状态：
+    * `RIP` 引用以 `REP` 为前缀的指令；
+    * 更新 `RCX`、`RSI` 和 `RDI` 以反映已完成的迭代；和
+    * `RFLAGS.RF = 1`。
+  * 当逻辑处理器处于活动、`HLT` 或 `MWAIT` 状态时，可能会发生中断传递。
+    * 如果逻辑处理器在中断到达之前处于活动或 `MWAIT` 状态，则在完成第 7 步后处于活动状态；
+    * 如果它一直处于 `HLT` 状态，它会在第 7 步之后返回到 `HLT` 状态（如果识别到 pending 的虚拟中断，则逻辑处理器可以立即从 `HLT` 状态唤醒）。
+  * 当逻辑处理器处于 enclave 模式时，可能会发生中断传递。
+    * 如果逻辑处理器在中断到达之前处于 enclave 模式，则 Asynchronous Enclave Exit（AEX）可能会在第 1 到 7 步之前发生。
+    * 如果在第 1 步之前没有发生 AEX，并且在第 2 步发生了 VM exit，则在传递 VM exit 之前会发生 AEX。
