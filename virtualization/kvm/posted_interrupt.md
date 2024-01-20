@@ -360,12 +360,12 @@ context_switch()
          -> notifier->ops->sched_in(notifier, raw_smp_processor_id())
             //virt/kvm/kvm_main.c
          => kvm_sched_in()
-            //arch/x86/kvm/x86.c
+               //arch/x86/kvm/x86.c
             -> kvm_arch_sched_in()
                -> static_call(kvm_x86_sched_in)(vcpu, cpu)
                   //arch/x86/kvm/vmx/vmx.c
                => vmx_sched_in()
-            //arch/x86/kvm/x86.c
+               //arch/x86/kvm/x86.c
             -> kvm_arch_vcpu_load()
                -> static_call(kvm_x86_vcpu_load)(vcpu, cpu)
                   //arch/x86/kvm/vmx/vmx.c

@@ -67,7 +67,8 @@
   * 对于不支持 CPUID leaf `0x80000008` 的处理器，`MAXPHYADDR` 为 bit `36`，或者对于支持 CPUID leaf `0x80000008` 的处理器，由 `CPUID.80000008H:EAX[bit 7:0]` 指示。
 
 ### 11.4.5 重定位 Local APIC 寄存器
-* Pentium 4、Intel Xeon 和 P6 系列处理器允许通过修改 `IA32_APIC_BASE` MSR 基地址字段中的值将 APIC 寄存器的起始地址从 `0xFEE00000` 重定位到另一个物理地址。 * APIC 架构的这种扩展旨在帮助解决与现有系统内存映射的冲突，并允许 MP 系统中的各个处理器将其 APIC 寄存器映射到物理内存中的不同位置。
+* Pentium 4、Intel Xeon 和 P6 系列处理器允许通过修改 `IA32_APIC_BASE` MSR 基地址字段中的值将 APIC 寄存器的起始地址从 `0xFEE00000` 重定位到另一个物理地址。
+* APIC 架构的这种扩展旨在帮助解决与现有系统内存映射的冲突，并允许 MP 系统中的各个处理器将其 APIC 寄存器映射到物理内存中的不同位置。
 
 ### 11.4.7 Local APIC 状态
 

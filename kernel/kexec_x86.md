@@ -805,13 +805,17 @@ static void ident_pmd_init(struct x86_mapping_info *info, pmd_t *pmd_page,
   SYSCALL_DEFINE4(reboot, ...)
     case LINUX_REBOOT_CMD_KEXEC:
     -> kernel_kexec()
-      -> machine_kexec(kexec_image)
+       -> migrate_to_reboot_cpu() //将任务都迁移到 kexec 的 CPU
+       -> kernel_restart_prepare("kexec reboot")
+       -> cpu_hotplug_enable()
+       -> machine_shutdown() //让其他 CPU 都停下来，见下面详解
+       -> machine_kexec(kexec_image)
   ```
 * 对于 kernel panic 的场景有，则通过`__crash_kexec()`调用`machine_kexec()`
   ```c
   panic()
   -> __crash_kexec(NULL)
-    -> machine_kexec(kexec_crash_image)
+     -> machine_kexec(kexec_crash_image)
   ```
   或者
   ```c
@@ -851,6 +855,68 @@ static void ident_pmd_init(struct x86_mapping_info *info, pmd_t *pmd_page,
              -> native_gdt_invalidate() //通过指令 lgdt 将全局段寄存器清零
              -> image->start = relocate_kernel((unsigned long)image->head, (unsigned long)page_list, image->start, ...)
   ```
+
+#### 停止其他 CPU
+* 对于 panic 的场景，需要调用 `crash_save_cpu()` 让各 CPU 将其上下文保存到 vmcore 中的 `NOTE` segment 的名为 `CORE`，类型为 `NT_PRSTATUS` 的字段中去
+* 对于 `kexec -e` 的重启场景，则不需要 `crash_save_cpu()`，只需让其他 CPU 停止运行，然后等待 reboot CPU 切换到新内核
+```cpp
+kernel_kexec()
+-> machine_shutdown()
+   -> machine_ops.shutdown()
+   => native_machine_shutdown()
+   -> stop_other_cpus() //让其他 CPU 都停下来
+      -> smp_ops.stop_other_cpus(1)
+      => native_stop_other_cpus()
+         -> apic_send_IPI_allbutself(REBOOT_VECTOR) //第一次尝试发 IPI(REBOOT_VECTOR) 的方式，如果尝试失败或超时
+          -> register_stop_handler() //第二次尝试用 NMI DM 的 IPI 尝试让让其他 CPU 停下，回调为 smp_stop_nmi_callback()
+             -> register_nmi_handler(NMI_LOCAL, smp_stop_nmi_callback, NMI_FLAG_FIRST, "smp_stop")
+-> machine_kexec(kexec_image)
+```
+* 上面已经看到了 `machine_shutdown()` 会做两次尝试，最终都是为了其他 CPU 能最终调用到 `stop_this_cpu()`，最终停止在 `hlt`
+```cpp
+void __noreturn stop_this_cpu(void *dummy)
+{
+...
+    for (;;) {
+        /*
+         * Use native_halt() so that memory contents don't change
+         * (stack usage and variables) after possibly issuing the
+         * native_wbinvd() above.
+         */
+        native_halt();
+    }
+}
+```
+##### `IPI(REBOOT_VECTOR)` 的方式
+* 这种方式比较简单，就是通过发送 `REBOOT_VECTOR` 的 IPI，对应的中断向量如下：
+* arch/x86/kernel/smp.c
+```cpp
+#define REBOOT_VECTOR           0xf8
+/*
+ * this function calls the 'stop' function on all other CPUs in the system.
+ */
+DEFINE_IDTENTRY_SYSVEC(sysvec_reboot)
+{
+    apic_eoi();
+    cpu_emergency_disable_virtualization();
+    stop_this_cpu(NULL);
+}
+```
+##### NMI 的方式
+* `register_stop_handler()` 注册了类型为 `NMI_LOCAL` 的 NMI 回调函数 `smp_stop_nmi_callback()`，`NMI_FLAG_FIRST` 让它最先被 NMI 处理函数执行
+```cpp
+static int smp_stop_nmi_callback(unsigned int val, struct pt_regs *regs)
+{
+    /* We are registered on stopping cpu too, avoid spurious NMI */
+    if (raw_smp_processor_id() == atomic_read(&stopping_cpu))
+        return NMI_HANDLED;
+
+    cpu_emergency_disable_virtualization();
+    stop_this_cpu(NULL);
+
+    return NMI_HANDLED;
+}
+```
 
 ### 切换内核
 * `machine_kexec()`调用`relocate_kernel`例程开启了切换内核之旅，传入的参数如下：

@@ -572,7 +572,7 @@ cpus=8
 * 当设置该 option 时，每个函数被记录的时候，它的栈跟踪也会被记录
 * **NOTE:** 在使能该选项时，务必同时设置`set_ftrace_filter`，否则系统性能会严重下降。并且在清除过滤函数的时候记得关闭该选项。
 #### Example:
-```
+```cpp
 $ echo rtc_timer_enqueue > /sys/kernel/debug/tracing/set_ftrace_filter
 $ echo function > /sys/kernel/debug/tracing/current_tracer
 $ echo 1 > /sys/kernel/debug/tracing/options/func_stack_trace
@@ -590,8 +590,12 @@ rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
 #### `function-trace` vs `stacktrace` vs `func_stack_trace`
 * `function-trace`、`stacktrace`、`func_stack_trace`三者都可以用于栈跟踪，但适用场景是不同的
   * `function-trace`主要用于 **延迟型 tracer**，例如`irqsoff`、`preemptoff`和`preemptirqsoff`
+    * kernel command line：`trace_options=function-trace ftrace=preemptoff`
   * `stacktrace`主要用于 **trace event**，也就是预设好的跟踪点
+    * kernel command line eg：`trace_options=stacktrace trace_event=[event-list] trace_trigger="sched_switch.stacktrace if prev_state == 2"`
   * `func_stack_trace`主要用于 **function tracer**，用于自定义要跟踪的函数（配合`set_ftrace_filter`）
+    * kernel command line eg.1：`trace_options=func_stack_trace ftrace=function ftrace_filter=[function-list]`
+    * kernel command line eg.2：`trace_options=func_stack_trace ftrace=function_graph ftrace_graph_filter=[function-list]`
 
 ## function_graph tracer 选项
 ### funcgraph-proc
