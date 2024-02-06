@@ -343,14 +343,101 @@ movq %rax, %rsp //sync_regs() 的返回值即 error_entry 的返回值，真正�
   * 对于一些出错的极端情况，甚至有可能看到异常在使用中断栈或者 IST 栈。
 
 ## 进程内核栈
-* 对于任务的内核栈，在任务创建时分配，由`struct task_struct`的`stack`域记录
-* 每当发生任务切换时，会将它更新到 per-CPU 变量`cpu_current_top_of_stack`中
-  * 旧版本这不是变量而是个宏，实际是`cpu_tss_rw.x86_tss.sp1`
+* 对于任务的内核栈，在任务创建时分配，由 `struct task_struct` 的 `stack` 域记录栈底（低地址）
+```cpp
+copy_process()
+-> dup_task_struct(current, node)
+   -> tsk = alloc_task_struct_node(node); //从 task_struct 的 slab 上分配
+      -> kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node)
+   -> arch_dup_task_struct(tsk, orig)     //复制父进程的 task_struct
+   -> alloc_thread_stack_node(tsk, node)  //分配进程的内核栈
+```
+* 进程的内核栈目前支持三种分配方式：
+1. 如果开启 `CONFIG_VMAP_STACK`，内核栈用 `vmalloc()` 动态分配
+```cpp
+/*
+ * Allocate pages if THREAD_SIZE is >= PAGE_SIZE, otherwise use a
+ * kmemcache based allocator.
+ */
+# if THREAD_SIZE >= PAGE_SIZE || defined(CONFIG_VMAP_STACK)
+
+#  ifdef CONFIG_VMAP_STACK
+...
+static int alloc_thread_stack_node(struct task_struct *tsk, int node)
+{
+    for (i = 0; i < NR_CACHED_STACKS; i++) {
+        //先从 cached 的 stacks 里找空闲的栈，找不到就结束循环重新分配栈空间
+    }
+
+    /*
+     * Allocated stacks are cached and later reused by new threads,
+     * so memcg accounting is performed manually on assigning/releasing
+     * stacks to tasks. Drop __GFP_ACCOUNT.
+     */
+    stack = __vmalloc_node_range(THREAD_SIZE, THREAD_ALIGN,
+                     VMALLOC_START, VMALLOC_END,
+                     THREADINFO_GFP & ~__GFP_ACCOUNT,
+                     PAGE_KERNEL,
+                     0, node, __builtin_return_address(0));
+    if (!stack)
+        return -ENOMEM;
+
+    vm = find_vm_area(stack);
+    if (memcg_charge_kernel_stack(vm)) {
+        vfree(stack);
+        return -ENOMEM;
+    }
+    /*
+     * We can't call find_vm_area() in interrupt context, and
+     * free_thread_stack() can be called in interrupt context,
+     * so cache the vm_struct.
+     */
+    tsk->stack_vm_area = vm;
+    stack = kasan_reset_tag(stack);
+    tsk->stack = stack;  //task_struct.stack 指向栈底
+    return 0;
+}
+```
+2. 如果内核栈大小大于等于 `PAGE_SIZE`（通常为 `4kB`），但未开启 `CONFIG_VMAP_STACK`，用 `alloc_pages_node()` 接口动态分配
+```cpp
+#  else /* !CONFIG_VMAP_STACK */
+...
+static int alloc_thread_stack_node(struct task_struct *tsk, int node)
+{
+    struct page *page = alloc_pages_node(node, THREADINFO_GFP,
+                         THREAD_SIZE_ORDER);
+
+    if (likely(page)) {
+        tsk->stack = kasan_reset_tag(page_address(page));//task_struct.stack 指向栈底
+        return 0;
+    }
+    return -ENOMEM;
+}
+```
+3. 如果内核栈大小小于 `PAGE_SIZE`（通常为 `4kB`），且未开启 `CONFIG_VMAP_STACK`，从内核栈专属的 slab `thread_stack` 分配
+```cpp
+#  endif /* CONFIG_VMAP_STACK */
+# else /* !(THREAD_SIZE >= PAGE_SIZE || defined(CONFIG_VMAP_STACK)) */
+...
+static int alloc_thread_stack_node(struct task_struct *tsk, int node)
+{
+    unsigned long *stack;
+    stack = kmem_cache_alloc_node(thread_stack_cache, THREADINFO_GFP, node);
+    stack = kasan_reset_tag(stack);
+    tsk->stack = stack;    //task_struct.stack 指向栈底
+    return stack ? 0 : -ENOMEM;
+}
+...
+# endif /* THREAD_SIZE >= PAGE_SIZE || defined(CONFIG_VMAP_STACK) */
+```
+* `task_top_of_stack(task)` 宏根据 `task_struct.stack` 和进程栈大小的定义转换得到内核栈顶（高地址）
+* 每当发生任务切换时，会将它更新到 per-CPU 变量 `cpu_current_top_of_stack` 中
+  * 旧版本这不是变量而是个宏，实际是 `cpu_tss_rw.x86_tss.sp1`
   * arch/x86/kernel/process_64.c:`__switch_to()`
     ```c
     this_cpu_write(cpu_current_top_of_stack, task_top_of_stack(next_p));
     ```
-* 对于 x86-64 模式，当进程发生系统调用陷入内核态时，`syscall`指令不保存用户态的栈指针`RSP`，因此任务的用户态和内核态之间栈的切换由软件负责。此时内核会将`cpu_current_top_of_stack`的值作为内核栈的栈顶
+* 对于 x86-64 模式，当进程发生系统调用陷入内核态时，`syscall` 指令不保存用户态的栈指针 `$RSP`，因此任务的用户态和内核态之间栈的切换由软件负责。此时内核会将`cpu_current_top_of_stack` 的值作为内核栈的栈顶
   * arch/x86/entry/entry_64.S:`SYM_CODE_START(entry_SYSCALL_64)`
     ```c
     movq    PER_CPU_VAR(cpu_current_top_of_stack), %rsp
@@ -541,9 +628,9 @@ struct cea_exception_stacks {
   * 原先，`cpu_tss_rw.x86_tss.sp0`的值设置为进程的内核栈。如果发生进程切换，该值也会跟着切换
   * 此后，`cpu_tss_rw.x86_tss.sp0`的值设置为 trampoline stack。**即使发生进程切换，也不会更新该值**
   * 当 CPU 需要切换栈时，内核不再直接使用进程的内核栈，而是先使其切换到 trampoline stack，进行一些安全相关的操作，之后再由内核决定该用那种类型的内核栈
-* 注意：`syscall`指令导致的用户态到内核态的切换，CPU 不会自动切换栈，而是由内核自行切换到进程的内核栈
+* 注意：`syscall` 指令导致的用户态到内核态的切换，CPU 不会自动切换栈，而是由内核自行切换到进程的内核栈
 ### Trampoline Stack 的分配
-* Trampoline stack 的空间来自 per-CPU 变量`struct entry_stack_page entry_stack_storage`
+* Trampoline stack 的空间来自 per-CPU 变量 `struct entry_stack_page entry_stack_storage`
 * arch/x86/mm/cpu_entry_area.c
 ```cpp
 static DEFINE_PER_CPU_PAGE_ALIGNED(struct entry_stack_page, entry_stack_storage);
@@ -560,7 +647,7 @@ struct entry_stack_page {
 } __aligned(PAGE_SIZE);
 ```
 ### Trampoline stack 的设置
-* Trampoline stack 的值由启动时`cpu_init()`调用`load_sp0()`设置 TSS 的`sp0`为`entry_stack_storage + PAGE_SIZE`的地址，也就是栈顶（高地址）
+* Trampoline stack 的值由启动时 `cpu_init()` 调用 `load_sp0()` 设置 TSS 的 `sp0` 为 `entry_stack_storage + PAGE_SIZE` 的地址，也就是栈顶（高地址）
   * arch/x86/kernel/cpu/common.c
 ```cpp
 void cpu_init(void)
@@ -578,7 +665,7 @@ void cpu_init(void)
 * `cpu_entry_area` 是一个 per-cpu 区域，包含 CPU 和早期进入/退出代码需要的东西。
 * 并非所有字段都使用真实类型以避免头文件的循环依赖。
 * 每个字段都是其他分配的后备存储的虚拟别名。
-* 没有直接分配的`struct cpu_entry_area`。
+* 没有直接分配的 `struct cpu_entry_area`。
   * arch/x86/include/asm/cpu_entry_area.h
 ```cpp
 /*

@@ -24,30 +24,30 @@
 ## function tracer
 
 #### 设定函数跟踪器
-```
+```sh
 echo 0 > /sys/kernel/debug/tracing/tracing_on
 echo function > /sys/kernel/debug/tracing/current_tracer
 ```
 
 #### 设定跟踪特定的函数
-```
+```sh
 echo do_page_fault > /sys/kernel/debug/tracing/set_ftrace_filter
 ```
 * 当然可以不设置，那样会跟踪所有能跟踪的函数。
 
 #### 指定跟踪特定的CPU
-```
+```sh
 echo "cpu-id" > /sys/kernel/debug/tracing/tracing_cpumask
 ```
 
 #### 开始跟踪
-```
+```sh
 echo 1 > /sys/kernel/debug/tracing/tracing_on
 cat /sys/kernel/debug/tracing/trace_pipe | tee /tmp/ftrace.log
 ```
 
 #### 输出示例
-```
+```c
             TASK-PID CPU irqs-off need-resched hardirq/softirq preempt-depth delay TIMESTAMP FUNCTION
             lttng-879   [000] d..1 2437395.004331: do_page_fault <-do_PrefetchAbort
             lttng-879   [000] d..1 2437395.004331: do_page_fault <-do_PrefetchAbort
@@ -57,7 +57,7 @@ cat /sys/kernel/debug/tracing/trace_pipe | tee /tmp/ftrace.log
 ```
 
 #### 关闭跟踪
-```
+```sh
 echo 0 > /sys/kernel/debug/tracing/tracing_on
 echo nop > /sys/kernel/debug/tracing/current_tracer
 ```
@@ -76,25 +76,25 @@ echo nop > /sys/kernel/debug/tracing/current_tracer
 
 ## function_graph tracer
 #### 设定函数跟踪器
-```
+```sh
 echo 0 > /sys/kernel/debug/tracing/tracing_on
 echo function_graph > /sys/kernel/debug/tracing/current_tracer
 ```
 
 #### 设定跟踪特定的进程
-```
+```sh
 echo 822 > /sys/kernel/debug/tracing/set_ftrace_pid
 ```
 * 当然可以不设置，那样会跟踪所有能跟踪的进程。
 
 #### 开始跟踪
-```
+```sh
 echo 1 > /sys/kernel/debug/tracing/tracing_on
 cat /sys/kernel/debug/tracing/trace_pipe | tee /tmp/ftrace.log
 ```
 
 #### 输出示例
-```
+```c
 # tracer: function_graph
 #
 # CPU  DURATION                  FUNCTION CALLS
@@ -205,7 +205,7 @@ cat /sys/kernel/debug/tracing/trace_pipe | tee /tmp/ftrace.log
 	echo 1 > /proc/sys/kernel/stack_tracer_enabled
 	```
 * 从此，ftrace 便留心记录内核函数的堆栈使用。 Max Stack Tracer 的输出在 stack_trace 文件中：
-	```
+	```c
 	# cat /sys/kernel/debug/tracing/stack_trace
 	        Depth    Size   Location    (25 entries)
 	        -----    ----   --------
@@ -250,7 +250,7 @@ git://git.kernel.org/pub/scm/linux/kernel/git/rostedt/trace-cmd.git
 * [trace-cmd(1) - Linux manual page](http://man7.org/linux/man-pages/man1/trace-cmd.1.html)
 ### 功能
 #### trace-cmd
-```
+```sh
 $ trace-cmd -h
 
 trace-cmd version 2.3.1
@@ -277,7 +277,7 @@ usage:
      check-events - parse trace event formats
 ```
 #### trace-cmd record
-```c
+```sh
 $ trace-cmd record -h
 
 trace-cmd version 2.3.1
@@ -469,14 +469,14 @@ cpus=8
 ...
 ```
 * 对应的 ftrace 操作
-	```
-	# echo ip_rcv > /sys/kernel/debug/tracing/set_graph_function
-	# echo function_graph > /sys/kernel/debug/tracing/current_tracer
-	# echo 1 > /sys/kernel/debug/tracing/tracing_on
-	# cat /sys/kernel/debug/tracing/trace_pipe
-	# echo 0 > /sys/kernel/debug/tracing/tracing_on
-	# echo nop > /sys/kernel/debug/tracing/current_tracer
-	```
+```sh
+echo ip_rcv > /sys/kernel/debug/tracing/set_graph_function
+echo function_graph > /sys/kernel/debug/tracing/current_tracer
+echo 1 > /sys/kernel/debug/tracing/tracing_on
+cat /sys/kernel/debug/tracing/trace_pipe
+echo 0 > /sys/kernel/debug/tracing/tracing_on
+echo nop > /sys/kernel/debug/tracing/current_tracer
+```
 
 ### 图形前端-kernelshark
 * [KernelShark](http://rostedt.homelinux.com/kernelshark/)
@@ -572,7 +572,7 @@ cpus=8
 * 当设置该 option 时，每个函数被记录的时候，它的栈跟踪也会被记录
 * **NOTE:** 在使能该选项时，务必同时设置`set_ftrace_filter`，否则系统性能会严重下降。并且在清除过滤函数的时候记得关闭该选项。
 #### Example:
-```cpp
+```sh
 $ echo rtc_timer_enqueue > /sys/kernel/debug/tracing/set_ftrace_filter
 $ echo function > /sys/kernel/debug/tracing/current_tracer
 $ echo 1 > /sys/kernel/debug/tracing/options/func_stack_trace

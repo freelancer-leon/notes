@@ -246,9 +246,67 @@ static u64 __sched_period(unsigned long nr_running)
 
 ### 调度器类的顺序
 * stop-task --> deadline --> real-time --> fair --> idle
-* 在各调度器类定义的时候通过`next`指针定义好了下一级调度器类
-* `stop-task`是通过宏`#define sched_class_highest (&stop_sched_class)`指定的
 * 编译时期就已决定，不能动态扩展
+* 在过去，在各调度器类定义的时候通过 `next` 指针定义好了下一级调度器类
+  * 遍历时，通过宏 `#define sched_class_highest (&stop_sched_class)` 将 `stop-task` 指定为优先级最高的调度器类
+```cpp
+#define sched_class_highest (&stop_sched_class)
+#define for_each_class(class) \
+   for (class = sched_class_highest; class; class = class->next)
+...
+const struct sched_class stop_sched_class = {
+    .next           = &dl_sched_class,
+    ...
+}
+```
+* 现在调度器类的顺序则通过 `__sched_class_highest[]` 和 `__sched_class_lowest[]` 两个全局数组来标识，在 include/asm-generic/vmlinux.lds.h 就固定好了
+```cpp
+/*
+ * The order of the sched class addresses are important, as they are
+ * used to determine the order of the priority of each sched class in
+ * relation to each other.
+ */
+#define SCHED_DATA              \
+    STRUCT_ALIGN();             \
+    __sched_class_highest = .;      \
+    *(__stop_sched_class)           \
+    *(__dl_sched_class)         \
+    *(__rt_sched_class)         \
+    *(__fair_sched_class)           \
+    *(__idle_sched_class)           \
+    __sched_class_lowest = .;
+```
+* kernel/sched/sched.h
+```cpp
+/*
+ * Helper to define a sched_class instance; each one is placed in a separate
+ * section which is ordered by the linker script:
+ *
+ *   include/asm-generic/vmlinux.lds.h
+ *
+ * *CAREFUL* they are laid out in *REVERSE* order!!!
+ *
+ * Also enforce alignment on the instance, not the type, to guarantee layout.
+ */
+#define DEFINE_SCHED_CLASS(name) \
+const struct sched_class name##_sched_class \
+    __aligned(__alignof__(struct sched_class)) \
+    __section("__" #name "_sched_class")
+
+/* Defined in include/asm-generic/vmlinux.lds.h */
+extern struct sched_class __sched_class_highest[];
+extern struct sched_class __sched_class_lowest[];
+
+#define for_class_range(class, _from, _to) \
+    for (class = (_from); class < (_to); class++)
+
+#define for_each_class(class) \
+    for_class_range(class, __sched_class_highest, __sched_class_lowest)
+
+#define sched_class_above(_a, _b)   ((_a) < (_b))
+```
+* 这样做的目的无疑是为了“快”。较之用 `next` 指针索引，利用数组元素索引可以让编译器生成更简单的代码。因为这是调度决策时的热点路径。
+* 从此比较调度器类的优先级也更简单了，比较调度器类的地址就可以了，见 `sched_class_above()` 的定义
 
 ## 调度策略
 * include/uapi/linux/sched.h
@@ -275,10 +333,10 @@ real-time|SCHED_FIFO
 ... |SCHED_RR
 deadline|SCHED_DEADLINE
 
-## stop-task,idle-task与SCHED_IDLE
+## stop-task，idle-task 与 SCHED_IDLE
 
 * `stop`任务是系统中优先级最高的任务，它可以抢占所有的进程并且不会被任何进程抢占，其专属调度器类即`stop-task`。
-* `idle-task`调度器类与CFS里要处理的`SCHED_IDLE`没有关系。
+* `idle-task`调度器类与 CFS 里要处理的`SCHED_IDLE`没有关系。
 * `idle`任务会被任意进程抢占，其专属调度器类为`idle-task`。
 * `idle-task`和`stop-task`没有对应的调度策略。
 * 采用`SCHED_IDLE`调度策略的任务其调度器类为 **CFS**。
@@ -546,7 +604,7 @@ struct sched_class {
 ### 运行队列 rq
 * 每个CPU有各自的运行队列
 * 各个活动进程只出现在一个运行队列中。在多个CPU上运行同一个进程是不可能的
-* 发源于同一进程的线程可以在不同CPU上执行
+* 发源于同一进程的线程可以在不同 CPU 上执行
 * **注意**：特定于调度器类的子运行队列是实体，而不是指针
 * kernel/sched/sched.h::rq
 ```c
@@ -999,7 +1057,7 @@ again:
 }
 ```
 
-* `pick_next_task()`对所有进程都是CFS类的情况做了些优化
+* `pick_next_task()`对所有进程都是 CFS class 的情况做了些优化
 * 主要工作还是 *委托* 给各调度器类去完成
 
 # 参考资料

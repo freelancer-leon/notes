@@ -319,10 +319,10 @@ Bit 位置 | 名称 | 描述
 * 如果“external-interrupt exiting” VM 执行控制位为 `1`，则任何未屏蔽的外部中断都会导致 VM exit。
 * 如果“process posted interrupts” VM 执行控制位也是 `1`，则此行为会改变，处理器会按如下方式处理外部中断：
 1. 本地 APIC 被确认；这为处理器核提供了一个中断向量，这里称为 **物理向量**。
-2. 如果 *物理向量* 等于 posted-interrupt notification 向量，则逻辑处理器继续下一步。否则，由于外部中断，通常会发生 VM exit；该向量保存在 VM-exit 中断信息字段中。
+2. 如果 *物理向量* 等于 *posted-interrupt notification vector*，则逻辑处理器继续下一步。否则，由于外部中断，通常会发生 VM exit；该向量保存在 *VM-exit 中断信息* 字段中。
 3. 处理器清除 posted-interrupt descriptor 中的 outstanding-notification 位。这是以原子方式完成的，以使描述符的其余部分保持不变（例如，使用锁定的`AND`操作）。
-4. 处理器将零写入本地 APIC 中的 EOI 寄存器；这将解除来自本地 APIC 的 posted-interrupt notification 向量的中断。
-5. 逻辑处理器将 PIR 与 VIRR 执行 *逻辑或*，并清除 PIR。在读取 PIR 位（以确定要用什么和 VIRR 进行或运算）和清除它之间，没有其他代理可以读取或写入 PIR 位（或一组位）。
+4. 处理器将零写入 local APIC 中的 EOI 寄存器；这将解除来自 local APIC 的 posted-interrupt notification vector 的中断。
+5. 逻辑处理器将 PIR 与 VIRR 执行 *逻辑或*，并清除 PIR。在读取 PIR 位（以确定要用什么和 VIRR 进行或运算）和清除它之间，没有其他 agent 可以读取或写入 PIR 位（或一组位）。
 6. 逻辑处理器将 RVI 设置为 RVI 的旧值和 PIR 中设置的所有位的最高索引中的最大值；如果在 PIR 中没有设置任何位，则 RVI 保持不变。
 7. 逻辑处理器 evaluates pending 的虚拟中断，如第 29.2.1 节所述。
 * 逻辑处理器以不可中断的方式执行上述步骤。如果第 7 步导致识别出虚拟中断，处理器可以立即传递该中断。

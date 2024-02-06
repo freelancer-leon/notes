@@ -313,8 +313,8 @@ config STACKPROTECTOR_STRONG
       pushq   %r15
   
       /* switch stack */ //切换栈指针，切换完后，返回的路径就不一样了
-      movq    %rsp, TASK_threadsp(%rdi) //保存 %rsp 到切出任务的 task_struct.stack
-      movq    TASK_threadsp(%rsi), %rsp //加载切入任务的 task_struct.stack 到 %rsp
+      movq    %rsp, TASK_threadsp(%rdi) //保存 %rsp 到切出任务的 task_struct.thread.sp
+      movq    TASK_threadsp(%rsi), %rsp //加载切入任务的 task_struct.thread.sp 到 %rsp
   
   #ifdef CONFIG_STACKPROTECTOR
       movq    TASK_stack_canary(%rsi), %rbx
@@ -322,6 +322,10 @@ config STACKPROTECTOR_STRONG
   #endif
   ...
   ```
+  * **注意**：`task_struct.thread.sp` 和 `task_struct.stack` 的区别
+    * `struct thread_struct` 是 arch 相关的进程上下文，因此 `task_struct.thread.sp` 保存的是进程换出前 `$RSP` 的值，是会变的
+    * `task_struct.stack` 是进程创建时的内核栈的栈底（低地址），进程创建好后就固定了
+      * `task_top_of_stack(task)` 宏根据 `task_struct.stack` 和进程栈大小的定义转换得到内核栈顶（高地址）
 ### 运行时的检查
 * 例如，mm/gup.c 中的`fault_in_safe_writeable()`函数
   ```s
