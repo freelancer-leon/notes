@@ -81,15 +81,17 @@ start_kernel()
      -> idt_setup_apic_and_irq_gates()
         -> idt_setup_from_table(idt_table, apic_idts, ARRAY_SIZE(apic_idts), true);
         -> int i = FIRST_EXTERNAL_VECTOR; // 第一个外部中断向量，0x20
-           for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR)
-              set_intr_gate(i, irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR));
+           for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR) {
+              entry = irq_entries_start + IDT_ALIGN * (i - FIRST_EXTERNAL_VECTOR);
+              set_intr_gate(i, entry);
+           }
 ```
 * `idt_table`为设置好内容的 **IDT 表**
 * `idt_descr`为存储 IDT 表地址的指针，用`lidt`指令将它加载到`idtr`寄存器
 * `def_idts[]`为通用的异常数组，`apic_idts[]`为 x86 APIC 的中断数组
 * x86 通过`native_init_IRQ()`调用`idt_setup_apic_and_irq_gates()`设置好 APIC 和 **中断** 的门
   * 对于中断来说，`irq_entries_start`就是软件在中断处理的第一段例程
-  * `irq_entries_start`见 arch/x86/entry/entry_64.S，里面包含一个很大的汇编宏展开`.rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)`
+  * `irq_entries_start`见 arch/x86/include/asm/idtentry.h，里面包含一个很大的汇编宏展开`.rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)`
 
 ### `def_idts[]`数组
 * `struct gate_struct`对应到 Intel IDT 的表项，存储格式见上面图示，注意，中断处理函数的地址不是连续存储的，而是被`offset_low`，`offset_middle`，`offset_high`分成三个部分
@@ -463,7 +465,8 @@ start_kernel()
   };
   ```
 
-### Call Trace
+### 到中断通用入口 `common_interrupt`
+#### Call Trace
 ```cpp
 irq_entries_start
 -> jmp common_interrupt
@@ -653,8 +656,8 @@ irq_entries_start
   #ifdef CONFIG_PREEMPT
           /* Interrupts are off */
           /* Check if we need preemption */
-          bt      $9, EFLAGS(%rsp)                /* were interrupts off? */
-          jnc     1f
+          bt      $9, EFLAGS(%rsp)                /* were interrupts off? */ /*测试 EFLAGS 的 bit 9，即 IF 的值存入 CF*/
+          jnc     1f  /*检查 CF 即检查 IF，中断是否关闭。如果 CF=0，表示中断关闭，则前跳至 1，不抢占；否则往下执行*/
   0:      cmpl    $0, PER_CPU_VAR(__preempt_count) /*读取抢占计数，看能否进行内核抢占*/
           jnz     1f                    /*如果抢占计数不为 0，通过跳转到 lable 1 返回原执行点*/
           call    preempt_schedule_irq  /*如果抢占计数为 0，触发内核抢占，这里是内核抢占的一个点*/
@@ -666,3 +669,192 @@ irq_entries_start
            */
           TRACE_IRQS_IRETQ
   ```
+
+#### 较新内核的实现
+* `irq_entries_start` 的实现有所不同，跳转到通用中断入口 `asm_common_interrupt`
+* arch/x86/include/asm/idtentry.h
+```cpp
+/*
+ * ASM code to emit the common vector entry stubs where each stub is
+ * packed into IDT_ALIGN bytes.
+ *
+ * Note, that the 'pushq imm8' is emitted via '.byte 0x6a, vector' because
+ * GCC treats the local vector variable as unsigned int and would expand
+ * all vectors above 0x7F to a 5 byte push. The original code did an
+ * adjustment of the vector number to be in the signed byte range to avoid
+ * this. While clever it's mindboggling counterintuitive and requires the
+ * odd conversion back to a real vector number in the C entry points. Using
+ * .byte achieves the same thing and the only fixup needed in the C entry
+ * point is to mask off the bits above bit 7 because the push is sign
+ * extending.
+ */
+    .align IDT_ALIGN
+SYM_CODE_START(irq_entries_start)
+    vector=FIRST_EXTERNAL_VECTOR
+    .rept NR_EXTERNAL_VECTORS
+    UNWIND_HINT_IRET_REGS
+0 :
+    ENDBR
+    .byte   0x6a, vector
+    jmp asm_common_interrupt
+    /* Ensure that the above is IDT_ALIGN bytes max */
+    .fill 0b + IDT_ALIGN - ., 1, 0xcc
+    vector = vector+1
+    .endr
+SYM_CODE_END(irq_entries_start)
+...
+#define DECLARE_IDTENTRY_ERRORCODE(vector, func)            \
+    idtentry vector asm_##func func has_error_code=1
+...
+/**
+ * DECLARE_IDTENTRY_IRQ - Declare functions for device interrupt IDT entry
+ *            points (common/spurious)
+ * @vector: Vector number (ignored for C)
+ * @func:   Function name of the entry point
+ *
+ * Maps to DECLARE_IDTENTRY_ERRORCODE()
+ */
+#define DECLARE_IDTENTRY_IRQ(vector, func)              \
+    DECLARE_IDTENTRY_ERRORCODE(vector, func)
+...
+/* Entries for common/spurious (device) interrupts */
+#define DECLARE_IDTENTRY_IRQ(vector, func)              \
+    idtentry_irq vector func
+...
+/* Device interrupts common/spurious */
+DECLARE_IDTENTRY_IRQ(X86_TRAP_OTHER,    common_interrupt);
+```
+* `asm_common_interrupt` 由 `idtentry` 汇编宏生成，最终会调用 `common_interrupt()`
+* arch/x86/kernel/irq.c
+```cpp
+/*
+ * common_interrupt() handles all normal device IRQ's (the special SMP
+ * cross-CPU interrupts have their own entry points).
+ */
+DEFINE_IDTENTRY_IRQ(common_interrupt)
+{
+    struct pt_regs *old_regs = set_irq_regs(regs);
+    struct irq_desc *desc;
+
+    /* entry code tells RCU that we're not quiescent.  Check it. */
+    RCU_LOCKDEP_WARN(!rcu_is_watching(), "IRQ failed to wake up RCU");
+
+    desc = __this_cpu_read(vector_irq[vector]);
+    if (likely(!IS_ERR_OR_NULL(desc))) {
+        handle_irq(desc, regs);
+    } else {
+        apic_eoi();
+
+        if (desc == VECTOR_UNUSED) {
+            pr_emerg_ratelimited("%s: %d.%u No irq handler for vector\n",
+                         __func__, smp_processor_id(),
+                         vector);
+        } else {
+            __this_cpu_write(vector_irq[vector], VECTOR_UNUSED);
+        }
+    }
+
+    set_irq_regs(old_regs);
+}
+```
+* 上面看到的 `common_interrupt()` 其实是 `__common_interrupt()`，真正的 `common_interrupt()` 其实是由 `DEFINE_IDTENTRY_IRQ` 宏生成的
+```cpp
+/**
+ * DEFINE_IDTENTRY_IRQ - Emit code for device interrupt IDT entry points
+ * @func:   Function name of the entry point
+ *
+ * The vector number is pushed by the low level entry stub and handed
+ * to the function as error_code argument which needs to be truncated
+ * to an u8 because the push is sign extending.
+ *
+ * irq_enter/exit_rcu() are invoked before the function body and the
+ * KVM L1D flush request is set. Stack switching to the interrupt stack
+ * has to be done in the function body if necessary.
+ */
+#define DEFINE_IDTENTRY_IRQ(func)                   \
+static void __##func(struct pt_regs *regs, u32 vector);         \
+                                    \
+__visible noinstr void func(struct pt_regs *regs,           \
+                unsigned long error_code)           \
+{                                   \
+    irqentry_state_t state = irqentry_enter(regs);          \
+    u32 vector = (u32)(u8)error_code;               \
+                                    \
+    instrumentation_begin();                    \
+    kvm_set_cpu_l1tf_flush_l1d();                   \
+    run_irq_on_irqstack_cond(__##func, regs, vector);       \
+    instrumentation_end();                      \
+    irqentry_exit(regs, state);                 \
+}                                   \
+                                    \
+static noinline void __##func(struct pt_regs *regs, u32 vector)
+```
+* `common_interrupt()` 的最后会调用 C 函数 `irqentry_exit()` 完成旧的汇编代码实现的大部分功能，包括中断处理完成后的内核抢占点
+* kernel/entry/common.c
+```cpp
+void raw_irqentry_exit_cond_resched(void)
+{
+    if (!preempt_count()) {
+        /* Sanity check RCU and thread stack */
+        rcu_irq_exit_check_preempt();
+        if (IS_ENABLED(CONFIG_DEBUG_ENTRY))
+            WARN_ON_ONCE(!on_thread_stack());
+        if (need_resched())
+            preempt_schedule_irq();
+    }
+}
+#ifdef CONFIG_PREEMPT_DYNAMIC
+#if defined(CONFIG_HAVE_PREEMPT_DYNAMIC_CALL)
+DEFINE_STATIC_CALL(irqentry_exit_cond_resched, raw_irqentry_exit_cond_resched);
+#elif defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
+DEFINE_STATIC_KEY_TRUE(sk_dynamic_irqentry_exit_cond_resched);
+void dynamic_irqentry_exit_cond_resched(void)
+{
+    if (!static_branch_unlikely(&sk_dynamic_irqentry_exit_cond_resched))
+        return;
+    raw_irqentry_exit_cond_resched();
+}
+#endif
+#endif
+
+noinstr void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)
+{
+    /* Check whether this returns to user mode */
+    if (user_mode(regs)) {
+        irqentry_exit_to_user_mode(regs);
+    } else if (!regs_irqs_disabled(regs)) {
+...
+        instrumentation_begin();
+        if (IS_ENABLED(CONFIG_PREEMPTION))
+            irqentry_exit_cond_resched();
+
+        /* Covers both tracing and lockdep */
+        trace_hardirqs_on();
+        instrumentation_end();
+...
+    }
+}
+```
+* 不用担心中断返回时被内核抢占。比如说
+  1. 进程 A 在内核态被中断，它的上下文被压入进程内核栈，然后进行中断处理
+  2. 中断栈的切换过程略过，因为中断处理 `__common_interrupt` 完成后要切换回来的
+  3. 中断返回前 `irqentry_exit()` 发生内核抢占，被进程 B 抢占，A 的上下文保存在 PCB 中
+  4. 进程 B 又被中断，中断返回前再次发生内核抢占，被进程 A 抢占
+  5. A 的上下文从 PCB 中恢复，如果不再发生内核抢占，会继续执行直到回到 `irqentry_exit()`
+  6. 最后会通过 `error_return` 返回进程 A 最初被中断的上下文
+```cpp
+idtentry
+    idtentry_body
+        call    \cfunc
+        jmp error_return
+```
+* arch/x86/entry/entry_64.S
+```cpp
+SYM_CODE_START_LOCAL(error_return)
+    UNWIND_HINT_REGS
+    DEBUG_ENTRY_ASSERT_IRQS_OFF
+    testb   $3, CS(%rsp)
+    jz  restore_regs_and_return_to_kernel
+    jmp swapgs_restore_regs_and_return_to_usermode
+SYM_CODE_END(error_return)
+```

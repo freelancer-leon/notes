@@ -786,8 +786,9 @@ stop_machine(cpu_stop_fn_t fn, void *data, const struct cpumask *cpus)
 #### 多 CPU stop 函数 `multi_cpu_stop()`
 * 通过 `cpu_stop_threads.thread_comm = "migration/%u"` 这个内核线程调用 stop machine task
 ```cpp
-kthread()
--> threadfn(data)
+ret_from_fork_asm -> ret_from_fork()
+-> kthread()
+   -> threadfn(data)
    => smpboot_thread_fn()
       while (1) {
       -> __set_current_state(TASK_RUNNING);
@@ -919,8 +920,9 @@ smp_init()
 ```
 * Per CPU 的 `migration/%u` stop task 被唤醒后会调用 `cache_rendezvous_handler()`
 ```cpp
-kthread()
--> threadfn(data)
+ret_from_fork_asm -> ret_from_fork()
+-> kthread()
+   -> threadfn(data)
    => smpboot_thread_fn()
       while (1) {
       -> ht->thread_fn(td->cpu) //前面是 CPU 热插拔内核线程的公用路径

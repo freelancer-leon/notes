@@ -95,7 +95,8 @@ struct irq_stack {
 * 对于无需进行 privilege-level 变化的情况，比如中断发生时 CPU 运行在内核态
   1. CPU 依然会将被中断进程的`ss`、`rsp`、`rflags`、`cs`、`rip`、`error code`等压入 *当前内核栈*
   2. 软件保存被中断进程的通用目的寄存器在当前进程栈，然后清除 GPRs 的内容
-  3. 软件将栈切换到预设好的 per-CPU 的中断栈，栈的地址由 per-CPU 变量来记录，类似`moveq PER_CPU_VAR(irq_stack_ptr), %rsp`
+  3. 软件将栈切换到预设好的 per-CPU 的中断栈，栈的地址由 per-CPU 变量来记录，类似`moveq PER_CPU_VAR(irq_stack_ptr), %rsp`（此外还需在切换前将当前内核栈地址放入中断栈的栈顶，见 `call_on_stack` 的注释）
+  4. 中断处理完成后，切换回被中断的 *当前内核栈*，类似 `"popq  %%rsp`（之前在中断栈顶的当前内核栈地址弹出到 `%rsp`）
 
 ### 中断栈的分配和初始化
 ```cpp
@@ -160,9 +161,127 @@ irq_entries_start
 * 在这个 commit 后中断栈的使用发生了一些变化，
   * [[patch V2 00_13] x86_irq_64 Inline irq stack switching](https://lore.kernel.org/all/20210209234041.127454039@linutronix.de/)
   * [x86/entry: Convert system vectors to irq stack macro](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=569dd8b4eb7ef666b467c41b8e8e4f2820d07f67)
-  * 对于用户程序被中断或者已经有中断正在 per-CPU 的中断栈上被处理的情况，直接调用`__common_interrupt()`
-    * 中断的是用户程序，第一站是 trampoline stack，但随即切换到进程内核栈上去处理中断
-    * 已经有中断正在 per-CPU 中断栈上被处理，则使用 *当前内核栈*
+  * 对于用户程序被中断或者已经有中断正在 per-CPU 的中断栈上被处理的情况，直接调用`__common_interrupt()`，不切换栈
+    * 被中断的是用户程序，第一站是 trampoline stack
+    * 已经有中断正在 per-CPU 中断栈上被处理，继续使用 *中断栈*
+* arch/x86/include/asm/irq_stack.h
+```cpp
+/*
+ * Macro to inline switching to an interrupt stack and invoking function
+ * calls from there. The following rules apply:
+ *
+ * - Ordering:
+ *
+ *   1. Write the stack pointer into the top most place of the irq
+ *  stack. This ensures that the various unwinders can link back to the
+ *  original stack.
+ *
+ *   2. Switch the stack pointer to the top of the irq stack.
+ *
+ *   3. Invoke whatever needs to be done (@asm_call argument)
+ *
+ *   4. Pop the original stack pointer from the top of the irq stack
+ *  which brings it back to the original stack where it left off.
+ *
+ * - Function invocation:
+ *
+ *   To allow flexible usage of the macro, the actual function code including
+ *   the store of the arguments in the call ABI registers is handed in via
+ *   the @asm_call argument.
+ *
+ * - Local variables:
+ *
+ *   @tos:
+ *  The @tos variable holds a pointer to the top of the irq stack and
+ *  _must_ be allocated in a non-callee saved register as this is a
+ *  restriction coming from objtool.
+ *
+ *  Note, that (tos) is both in input and output constraints to ensure
+ *  that the compiler does not assume that R11 is left untouched in
+ *  case this macro is used in some place where the per cpu interrupt
+ *  stack pointer is used again afterwards
+ *
+ * - Function arguments:
+ *  The function argument(s), if any, have to be defined in register
+ *  variables at the place where this is invoked. Storing the
+ *  argument(s) in the proper register(s) is part of the @asm_call
+ *
+ * - Constraints:
+ *
+ *   The constraints have to be done very carefully because the compiler
+ *   does not know about the assembly call.
+ *
+ *   output:
+ *     As documented already above the @tos variable is required to be in
+ *     the output constraints to make the compiler aware that R11 cannot be
+ *     reused after the asm() statement.
+ *
+ *     For builds with CONFIG_UNWINDER_FRAME_POINTER, ASM_CALL_CONSTRAINT is
+ *     required as well as this prevents certain creative GCC variants from
+ *     misplacing the ASM code.
+ *
+ *  input:
+ *    - func:
+ *    Immediate, which tells the compiler that the function is referenced.
+ *
+ *    - tos:
+ *    Register. The actual register is defined by the variable declaration.
+ *
+ *    - function arguments:
+ *    The constraints are handed in via the 'argconstr' argument list. They
+ *    describe the register arguments which are used in @asm_call.
+ *
+ *  clobbers:
+ *     Function calls can clobber anything except the callee-saved
+ *     registers. Tell the compiler.
+ */
+#define call_on_stack(stack, func, asm_call, argconstr...)      \
+{                                   \
+    register void *tos asm("r11");                  \
+                                    \
+    tos = ((void *)(stack));                    \
+                                    \
+    asm_inline volatile(                        \
+    "movq   %%rsp, (%[tos])             \n"     \
+    "movq   %[tos], %%rsp               \n"     \
+                                    \
+    asm_call                            \
+                                    \
+    "popq   %%rsp                   \n"     \
+                                    \
+    : "+r" (tos), ASM_CALL_CONSTRAINT               \
+    : [__func] "i" (func), [tos] "r" (tos) argconstr        \
+    : "cc", "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10",   \
+      "memory"                          \
+    );                              \
+}
+...
+/*
+ * Macro to invoke system vector and device interrupt C handlers.
+ */
+#define call_on_irqstack_cond(func, regs, asm_call, constr, c_args...)  \
+{                                   \
+    /*                              \
+     * User mode entry and interrupt on the irq stack do not    \
+     * switch stacks. If from user mode the task stack is empty.    \
+     */                             \
+    if (user_mode(regs) || __this_cpu_read(pcpu_hot.hardirq_stack_inuse)) { \
+        irq_enter_rcu();                    \
+        func(c_args);                       \
+        irq_exit_rcu();                     \
+    } else {                            \
+        /*                          \
+         * Mark the irq stack inuse _before_ and unmark _after_ \
+         * switching stacks. Interrupts are disabled in both    \
+         * places. Invoke the stack switch macro with the call  \
+         * sequence which matches the above direct invocation.  \
+         */                         \
+        __this_cpu_write(pcpu_hot.hardirq_stack_inuse, true);   \
+        call_on_irqstack(func, asm_call, constr);       \
+        __this_cpu_write(pcpu_hot.hardirq_stack_inuse, false);  \
+    }                               \
+}
+```
 
 ## 异常栈
 * 对于无需进行 privilege-level 变化的情况，比如异常发生时 CPU 运行在内核态
@@ -434,14 +553,42 @@ static int alloc_thread_stack_node(struct task_struct *tsk, int node)
 * 每当发生任务切换时，会将它更新到 per-CPU 变量 `cpu_current_top_of_stack` 中
   * 旧版本这不是变量而是个宏，实际是 `cpu_tss_rw.x86_tss.sp1`
   * arch/x86/kernel/process_64.c:`__switch_to()`
-    ```c
+    ```cpp
     this_cpu_write(cpu_current_top_of_stack, task_top_of_stack(next_p));
     ```
 * 对于 x86-64 模式，当进程发生系统调用陷入内核态时，`syscall` 指令不保存用户态的栈指针 `$RSP`，因此任务的用户态和内核态之间栈的切换由软件负责。此时内核会将`cpu_current_top_of_stack` 的值作为内核栈的栈顶
   * arch/x86/entry/entry_64.S:`SYM_CODE_START(entry_SYSCALL_64)`
-    ```c
+    ```cpp
+    swapgs
+    /* tss.sp2 is scratch space. */
+    movq    %rsp, PER_CPU_VAR(cpu_tss_rw + TSS_sp2)
+    ...
     movq    PER_CPU_VAR(cpu_current_top_of_stack), %rsp
     ```
+* 这里这个 `swapgs` 指令的使用大有玄机，请参考如下解释：
+> x86-64 处理器模式引入了一条叫 `swapgs` 的指令，可以说 `swapgs` 指令是专门为了配合快速系统调用指令 `syscall` 而引入的。
+> 在通过 `syscall` 刚刚进入到内核态系统调用入口点的时候，内核栈还没有建立好，此时的栈顶仍指向用户态栈；而为了加载内核栈，就要在汇编代码里引用该内核栈的虚拟地址。
+> 如果这个内核栈的虚拟地址是全局共享的，在多个 CPU 上并行执行系统调用只会损毁内核栈的内容，因此这个内核栈的虚拟地址必须是 per CPU 的。
+> 另外，即使不加载内核栈，由于所有的数据段寄存器也都没有被加载为内核态的值，因此此时此刻是不能对任何内核态的数据进行访问的。
+>
+> 在 x86-64 内核中，引用 per CPU 变量约定俗成的惯例是使用 `gs` 寄存器前缀作为 base 地址，再加上 per CPU 变量副本区的偏移（`this_cpu_off`），最后再加上 per CPU 变量本身在副本区内的偏移（`var`）得到的：
+
+```cpp
+#define PER_CPU(var, reg)                       \
+        __percpu_mov_op %__percpu_seg:this_cpu_off, reg;        \
+        lea var(reg), reg
+
+    #define __percpu_seg        gs
+    #define __percpu_mov_op     movq
+```
+
+> 于是问题就从如何加载内核栈的基地址变成了如何加载 `gs.base`（或者说是 `IA32_GS_BASE` MSR）。
+> 为了让 `swapgs` 指令能解决上述问题，该指令被设计为不需要任何操作数。`swapgs` 指令将从 `IA32_KERNEL_GS_BASE` MSR中读取出的值作为内核态的 `gs.base`，同时将当前的、仍旧是用户态的 `gs.base` 值保存到了 `IA32_KERNEL_GS_BASE` MSR 中，即进行了一次 `IA32_GS_BASE MSR` 与 `IA32_KERNEL_GS_BASE` MSR的 `swap` 操作，这就是`swapgs` 指令得名的由来。
+>
+> 注意：`IA32_KERNEL_GS_BASE` MSR 的初值就是前一节提到的 per CPU 的 `irq_stack_union.gs_base` 变量所在的地址。
+> 因为内核在完成了初始化并准备切换到用户态之前，会执行 `swapgs` 指令，于是将 `MSR_GS_BASE` MSR的值保存到了 `IA32_KERNEL_GS_BASE` MSR 中，准备在下次执行 `swapgs` 指令时再重新设置到 `gs.base` 中。这就解释了为什么前面的内核初始化代码中初始化的是 `MSR_GS_BASE` MSR而不是 `IA32_KERNEL_GS_BASE` MSR。
+>
+> —— [Linux内核态是如何使用GS寄存器引用percpu变量的？](https://zhuanlan.zhihu.com/p/435757639)
 
 ## IST 异常栈
 * 每种 IST 异常栈的是独立分配的，新版本加入了 guard page
@@ -743,6 +890,8 @@ fffffe0000000000 |   -2    TB | fffffe7fffffffff |  0.5 TB | cpu_entry_area mapp
 ```cpp
 #define CPU_ENTRY_AREA_RO_IDT       CPU_ENTRY_AREA_BASE
 #define CPU_ENTRY_AREA_PER_CPU      (CPU_ENTRY_AREA_RO_IDT + PAGE_SIZE)
+
+#define CPU_ENTRY_AREA_RO_IDT_VADDR ((void *)CPU_ENTRY_AREA_RO_IDT)
 ```
 * 获取 cpu_entry_area 的接口函数`get_cpu_entry_area()`
   * arch/x86/mm/cpu_entry_area.c
