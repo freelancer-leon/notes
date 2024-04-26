@@ -482,7 +482,6 @@ SYSCALL_DEFINE4(reboot,...)
       restart(el2_switch, entry, arg0, arg1, arg2);
       unreachable();
   }
-  ...__```
   ```
   * 注意，这里用了`__pa_symbol(__cpu_soft_restart)`，所以`restart`设置的是`__cpu_soft_restart()`的物理地址
   * `cpu_install_idmap()`将当前的页表寄存器切换成恒等映射的页全局目录`idmap_pg_dir`，恒等映射的细节见下面的解释
@@ -493,7 +492,7 @@ SYSCALL_DEFINE4(reboot,...)
 * **恒等映射** 这里与常说的 *一致映射、线性映射、直接映射* 不是一个概念。
 * 恒等映射的特点是虚拟地址和物理地址相同，是为了在开始处理器的 MMU 的一瞬间能够平滑过渡。
 * 恒等映射是为恒等映射代码节（`.idmap.text`）创建的映射，`idmap_pg_dir`是恒等映射的页全局目录（即第一级页表，pgd）的起始地址（当然是物理地址）。
-* 比如说，将恒等映射代码节`idmap.text`的所在的物理地址`0x800000`映射到虚拟地址`0xffffff8008800000`
+* 比如说，将恒等映射代码节`idmap.text`的所在的物理地址`0x800000`被虚拟地址`0xffffff8008800000`映射
   * 先安装恒等映射的页全局目录`idmap_pg_dir`到寄存器`TTBR0_EL1`，替换原有的用户态进程的页表映射
   * 关闭 MMU 前，假设跳转到虚拟地址`0x800004`，该条指令会关闭 MMU，`$pc`为`0x800004`
   * 接着执行下一条指令，位于地址`0x800008`，由于 MMU 已在上一条指令关闭，此时地址是物理地址，这样程序的执行就平滑过渡了
@@ -546,14 +545,13 @@ endif
     DEFINE_IMAGE_LE64(_kernel_size_le, _end - _text);   \
     DEFINE_IMAGE_LE64(_kernel_offset_le, TEXT_OFFSET);  \
     DEFINE_IMAGE_LE64(_kernel_flags_le, __HEAD_FLAGS);
-...__```
 ```
 * `_kernel_size_le`是计算出来的
 * `_kernel_offset_le`来自`TEXT_OFFSET`的定义
 * `_kernel_flags_le`与 kernel config 关联
 
 * arch/arm64/kernel/head.S
-  ```nasm
+  ```c
   ...
   #include "efi-header.S"
 

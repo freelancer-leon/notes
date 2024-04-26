@@ -660,6 +660,7 @@ SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ..
    -> machine_kexec_prepare(image)
          start_pgtable = page_to_pfn(image->control_code_page) << PAGE_SHIFT; //根据 page 结构的指针找到 control_code_page 的物理地址
          init_pgtable(image, start_pgtable) //负责给 crash kernel 用到的内存建立恒等映射，见下面详解
+         -> init_transition_pgtable(image, level4p)
    -> kimage_crash_copy_vmcoreinfo(image)
       -> vmcoreinfo_page = kimage_alloc_control_pages(image, 0); //对于 crash 需要拷贝一份 vmcoreinfo 到 "Crash kernel" region
       -> safecopy = vmap(&vmcoreinfo_page, 1, VM_MAP, PAGE_KERNEL) //给该页一个当前内核中的虚拟地址
@@ -690,11 +691,11 @@ SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ..
 * 确实需要多于一页的 control page 的唯一情况是，对于那些无法禁用 MMU 体系结构，必须为所有内存生成一个恒等映射的页表。
 * 由于需求不高，所以分配器的实现也非常简单，即在保留内存区域（reserved memory region）找到第一个大小合适的空洞，然后分配所有的内存，直到包含空洞。
 * 在`kimage_alloc_crash_control_pages()`函数中，会在 "Crash kernel" region 中找一个大于 2<sup>order</sup> 的空洞，并返回对应的`struct page`的指针，作用和 buddy system 的`alloc_pages()`类似
-* `image->control_code_page = kimage_alloc_control_pages(image, get_order(KEXEC_CONTROL_PAGE_SIZE))` 这里`KEXEC_CONTROL_PAGE_SIZE (4096UL + 4096UL)`会申请两个相连的页面，一个用作 PGD，另一个用来放`relocate_kernel`例程的代码
+* `image->control_code_page = kimage_alloc_control_pages(image, get_order(KEXEC_CONTROL_PAGE_SIZE))` 这里`KEXEC_CONTROL_PAGE_SIZE (4096UL + 4096UL)`会申请两个相连的页面，一个用作恒等映射 PGD，另一个用来放`relocate_kernel`例程的代码
 * `init_pgtable()`会给 crash kernel 用到的内存建立恒等映射，里面有`level4p = (pgd_t *)__va(start_pgtable)`（`start_pgtable`是 control page 的物理地址）说明这个页面就是准备用来做 PGD 的！
 
 #### 建立恒等映射（identity mapping）
-* 对于 x86，arch/x86/kernel/machine_kexec_64.c 中的`init_pgtable()`负责给 crash kernel 用到的内存建立恒等映射
+* 建立恒等映射的内存分配函数 `alloc_pgt_page()` 用的 `kimage_alloc_control_pages()` 从 control pages 里分配内存
   * arch/x86/kernel/machine_kexec_64.c
 ```c
 static void *alloc_pgt_page(void *data)
@@ -702,16 +703,18 @@ static void *alloc_pgt_page(void *data)
     struct kimage *image = (struct kimage *)data;
     struct page *page;
     void *p = NULL;
-    // 对于 crash 场景会调用 kimage_alloc_crash_control_pages() 在 "Crash kernel" 区域中找一个空 page
+    //对于 crash 场景会调用 kimage_alloc_crash_control_pages() 在 "Crash kernel" 区域中找一个空 page
     page = kimage_alloc_control_pages(image, 0);
     if (page) {
         p = page_address(page); // struct page 指针转成指向该页帧的虚拟地址
         clear_page(p);
     }
-    // 返回的是一个虚拟地址
+    //返回的是一个虚拟地址
     return p;
 }
-
+```
+* 对于 x86，arch/x86/kernel/machine_kexec_64.c 中的`init_pgtable()`负责给 crash kernel 用到的内存建立恒等映射
+```c
 static int init_pgtable(struct kimage *image, unsigned long start_pgtable)
 {
     struct x86_mapping_info info = {
@@ -724,11 +727,11 @@ static int init_pgtable(struct kimage *image, unsigned long start_pgtable)
     pgd_t *level4p;
     int result;
     int i;
-    // 之前分配到的第一个 control page 作为 PGD
+    //之前分配到的第一个 control page 作为 PGD
     level4p = (pgd_t *)__va(start_pgtable); //这里得到的是用当前 PGD 转换得到的虚拟地址
     clear_page(level4p);
 ...
-    // 给 E820 分配的内存建立恒等映射
+    //给 E820 分配的内存建立恒等映射
     for (i = 0; i < nr_pfn_mapped; i++) {
         mstart = pfn_mapped[i].start << PAGE_SHIFT;
         mend   = pfn_mapped[i].end << PAGE_SHIFT;
@@ -738,7 +741,7 @@ static int init_pgtable(struct kimage *image, unsigned long start_pgtable)
         if (result)
             return result;
     }
-    // 给 segments 数组里的各 segment 建立恒等映射
+    //给 segments 数组里的各 segment 建立恒等映射
     /*
      * segments's mem ranges could be outside 0 ~ max_pfn,
      * for example when jump back to original kernel from kexeced kernel.
@@ -755,7 +758,7 @@ static int init_pgtable(struct kimage *image, unsigned long start_pgtable)
         if (result)
             return result;
     }
-    // 给 EFI systab 和 ACPI tables 占用的内存建立恒等映射
+    //给 EFI systab 和 ACPI tables 占用的内存建立恒等映射
     /*
      * Prepare EFI systab and ACPI tables for kexec kernel since they are
      * not covered by pfn_mapped.
@@ -767,11 +770,10 @@ static int init_pgtable(struct kimage *image, unsigned long start_pgtable)
     result = map_acpi_tables(&info, level4p);
     if (result)
         return result;
-    // 设置例程 relocate_kernel 的恒等映射页表项
-    return init_transition_pgtable(image, level4p); //在恒等映射页表中创建 relocate_kernel 例程原始地址的页表项
+    //设置例程 relocate_kernel 的恒等映射页表项，这是恒等映射的关键
+    return init_transition_pgtable(image, level4p);
 }
 ```
-
 * `kernel_ident_mapping_init()`是负责建立一个范围的恒等映射的接口，大体思路是这样：
   1. 它先检查某一页表条目是否被映射
   2. 如果已经映射了，则调用它下一级页表的恒等映射初始化函数，如`ident_p4d_init(info, p4d, addr, next)`去初始化下一级的页表
@@ -793,6 +795,67 @@ static void ident_pmd_init(struct x86_mapping_info *info, pmd_t *pmd_page,
 
         set_pmd(pmd, __pmd((addr - info->offset) | info->page_flag));
     }
+}
+```
+* 恒等映射的关键是，变换代码在原来的页表和恒等映射的页表都有映射
+  * 这里变换代码是 `relocate_kernel`，它在 `machine_kexec()` 的时候会被拷贝到 `image->control_code_page` 两个相邻页面的第二个页面的开始处
+  * 这段代码在原来的页表中就有映射，现在在恒等映射页表中把它映射到 control page 中放置代码的起始处
+  * 切换页表后，变换代码没走到跳转为恒等映射的低地址前，`RIP` 还是原来的高地址，只是恒等映射页表已将它映射到 control page 区域中的物理地址了，CPU 实际上是从这些物理地址去取指令了
+  * 这一段内存的映射是恒等映射中唯一不恒等的映射
+```cpp
+static int init_transition_pgtable(struct kimage *image, pgd_t *pgd)
+{
+    pgprot_t prot = PAGE_KERNEL_EXEC_NOENC;
+    unsigned long vaddr, paddr;
+    int result = -ENOMEM;
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t *pmd;
+    pte_t *pte;
+    //走表时用的索引还是根据虚拟地址来的
+    vaddr = (unsigned long)relocate_kernel;
+    paddr = __pa(page_address(image->control_code_page)+PAGE_SIZE);
+    pgd += pgd_index(vaddr);
+    if (!pgd_present(*pgd)) {
+        p4d = (p4d_t *)get_zeroed_page(GFP_KERNEL); //页表页还是从 buddy 分的
+        if (!p4d)
+            goto err;
+        image->arch.p4d = p4d;
+        set_pgd(pgd, __pgd(__pa(p4d) | _KERNPG_TABLE));
+    }
+    p4d = p4d_offset(pgd, vaddr);
+    if (!p4d_present(*p4d)) {
+        pud = (pud_t *)get_zeroed_page(GFP_KERNEL);
+        if (!pud)
+            goto err;
+        image->arch.pud = pud;
+        set_p4d(p4d, __p4d(__pa(pud) | _KERNPG_TABLE));
+    }
+    pud = pud_offset(p4d, vaddr);
+    if (!pud_present(*pud)) {
+        pmd = (pmd_t *)get_zeroed_page(GFP_KERNEL);
+        if (!pmd)
+            goto err;
+        image->arch.pmd = pmd;
+        set_pud(pud, __pud(__pa(pmd) | _KERNPG_TABLE));
+    }
+    pmd = pmd_offset(pud, vaddr);
+    if (!pmd_present(*pmd)) {
+        pte = (pte_t *)get_zeroed_page(GFP_KERNEL);
+        if (!pte)
+            goto err;
+        image->arch.pte = pte;
+        set_pmd(pmd, __pmd(__pa(pte) | _KERNPG_TABLE));
+    }
+    pte = pte_offset_kernel(pmd, vaddr);
+
+    if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
+        prot = PAGE_KERNEL_EXEC;
+    //映射的最终目标是填入 control page 中的物理地址
+    set_pte(pte, pfn_pte(paddr >> PAGE_SHIFT, prot));
+    return 0;
+err:
+    return result;
 }
 ```
 
@@ -868,8 +931,10 @@ kernel_kexec()
       -> smp_ops.stop_other_cpus(1)
       => native_stop_other_cpus()
          -> apic_send_IPI_allbutself(REBOOT_VECTOR) //第一次尝试发 IPI(REBOOT_VECTOR) 的方式，如果尝试失败或超时
-          -> register_stop_handler() //第二次尝试用 NMI DM 的 IPI 尝试让让其他 CPU 停下，回调为 smp_stop_nmi_callback()
+         -> register_stop_handler() //第二次尝试用 NMI DM 的 IPI 尝试让让其他 CPU 停下，回调为 smp_stop_nmi_callback()
              -> register_nmi_handler(NMI_LOCAL, smp_stop_nmi_callback, NMI_FLAG_FIRST, "smp_stop")
+            for_each_cpu(cpu, &cpus_stop_mask)
+            -> __apic_send_IPI(cpu, NMI_VECTOR)
 -> machine_kexec(kexec_image)
 ```
 * 上面已经看到了 `machine_shutdown()` 会做两次尝试，最终都是为了其他 CPU 能最终调用到 `stop_this_cpu()`，最终停止在 `hlt`
@@ -877,6 +942,14 @@ kernel_kexec()
 void __noreturn stop_this_cpu(void *dummy)
 {
 ...
+    /*
+     * This brings a cache line back and dirties it, but
+     * native_stop_other_cpus() will overwrite cpus_stop_mask after it
+     * observed that all CPUs reported stop. This write will invalidate
+     * the related cache line on this CPU.
+     */
+    cpumask_clear_cpu(cpu, &cpus_stop_mask);
+
     for (;;) {
         /*
          * Use native_halt() so that memory contents don't change
@@ -887,7 +960,7 @@ void __noreturn stop_this_cpu(void *dummy)
     }
 }
 ```
-##### `IPI(REBOOT_VECTOR)` 的方式
+##### 第一种尝试：`IPI(REBOOT_VECTOR)` 的方式
 * 这种方式比较简单，就是通过发送 `REBOOT_VECTOR` 的 IPI，对应的中断向量如下：
 * arch/x86/kernel/smp.c
 ```cpp
@@ -902,7 +975,23 @@ DEFINE_IDTENTRY_SYSVEC(sysvec_reboot)
     stop_this_cpu(NULL);
 }
 ```
-##### NMI 的方式
+* arch/x86/kernel/idt.c
+```cpp
+/*
+ * The APIC and SMP idt entries
+ */
+static const __initconst struct idt_data apic_idts[] = {
+...
+#ifdef CONFIG_SMP
+    INTG(RESCHEDULE_VECTOR,         asm_sysvec_reschedule_ipi),
+    INTG(CALL_FUNCTION_VECTOR,      asm_sysvec_call_function),
+    INTG(CALL_FUNCTION_SINGLE_VECTOR,   asm_sysvec_call_function_single),
+    INTG(REBOOT_VECTOR,         asm_sysvec_reboot),
+#endif
+...
+}
+```
+##### 第一种尝试：NMI 的方式
 * `register_stop_handler()` 注册了类型为 `NMI_LOCAL` 的 NMI 回调函数 `smp_stop_nmi_callback()`，`NMI_FLAG_FIRST` 让它最先被 NMI 处理函数执行
 ```cpp
 static int smp_stop_nmi_callback(unsigned int val, struct pt_regs *regs)
@@ -1036,7 +1125,7 @@ SYM_CODE_START_NOALIGN(relocate_kernel)
 
 	/* Switch to the identity mapped page tables */
 	movq	%r9, %cr3 // 切换页表到恒等映射的页表，和当前运行内核的页表说 byebye 了
-
+	//虽然 ret 指令前 %rip 还是高地址段，但 CPU 实际上是从映射到了 control page 中的物理地址去取指令了
 	/* setup a new stack at the end of the physical control page */
 	lea	PAGE_SIZE(%r8), %rsp // 设置 control page 的页结束的物理地址为新的栈底
 

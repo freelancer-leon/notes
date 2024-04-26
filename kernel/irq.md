@@ -790,7 +790,7 @@ __visible noinstr void func(struct pt_regs *regs,           \
 static noinline void __##func(struct pt_regs *regs, u32 vector)
 ```
 * `common_interrupt()` 的最后会调用 C 函数 `irqentry_exit()` 完成旧的汇编代码实现的大部分功能，包括中断处理完成后的内核抢占点
-* kernel/entry/common.c
+  * kernel/entry/common.c
 ```cpp
 void raw_irqentry_exit_cond_resched(void)
 {
@@ -836,12 +836,12 @@ noinstr void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)
 }
 ```
 * 不用担心中断返回时被内核抢占。比如说
-  1. 进程 A 在内核态被中断，它的上下文被压入进程内核栈，然后进行中断处理
-  2. 中断栈的切换过程略过，因为中断处理 `__common_interrupt` 完成后要切换回来的
-  3. 中断返回前 `irqentry_exit()` 发生内核抢占，被进程 B 抢占，A 的上下文保存在 PCB 中
-  4. 进程 B 又被中断，中断返回前再次发生内核抢占，被进程 A 抢占
-  5. A 的上下文从 PCB 中恢复，如果不再发生内核抢占，会继续执行直到回到 `irqentry_exit()`
-  6. 最后会通过 `error_return` 返回进程 A 最初被中断的上下文
+1. 进程 A 在内核态被中断，它的上下文 a1 被 `error_entry` 压入进程内核栈，然后进行中断处理
+2. 切换到 per CPU 的中断栈的过程略过，中断处理 `__common_interrupt` 完成后要切换回 A 的内核栈的（见 `call_on_stack` 宏的实现）
+3. 中断返回前 `irqentry_exit()` 处发生内核抢占，被进程 B 抢占，此时 A 的上下文 a2 （被`__switch_to_asm`）保存在 A 的内核栈以及（被 `__switch_to()`）PCB 中
+4. 进程 B 又被中断，中断返回前再次发生内核抢占，假设被进程 A 抢了回来
+5. A 的上下文 a2 从 A 的内核栈（`__switch_to_asm`）以及 PCB（`__switch_to()`）中恢复，如果不再发生内核抢占，会继续执行，从 `irqentry_exit()` 返回
+6. 最后会通过 `error_return` 返回进程 A 最初被中断的上下文 a1
 ```cpp
 idtentry
     idtentry_body
