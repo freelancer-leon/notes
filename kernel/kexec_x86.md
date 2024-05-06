@@ -492,8 +492,8 @@ static int do_bzImage64_load(...)
     elf_rel_get_symbol(&info->rhdr, "entry64_regs", &regs64,
                  sizeof(regs64)); //从已加载的 segment 中找到变量 entry64_regs，把内容存到本地变量 regs64
     regs64.rbx = 0;           /* Bootstrap processor */
-    regs64.rsi = setup_base;  /* Pointer to the parameters */ // real_mode_data 的地址，purgatory 会用到
-    regs64.rip = addr + 0x200; /* the entry point for startup_64 */ // addr 是重定位后的 crash kernel 的地址，+ 0x200 的解释见下面
+    regs64.rsi = setup_base;  /* Pointer to the parameters */ //boot parameters/real_mode_data 的地址，purgatory 会用到
+    regs64.rip = addr + 0x200; /* the entry point for startup_64 */ //addr 是重定位后的 crash kernel 的地址，+ 0x200 的解释见下面
     regs64.rsp = elf_rel_get_addr(&info->rhdr, "stack_end"); /* Stack, unused */
     elf_rel_set_symbol(&info->rhdr, "entry64_regs", &regs64,
                  sizeof(regs64)); //本地变量 regs64 的内容设置回已加载的 segment 的变量 entry64_regs
@@ -557,6 +557,7 @@ machine_kexec()
 * 所以说，`real_mode_data` segment 包含 bzImage 中拷贝出来的一小部分内容，然后被重定向以后交给内核，最后被用在了这里。此外，它还必须包含启动协议中 BIOS 需要向内核提供的数据，这些数据主要由`setup_linux_bootloader_parameters_high()`和`setup_linux_system_parameters()`这两个函数中填充。
   * 其中，`setup_linux_bootloader_parameters_high()`设置了`real_mode->cmd_line_ptr`指针，并拷贝了命令行参数到`((char *)real_mode) + cmdline_offset`处，也就时零页中的`boot_params.hdr.cmd_line_ptr`处。
   * 也就是说，命令行参数是通过`real_mode_data` segment 来传递的。
+* 按照 64-bit 启动协议的规定，跳转到内核入口时，`%rsi` 必须持有 `struct boot_params` 的基地址，这是通过 kexec/arch/x86_64/kexec-bzImage64.c`do_bzImage64_load()` 中的 `regs64.rsi = setup_base` 预先设定的，因为这个值在 load image 到 crash kernel region 的时候就算出来了。
 
 #### 为什么捕捉内核启动时只能看见和保留内存
 1. 内核启动后能使用的内存信息是根据零页中的 `struct boot_e820_entry e820_table[E820_MAX_ENTRIES_ZEROPAGE]`得来的，例如，启动时可以看到打印如下：
@@ -571,11 +572,11 @@ machine_kexec()
   BIOS-e820: [mem 0x00000000fed1c000-0x00000000fed1ffff] reserved
   BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
   ```
-2. 启动后会被 I/O 设备、内核逐渐使用调，就是在`/proc/iomem`中看到的一些使用情况
+2. 启动后会被 I/O 设备、内核逐渐使用掉，就是在`/proc/iomem`中看到的一些使用情况
 3. `get_crash_memory_ranges()`会通过`/proc/iomem`的信息填充`crash_memory_range[]`
 4. 从`crash_memory_range[]`数组中剔除（为 crash kernel 保留的内存 region）`crash_reserved_mem[]`数组的范围
 5. 在`crash_memory_range[]`数组中找到第一个类型为`System RAM` 640 KiB region 作为 backup data
-6. `load_crashdump_segments()`中，先分配`struct memory_range *memmap_p` `
+6. `load_crashdump_segments()`中，先分配`struct memory_range *memmap_p`
 7. 把 backup data 范围通过`add_memmap()`函数加到`memmap_p`数组
 8. 把`crash_reserved_mem[]`数组通过`add_memmap()`函数加到`memmap_p`数组
 9. 创建 backup region segment，并把该范围通过`delete_memmap()`函数从`memmap_p`数组剔除
@@ -800,7 +801,7 @@ static void ident_pmd_init(struct x86_mapping_info *info, pmd_t *pmd_page,
 * 恒等映射的关键是，变换代码在原来的页表和恒等映射的页表都有映射
   * 这里变换代码是 `relocate_kernel`，它在 `machine_kexec()` 的时候会被拷贝到 `image->control_code_page` 两个相邻页面的第二个页面的开始处
   * 这段代码在原来的页表中就有映射，现在在恒等映射页表中把它映射到 control page 中放置代码的起始处
-  * 切换页表后，变换代码没走到跳转为恒等映射的低地址前，`RIP` 还是原来的高地址，只是恒等映射页表已将它映射到 control page 区域中的物理地址了，CPU 实际上是从这些物理地址去取指令了
+  * 切换页表后，变换代码没走到跳转为恒等映射的低地址前，`$RIP` 还是原来的高地址，只是恒等映射页表已将它映射到 control page 区域中的物理地址了，CPU 实际上是从这些物理地址去取指令了
   * 这一段内存的映射是恒等映射中唯一不恒等的映射
 ```cpp
 static int init_transition_pgtable(struct kimage *image, pgd_t *pgd)
@@ -922,7 +923,7 @@ err:
 #### 停止其他 CPU
 * 对于 panic 的场景，需要调用 `crash_save_cpu()` 让各 CPU 将其上下文保存到 vmcore 中的 `NOTE` segment 的名为 `CORE`，类型为 `NT_PRSTATUS` 的字段中去
 * 对于 `kexec -e` 的重启场景，则不需要 `crash_save_cpu()`，只需让其他 CPU 停止运行，然后等待 reboot CPU 切换到新内核
-```cpp
+```c
 kernel_kexec()
 -> machine_shutdown()
    -> machine_ops.shutdown()
@@ -1019,16 +1020,16 @@ void machine_kexec(struct kimage *image)
     control_page = page_address(image->control_code_page) + PAGE_SIZE; //指向第二个页面
     memcpy(control_page, relocate_kernel, KEXEC_CONTROL_CODE_MAX_SIZE);//往第二个页面拷贝 relocate_kernel 的代码
 
-    page_list[PA_CONTROL_PAGE] = virt_to_phys(control_page);  // control page 的物理地址
-    page_list[VA_CONTROL_PAGE] = (unsigned long)control_page; // control page 的虚拟地址
+    page_list[PA_CONTROL_PAGE] = virt_to_phys(control_page);  //control page 的物理地址
+    page_list[VA_CONTROL_PAGE] = (unsigned long)control_page; //control page 的虚拟地址
     page_list[PA_TABLE_PAGE] =
-      (unsigned long)__pa(page_address(image->control_code_page)); // 恒等映射页表的物理地址
+      (unsigned long)__pa(page_address(image->control_code_page)); //恒等映射页表的物理地址
 
     if (image->type == KEXEC_TYPE_DEFAULT)
         page_list[PA_SWAP_PAGE] = (page_to_pfn(image->swap_page)
                         << PAGE_SHIFT);
     ...
-    /* now call it */ // 注意，这里执行的是当前内核文本段的 relocate_kernel 例程
+    /* now call it */ //注意，这里执行的是当前内核文本段的 relocate_kernel 例程
     image->start = relocate_kernel((unsigned long)image->head,
                        (unsigned long)page_list,
                        image->start,
@@ -1087,52 +1088,52 @@ SYM_CODE_START_NOALIGN(relocate_kernel)
 	pushq %r15
 	pushf       // 将标志寄存器的值压栈
 
-	movq	PTR(VA_CONTROL_PAGE)(%rsi), %r11 // control page 的虚拟地址放到 %r11
-	movq	%rsp, RSP(%r11) // 当前 %rsp 存入 control page 的数据区
-	movq	%cr0, %rax      // %cr0 的值无法直接传输到内存，需借助寄存器中转
-	movq	%rax, CR0(%r11) // 当前 %cr0 存入 control page 的数据区
+	movq	PTR(VA_CONTROL_PAGE)(%rsi), %r11 //control page 的虚拟地址放到 %r11
+	movq	%rsp, RSP(%r11) //当前 %rsp 存入 control page 的数据区
+	movq	%cr0, %rax      //%cr0 的值无法直接传输到内存，需借助寄存器中转
+	movq	%rax, CR0(%r11) //当前 %cr0 存入 control page 的数据区
 	movq	%cr3, %rax
-	movq	%rax, CR3(%r11) // 当前 %cr3 存入 control page 的数据区
+	movq	%rax, CR3(%r11) //当前 %cr3 存入 control page 的数据区
 	movq	%cr4, %rax
-	movq	%rax, CR4(%r11) // 当前 %cr4 存入 control page 的数据区
+	movq	%rax, CR4(%r11) //当前 %cr4 存入 control page 的数据区
 
 	/* Save CR4. Required to enable the right paging mode later. */
-	movq	%rax, %r13      // 当前 %cr4 存一份到 %r13
+	movq	%rax, %r13      //当前 %cr4 存一份到 %r13
 
 	/* zero out flags, and disable interrupts */
-	pushq $0  // 将立即数 0 压栈
-	popfq     // 从栈中弹出数据，加载到标志寄存器；
-    // 刚才压入了 0，所以这里相当于把标志寄存器清零了，包括 IF (Interrupt enable flag) 标志位，所以效果就是关中断
+	pushq $0  //将立即数 0 压栈
+	popfq     //从栈中弹出数据，加载到标志寄存器；
+	//刚才压入了 0，所以这里相当于把标志寄存器清零了，包括 IF (Interrupt enable flag) 标志位，所以效果就是关中断
 	/* Save SME active flag */
 	movq	%r8, %r12  // 第五个参数 sme_active() 传入 %r12
-    // 因为要切换页表了，所以先把需要的关键信息从内存中存到寄存器里
+	//因为要切换页表了，所以先把需要的关键信息从内存中存到寄存器里
 	/*
 	 * get physical address of control page now
 	 * this is impossible after page table switch
 	 */
-	movq	PTR(PA_CONTROL_PAGE)(%rsi), %r8 // control page 的物理地址放到 %r8
+	movq	PTR(PA_CONTROL_PAGE)(%rsi), %r8 //control page 的物理地址放到 %r8
 
 	/* get physical address of page table now too */
-	movq	PTR(PA_TABLE_PAGE)(%rsi), %r9 // 恒等映射页表的物理地址放到 %r9
+	movq	PTR(PA_TABLE_PAGE)(%rsi), %r9 //恒等映射页表的物理地址放到 %r9
 
 	/* get physical address of swap page now */
-	movq	PTR(PA_SWAP_PAGE)(%rsi), %r10 // swap page 的物理地址放到 %r10
+	movq	PTR(PA_SWAP_PAGE)(%rsi), %r10 //swap page 的物理地址放到 %r10
 
 	/* save some information for jumping back */
-	movq	%r9, CP_PA_TABLE_PAGE(%r11) // copy 恒等映射页表的物理地址到 control page 的数据区
-	movq	%r10, CP_PA_SWAP_PAGE(%r11) // copy swap page 的物理地址到 control page 的数据区
-	movq	%rdi, CP_PA_BACKUP_PAGES_MAP(%r11) // copy 页映射备份的起始物理地址到 control page 的数据区
+	movq	%r9, CP_PA_TABLE_PAGE(%r11) //copy 恒等映射页表的物理地址到 control page 的数据区
+	movq	%r10, CP_PA_SWAP_PAGE(%r11) //copy swap page 的物理地址到 control page 的数据区
+	movq	%rdi, CP_PA_BACKUP_PAGES_MAP(%r11) //copy 页映射备份的起始物理地址到 control page 的数据区
 
 	/* Switch to the identity mapped page tables */
-	movq	%r9, %cr3 // 切换页表到恒等映射的页表，和当前运行内核的页表说 byebye 了
+	movq	%r9, %cr3 //切换页表到恒等映射的页表，和当前运行内核的页表说 byebye 了
 	//虽然 ret 指令前 %rip 还是高地址段，但 CPU 实际上是从映射到了 control page 中的物理地址去取指令了
 	/* setup a new stack at the end of the physical control page */
-	lea	PAGE_SIZE(%r8), %rsp // 设置 control page 的页结束的物理地址为新的栈底
+	lea	PAGE_SIZE(%r8), %rsp //设置 control page 的页结束的物理地址为新的栈底
 
 	/* jump to identity mapped page */
-	addq	$(identity_mapped - relocate_kernel), %r8 // control page 的起始 PA + relocate_kernel 的长度 = identity_mapped 例程的物理地址
-	pushq	%r8 // identity_mapped 例程的物理地址入新的栈
-	ret         // 相当于把 identity_mapped 例程的物理地址弹出到 %rip，调用 identity_mapped 例程，这一跳转，%rip 里的值就变成恒等映射的虚拟地址了
+	addq	$(identity_mapped - relocate_kernel), %r8 //control page 的起始 PA + relocate_kernel 的长度 = identity_mapped 例程的物理地址
+	pushq	%r8 //identity_mapped 例程的物理地址入新的栈
+	ret         //相当于把 identity_mapped 例程的物理地址弹出到 %rip，调用 identity_mapped 例程，这一跳转，%rip 里的值就变成恒等映射的虚拟地址了
 SYM_CODE_END(relocate_kernel)
 
 SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
@@ -1140,7 +1141,7 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	/* set return address to 0 if not preserving context */
 	pushq	$0
 	/* store the start address on the stack */
-	pushq   %rdx // kimage->start 为重定位到 “Crash kernel” region 后的`purgatory_start`例程的物理地址
+	pushq   %rdx // kimage->start 为重定位到 “Crash kernel” region 后的 purgatory_start 例程的物理地址
 
 	/*
 	 * Set cr0 to a known state:   设置 cr0 控制寄存器为一个已知状态
@@ -1153,8 +1154,8 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	 */
 	movq	%cr0, %rax
 	andq	$~(X86_CR0_AM | X86_CR0_WP | X86_CR0_TS | X86_CR0_EM), %rax
-	orl	$(X86_CR0_PG | X86_CR0_PE), %eax // 开启分页机制，PE 和 PG 标志都要置位
-	movq	%rax, %cr0 // 载入定制好的 cr0 状态
+	orl	$(X86_CR0_PG | X86_CR0_PE), %eax //开启分页机制，PE 和 PG 标志都要置位
+	movq	%rax, %cr0                   //载入定制好的 cr0 状态
 
 	/*
 	 * Set cr4 to a known state:
@@ -1162,30 +1163,30 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	 *  - 5-level paging, if it was enabled before
 	 */
 	movl	$X86_CR4_PAE, %eax
-	testq	$X86_CR4_LA57, %r13 // 旧 %cr4 曾存了一份到 %r13，测试原来 5 级页表是否开启？
-	jz	1f // 未曾开启 5 级页表，跳转到标号 1
-	orl	$X86_CR4_LA57, %eax // 曾开启了 5 级页表，保持开启
+	testq	$X86_CR4_LA57, %r13 //旧 %cr4 曾存了一份到 %r13，测试原来 5 级页表是否开启？
+	jz	1f                      //未曾开启 5 级页表，跳转到标号 1
+	orl	$X86_CR4_LA57, %eax     //曾开启了 5 级页表，保持开启
 1:
-	movq	%rax, %cr4 // 载入定制好的 cr4 状态控制寄存器
+	movq	%rax, %cr4          //载入定制好的 cr4 状态控制寄存器
 
 	jmp 1f
 1:
 
 	/* Flush the TLB (needed?) */
-	movq	%r9, %cr3 // 通过再次加载恒等映射页表到 %cr3 的方式刷新 TLB，不想用处理器相关指令
+	movq	%r9, %cr3 //通过再次加载恒等映射页表到 %cr3 的方式刷新 TLB，不想用处理器相关指令
 
 	/*
 	 * If SME is active, there could be old encrypted cache line
 	 * entries that will conflict with the now unencrypted memory
 	 * used by kexec. Flush the caches before copying the kernel.
 	 */
-	testq	%r12, %r12 // 测试第五个参数 sme_active()
-	jz 1f // 未激活，跳转到标号 1
+	testq	%r12, %r12 //测试第五个参数 sme_active()
+	jz 1f              //未激活，跳转到标号 1
 	wbinvd
 1:
 
-	movq	%rcx, %r11 // image->preserve_context 传到 %r11
-	call	swap_pages // 调用 swap_pages 例程
+	movq	%rcx, %r11 //image->preserve_context 传到 %r11
+	call	swap_pages //调用 swap_pages 例程
 
 	/*
 	 * To be certain of avoiding problems with self-modifying code
@@ -1194,15 +1195,15 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	 * and not processor dependent.
 	 */
 	movq	%cr3, %rax
-	movq	%rax, %cr3 // 刷 TLB，不想用处理器相关的指令
+	movq	%rax, %cr3 //刷 TLB，不想用处理器相关的指令
 
 	/*
 	 * set all of the registers to known values
 	 * leave %rsp alone
 	 */
 
-	testq	%r11, %r11 // %r11 存的是 image->preserve_context 的值
-	jnz 1f             // 想保留上下文，向前跳到标号 1，跳过以下寄存器清零操作
+	testq	%r11, %r11 //%r11 存的是 image->preserve_context 的值
+	jnz 1f             //想保留上下文，向前跳到标号 1，跳过以下寄存器清零操作
 	xorl	%eax, %eax
 	xorl	%ebx, %ebx
 	xorl    %ecx, %ecx
@@ -1218,8 +1219,8 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 	xorl	%r13d, %r13d
 	xorl	%r14d, %r14d
 	xorl	%r15d, %r15d
-    // 还记得上面曾把重定位到 “Crash kernel” region 后的`purgatory_start`例程的物理地址放到栈上了吗？
-	ret // 通过这条指令我们跳到了 “Crash kernel” region 里的当时用户态构造好的 purgatory_start
+	//还记得上面曾把重定位到 “Crash kernel” region 后的 purgatory_start 例程的物理地址放到栈上了吗？
+	ret //通过这条指令我们跳到了 “Crash kernel” region 里的当时用户态构造好的 purgatory_start
 
 1:
 	popq	%rdx
@@ -1265,31 +1266,31 @@ SYM_CODE_END(virtual_mapped)
 	/* Do the copies */
 SYM_CODE_START_LOCAL_NOALIGN(swap_pages)
 	UNWIND_HINT_EMPTY
-	movq	%rdi, %rcx 	/* Put the page_list in %rcx */ // image->head 传到 %rcx
-	xorl	%edi, %edi  // 清零 %edi
-	xorl	%esi, %esi  // 清零 %esi，即已失效的 page_list 虚拟地址
-	jmp	1f              // 向前跳到标号 1
+	movq	%rdi, %rcx 	/* Put the page_list in %rcx */ //image->head 传到 %rcx
+	xorl	%edi, %edi  //清零 %edi
+	xorl	%esi, %esi  //清零 %esi，即已失效的 page_list 虚拟地址
+	jmp	1f              //向前跳到标号 1
 
 0:	/* top, read another word for the indirection page */
 
 	movq	(%rbx), %rcx
 	addq	$8,	%rbx
 1:
-	testb	$0x1,	%cl   /* is it a destination page? */ // panic case 该测试失败
-	jz	2f                // 向前跳到标号 2
+	testb	$0x1,	%cl   /* is it a destination page? */ //panic case 该测试失败
+	jz	2f                //向前跳到标号 2
 	movq	%rcx,	%rdi
-	andq	$0xfffffffffffff000, %rdi // 低 12 位清零
+	andq	$0xfffffffffffff000, %rdi //低 12 位清零
 	jmp	0b
 2:
-	testb	$0x2,	%cl   /* is it an indirection page? */ // panic case 该测试失败
-	jz	2f                // 向前跳到下一个标号 2
+	testb	$0x2,	%cl   /* is it an indirection page? */ //panic case 该测试失败
+	jz	2f                //向前跳到下一个标号 2
 	movq	%rcx,   %rbx
 	andq	$0xfffffffffffff000, %rbx
 	jmp	0b
 2:
-	testb	$0x4,	%cl   /* is it the done indicator? */ // panic case 该测试成功，回忆 kimage_terminate()
-	jz	2f                // 测试失败会向前跳到下一个标号 2
-	jmp	3f                // 测试成功向前跳到标号 3
+	testb	$0x4,	%cl   /* is it the done indicator? */ //panic case 该测试成功，回忆 kimage_terminate()
+	jz	2f                //测试失败会向前跳到下一个标号 2
+	jmp	3f                //测试成功向前跳到标号 3
 2:
 	testb	$0x8,	%cl   /* is it the source indicator? */
 	jz	0b	      /* Ignore it otherwise */
@@ -1316,7 +1317,7 @@ SYM_CODE_START_LOCAL_NOALIGN(swap_pages)
 	lea	PAGE_SIZE(%rax), %rsi
 	jmp	0b
 3:
-	ret // 返回 identity_mapped 例程
+	ret     //返回 identity_mapped 例程
 SYM_CODE_END(swap_pages)
 
 	.globl kexec_control_code_size
