@@ -578,15 +578,15 @@ static int alloc_thread_stack_node(struct task_struct *tsk, int node)
         __percpu_mov_op %__percpu_seg:this_cpu_off, reg;        \
         lea var(reg), reg
 
-    #define __percpu_seg        gs
-    #define __percpu_mov_op     movq
+#define __percpu_seg        gs
+#define __percpu_mov_op     movq
 ```
 
 > 于是问题就从如何加载内核栈的基地址变成了如何加载 `gs.base`（或者说是 `IA32_GS_BASE` MSR）。
 > 为了让 `swapgs` 指令能解决上述问题，该指令被设计为不需要任何操作数。`swapgs` 指令将从 `IA32_KERNEL_GS_BASE` MSR中读取出的值作为内核态的 `gs.base`，同时将当前的、仍旧是用户态的 `gs.base` 值保存到了 `IA32_KERNEL_GS_BASE` MSR 中，即进行了一次 `IA32_GS_BASE MSR` 与 `IA32_KERNEL_GS_BASE` MSR的 `swap` 操作，这就是`swapgs` 指令得名的由来。
 >
 > 注意：`IA32_KERNEL_GS_BASE` MSR 的初值就是前一节提到的 per CPU 的 `irq_stack_union.gs_base` 变量所在的地址。
-> 因为内核在完成了初始化并准备切换到用户态之前，会执行 `swapgs` 指令，于是将 `MSR_GS_BASE` MSR的值保存到了 `IA32_KERNEL_GS_BASE` MSR 中，准备在下次执行 `swapgs` 指令时再重新设置到 `gs.base` 中。这就解释了为什么前面的内核初始化代码中初始化的是 `MSR_GS_BASE` MSR而不是 `IA32_KERNEL_GS_BASE` MSR。
+> 因为内核在完成了初始化并准备切换到用户态之前，会执行 `swapgs` 指令，于是将 `MSR_GS_BASE` MSR 的值保存到了 `IA32_KERNEL_GS_BASE` MSR 中，准备在下次执行 `swapgs` 指令时再重新设置到 `gs.base` 中。这就解释了为什么前面的内核初始化代码中初始化的是 `MSR_GS_BASE` MSR而不是 `IA32_KERNEL_GS_BASE` MSR。
 >
 > —— [Linux内核态是如何使用GS寄存器引用percpu变量的？](https://zhuanlan.zhihu.com/p/435757639)
 

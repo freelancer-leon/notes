@@ -239,7 +239,7 @@ CD | NW | Caching 和读写策略                                       | L1 | L
   * 线性地址 `0xF000` 指向物理位置 `0xB000`（`0xF000` 的页表项包含值 `0xB000`），线性地址 `0xF000` 的页表项是 `PTE_F000`（译注：这是另一个线性地址）。
   * 由于 P6 和更新的处理器系列中的推测执行，最后执行的 `MOV` 指令会将物理位置 `0xB000` 处的值放入 `EBX`，而不是新物理地址 `0xA000` 处的值。
   * 这种情况可以通过在 load 和 store 之间设置 TLB 失效来解决。
-    * 译注：这是由于过期的 TLB caching 引起的问题，不是加屏障可以解决的，所以这里必须是 TLB invalidation
+  * 译注：这是由于过期的 TLB caching 引起的问题，因此解决问题的出发点是 TLB invalidation。虽然加屏障（speculation barrier）可以从防止预取的角度来避免这个问题，但只能说是利用该功能的副作用了。
 ##### Example 12-1. Effect of Implicit Caching on Page-Table Entries
 ```nasm
 mov EAX, CR3; Invalidate the TLB
@@ -404,7 +404,7 @@ Reserved*            | `07 - FF`H
     * `0-64` MByte 范围内的物理地址与 `IA32_MTRR_PHYSMASK0` 与操作的结果等于 `IA32_MTRR_PHYSBASE0 AND IA32_MTRR_PHYSMASK0`
 * 缓存 `64-96` MByte 为 `WB` cache 类型
   * `IA32_MTRR_PHYSBASE1 = 0000 0000 0400 0006`H，`0x6` 表示 `WB` 内存类型
-  * `IA32_MTRR_PHYSMASK1 = 0000 00FF FE00 0800`H，即 `(0x0400_0000 ~ 0x05ff_ffff) AND 0x00ff_fe00_0000 = IA32_MTRR_PHYSBASE0 AND IA32_MTRR_PHYSMASK0`
+  * `IA32_MTRR_PHYSMASK1 = 0000 00FF FE00 0800`H，即 `(0x0400_0000 ~ 0x05ff_ffff) AND 0x00ff_fe00_0000 = IA32_MTRR_PHYSBASE1 AND IA32_MTRR_PHYSMASK1`
     * `96 MByte = 0x0600_0000 = 0x0400_0000 + 0x0200_0000 = 0x05ff_ffff + 0x1`
 * 缓存 `96-100` MByte 为 `WB` cache 类型
   * `IA32_MTRR_PHYSBASE2 = 0000 0000 0600 0006`H
