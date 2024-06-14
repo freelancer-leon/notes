@@ -17,7 +17,7 @@
 * 无论使用哪种约定，如果传入的页面是复合页面，对`PageCompound()`的调用都将返回`true`
 * 如果需要，可以使用`PageHead()`和`PageTail()`来区分 head page 和 tail pages
 * 每个 tail pages 都有一个指向 head page 的指针，存储在`struct page`的`first_page`字段中，该和以下场景中的字段占用相同的存储空间：
-  * `private `字段
+  * `private`字段
   * 当页面保存页表条目时使用的自旋锁
   * 当页面由 slab 分配器拥有时使用的`slab_cache`指针
 * `compound_head()`辅助函数可用于查找与任何 tail pages 关联的 head page
@@ -49,8 +49,8 @@
 * 如果一个函数可能被传入一个 tail page，但它必须处理整个复合页，那么它必须调用内联函数`compound_head()`获取复合页的 head page 的`struct page`的地址
   * 在函数之间传递 tail page，每个函数都调用内联函数`compound_head()`造成的后果是内核变大和运行变慢
 * 类型`struct folio`被定义为一个简单的包装结构体，如下：
+  * include/linux/mm_types.h
   ```cpp
-  include/linux/mm_types.h
   struct folio {
     /* private: don't document the anon union */
     union {

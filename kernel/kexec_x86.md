@@ -1169,7 +1169,7 @@ SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
 1:
 	movq	%rax, %cr4          //载入定制好的 cr4 状态控制寄存器
 
-	jmp 1f
+	jmp 1f                      //这个跳转大有玄机，见下面详解
 1:
 
 	/* Flush the TLB (needed?) */
@@ -1335,6 +1335,27 @@ SYM_CODE_END(swap_pages)
 > 如果任务从没有使用过协处理器，那么相应协处理器上下文就不用保存。
 
 * 这里面多次先把要调用的函数`push`到栈上，再用`ret`指令跳转的方式完成函数调用，而不是用`call`指令。我能想到的原因是`call`指令需要把下一条指令压栈作为将来的返回地址，然而我们这用`ret`调用的方式大多是不需要返回的，所以用这样的方式能保持栈的干净。而为什么不是`jmp`指令呢？是因为要跳转的地址都是动态的吗？
+
+#### 向前跳转 `jmp 1f` 到下一字节
+* 在 `identity_mapped` 例程中有一个怪异的跳转，向前跳转 `jmp 1f` 到下一字节
+```asm
+SYM_CODE_START_LOCAL_NOALIGN(identity_mapped)
+...
+	jmp 1f
+1:
+```
+* Andrew Cooper 在 [这里](https://lore.kernel.org/lkml/55bc0649-c017-49ab-905d-212f140a403f@citrix.com/) 对它进行了解释：
+
+> * `jmp 1f` 可以追溯到古老的 8086，它开创了指令指针只是 ISA 想象出来的趋势[^1]
+> * 硬件维护指向下一个要获取的字节的指针（预取队列最多 `6` 个字节），并且有一个微操作可以从累加器中减去预取队列的当前长度。
+> * 在那些日子里，预取队列与主内存不一致，并且跳转（指令流中的不连续性）只是刷新了预取队列。
+> * 在修改可执行代码后，这是必要的，因为否则你最终可能会执行预取队列中的陈旧的字节，然后执行非陈旧的字节。（也称为区分 8086 和 8088 的方法，因为后者只有 `4` 字节预取队列。）
+> * 无论如何。这是在该术语进入体系结构之前你用来拼写“序列化操作”的方式。Linux 仍然支持 Pentium 之前的 CPU，因此仍然需要关注 486 中的预取队列。
+> * 但是，此示例似乎是 64 位代码，并且跟在一个对 `CR4` 的写入之后，这将完全序列化，因此它可能是从 32 位代码复制粘贴的，原则上这是必要的。
+
+* [^1][8086 专利](https://patents.google.com/patent/US4449184A) 描述了 8086 中的程序计数器如何不保存“真实”值：
+
+> `PC` is not a real or true program counter in that it does not, nor does any other register within CPU, maintain the actual execution point at any time. `PC` actually points to the next byte to be input into queue. The real program counter is calculated by instruction whenever a relative `jump` or `call` is required by subtracting the number of accessed instructions still remaining unused in queue from `PC`.
 
 ## vmcoreinfo
 ### 分配 vmcoreinfo 空间

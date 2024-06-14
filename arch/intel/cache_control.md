@@ -24,7 +24,7 @@
 * **Write Combining（WC）** - 系统内存位置不会被缓存（与 uncacheable 内存一样），并且处理器的总线一致性协议不会强制执行一致性。
   * 允许推测性读取。
   * 写入可以被延迟并在 *写入组合 buffer（WC buffer）* 中组合以减少内存访问。
-  * 如果 WC buffer 已部分填充，则写入可能会延迟到下一次发生串行化事件为止；例如 `SFENCE` 或 `MFENCE` 指令、`CPUID` 或其他序列化指令、对未缓存内存的读取或写入、中断发生或 `LOCK` 指令（包括带有 `XACQUIRE` 或 `XRELEASE` 前缀的指令）的执行。
+  * 如果 WC buffer 已部分填充，则写入可能会延迟到下一次发生串行化事件为止；例如 `SFENCE` 或 `MFENCE` 指令、`CPUID` 或其他序列化指令、对 uncached 内存的读取或写入、中断发生或 `LOCK` 指令（包括带有 `XACQUIRE` 或 `XRELEASE` 前缀的指令）的执行。
   * 另外，在逐出（evicting）在事务区域（transactional region）内执行的任何写入之前，`XEND` 指令（以结束事务区域）的执行逐出在相应执行 `XBEGIN` 指令（以开始事务区域）之前缓冲的任何写入。
   * 这种类型的缓存控制适用于视频 frame buffers，其中 *写入顺序并不重要*，只要写入更新内存以便可以在图形显示器上看到它们即可。
   * 有关缓存 `WC` 内存类型的更多信息，请参见第 12.3.1 节“Buffering of Write Combining Memory Locations”。
@@ -72,7 +72,7 @@ Write Protected (WP)    | 读 yes；写 no | No | Yes          | 推测性处理
   * 它们保留在一个内部的 **写组合 buffer（WC buffer）** 中，该 buffer 与内部 L1、L2 和 L3 caches 以及 store buffer 分开。
   * WC buffer 未被监听，因此不提供数据一致性。
   * 对 `WC` 内存的写入进行 buffering 是为了允许软件在一小段时间内向 WC buffer 提供更多修改的数据，同时尽可能保持对软件的非侵入性。
-  * 对 `WC` 内存的写入进行 buffering 也会导致数据崩溃（collapsed）；也就是说，对同一内存位置的多次写入将保留该位置中最后写入的数据，而其他写入将丢失。
+  * 对 `WC` 内存的写入进行 buffering 也会导致数据折叠（collapsed）；也就是说，对同一内存位置的多次写入将保留该位置中最后写入的数据，而其他写入将丢失。
 * WC buffer 的大小和结构没有在体系结构上定义。
   * 对于 Intel Core 2 Duo、Intel Atom、Intel Core Duo、Pentium M、Pentium 4 和 Intel Xeon 处理器；WC buffer 由多个 `64` 字节 `WC` buffers 组成。
   * 对于 P6 系列处理器，WC buffer 由多个 `32` 字节 WC buffers 组成。
@@ -84,7 +84,7 @@ Write Protected (WP)    | 读 yes；写 no | No | Yes          | 推测性处理
     * 这导致所有 `32` 字节（P6 系列处理器）或 `64` 字节（Pentium 4 和更新的处理器）在单个突发事务中在数据总线上传输。
     * 如果 WC buffer 的一个或多个字节无效（例如，尚未由软件写入），处理器将使用“部分写入（partial writ）”事务（一次一个块，其中一个“块”是 `8` 字节）。
 * 对于发送到内存的 1 个 WC buffer 的数据，这将导致最多 4 个部分的写入事务（对于 P6 系列处理器）或 8 个部分的写入事务（对于 Pentium 4 及更新的处理器）。
-* 根据定义，`WC` 内存类型是弱顺序的。一旦开始驱逐 WC buffer，数据就会受到其定义的弱顺序语义的影响。
+* 根据定义，`WC` 内存类型是 **弱顺序** 的。一旦开始驱逐 WC buffer，数据就会受到其定义的弱顺序语义的影响。
   * 在 WC buffer 的连续分配/解除分配之间不会维持顺序（例如，先写入 WC buffer 1，然后再写入 WC buffer 2，在系统总线上可能会显示为先写入 buffer 2，再写入 buffer 1）。
   * 当 WC buffer 作为部分写入被逐出到内存时，无法保证连续部分写入之间的顺序（例如，chunk 2 的部分写入可能会在 chunk 1 的部分写入之前出现在总线上，反之亦然）。
 * `WC` 传播到系统总线的唯一能得到保证的元素是由事务原子性提供的元素。
