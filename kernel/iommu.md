@@ -56,6 +56,29 @@ case VFIO_IOMMU_MAP_DMA:
                            -> intel_iommu_map(domain, iova, paddr, size, prot, gfp)
                               -> __domain_mapping(dmar_domain, iova >> VTD_PAGE_SHIFT, hpa >> VTD_PAGE_SHIFT, size, prot, gfp)
 ```
+## Dump IOMMU 页表
+```sh
+$ cat /sys/kernel/debug/iommu/intel/dmar_translation_struct
+
+IOMMU dmar18: Root Table Address: 0x110c9f000
+B.D.F   Root_entry                              Context_entry                           PASID   PASID_table_entry
+79:00.4 0x0000000000000000:0x000000011739e001   0x0000000000000000:0x000000011739c401   0       0x0000001097074004:0x0000000000800002:0x000000000000004d
+
+IOMMU dmar17: Root Table Address: 0x110ca0000
+B.D.F   Root_entry                              Context_entry                           PASID   PASID_table_entry
+74:00.4 0x0000000000000000:0x0000000116c04001   0x0000000000000000:0x0000000116c02401   0       0x0000001096857004:0x0000000000800002:0x000000000000004d
+
+IOMMU dmar16: Root Table Address: 0x110ca1000
+B.D.F   Root_entry                              Context_entry                           PASID   PASID_table_entry
+6f:00.4 0x0000000000000000:0x00000001165f0001   0x0000000000000000:0x00000001165ee401   0       0x0000001095c29004:0x0000000000800002:0x000000000000004d
+...
+IOMMU dmar19: Root Table Address: 0x10b558000
+B.D.F   Root_entry                              Context_entry                           PASID   PASID_table_entry
+00:00.0 0x0000000111e73001:0x00000001080ca001   0x0000000000000000:0x00000001080c8401   0       0x00000010854d1004:0x0000000000800002:0x000000000000004d
+00:00.1 0x0000000111e73001:0x00000001080ca001   0x0000000000000000:0x000000011158f401   0       0x00000010854d2004:0x0000000000800003:0x000000000000004d
+00:00.2 0x0000000111e73001:0x00000001080ca001   0x0000000000000000:0x0000000111861401   0       0x000000108f8e7004:0x0000000000800004:0x000000000000004d
+00:00.4 0x0000000111e73001:0x00000001080ca001   0x0000000000000000:0x0000000111adb401   0       0x000000108fa18004:0x0000000000800005:0x000000000000004d
+```
 
 # References
 - [Linux x86-64 IOMMU详解（一）——IOMMU简介](https://blog.csdn.net/qq_34719392/article/details/114834467)

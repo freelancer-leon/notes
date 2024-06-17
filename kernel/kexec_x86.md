@@ -860,7 +860,7 @@ err:
 }
 ```
 
-## 发生 kernel panic 时的内核切换
+## kexec 内核切换
 
 ### 调用 machine_kexec() 的几个场景
 * `machine_kexec()`是 kexec 统一的入口函数
@@ -893,9 +893,9 @@ err:
              -> update_vmcoreinfo_note()
                 -> append_elf_note(vmcoreinfo_note, VMCOREINFO_NOTE_NAME, 0, vmcoreinfo_data, ...)//拷贝 vmcoreinfo_data 到 vmcoreinfo_note
                 -> final_note(vmcoreinfo_note)
-          -> machine_crash_shutdown(&fixed_regs)
+          -> machine_crash_shutdown(&fixed_regs) //注意与快速切换场景的 machine_shutdown() 区分
              -> machine_ops.crash_shutdown(regs) //arch 相关的 crash_shutdown 回调，x86 的 arch/x86/kernel/crash.c
-             => native_machine_crash_shutdown(regs)
+             => native_machine_crash_shutdown(regs) //快速切换场景则是 native_machine_shutdown()
                 -> crash_smp_send_stop()
                    if (smp_ops.crash_stop_other_cpus)
                    -> smp_ops.crash_stop_other_cpus()
@@ -920,7 +920,7 @@ err:
              -> image->start = relocate_kernel((unsigned long)image->head, (unsigned long)page_list, image->start, ...)
   ```
 
-#### 停止其他 CPU
+#### 快速切换场景时停止其他 CPU
 * 对于 panic 的场景，需要调用 `crash_save_cpu()` 让各 CPU 将其上下文保存到 vmcore 中的 `NOTE` segment 的名为 `CORE`，类型为 `NT_PRSTATUS` 的字段中去
 * 对于 `kexec -e` 的重启场景，则不需要 `crash_save_cpu()`，只需让其他 CPU 停止运行，然后等待 reboot CPU 切换到新内核
 ```c
@@ -992,7 +992,7 @@ static const __initconst struct idt_data apic_idts[] = {
 ...
 }
 ```
-##### 第一种尝试：NMI 的方式
+##### 第二种尝试：NMI 的方式
 * `register_stop_handler()` 注册了类型为 `NMI_LOCAL` 的 NMI 回调函数 `smp_stop_nmi_callback()`，`NMI_FLAG_FIRST` 让它最先被 NMI 处理函数执行
 ```cpp
 static int smp_stop_nmi_callback(unsigned int val, struct pt_regs *regs)

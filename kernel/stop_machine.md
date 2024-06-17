@@ -405,7 +405,7 @@ static void create_kthread(struct kthread_create_info *create)
 
 ### 内核线程的公用入口函数 `kthread()`
 * `kthread()` 是内核线程的公用入口函数
-* kernel/kthread.c
+  * kernel/kthread.c
 ```cpp
 static int kthread(void *_create)
 {
@@ -438,7 +438,6 @@ static int kthread(void *_create)
      */
     sched_setscheduler_nocheck(current, SCHED_NORMAL, &param);
     set_cpus_allowed_ptr(current, housekeeping_cpumask(HK_TYPE_KTHREAD));
-
     //将 result 域设置为 current，告诉用户我们已经生成了，正等待被停止或唤醒
     /* OK, tell user we're spawned, wait for stop or wakeup */
     __set_current_state(TASK_UNINTERRUPTIBLE);
@@ -472,7 +471,7 @@ static int kthread(void *_create)
 5 kernel/softirq.c|970| <<spawn_ksoftirqd>> BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
 6 kernel/stop_machine.c|579| <<cpu_stop_init>> BUG_ON(smpboot_register_percpu_thread(&cpu_stop_threads));
 ```
-* 对应名字是
+* 对应名字是：
 ```cpp
 1 idle_inject_threads.thread_comm = "idle_inject/%u"
 2 cpuhp_threads.thread_comm       = "cpuhp/%u"
@@ -480,9 +479,9 @@ static int kthread(void *_create)
 4 rcu_cpu_thread_spec.thread_comm = "rcuc/%u"
 5 softirq_threads.thread_comm     = "ksoftirqd/%u"
 6 cpu_stop_threads.thread_comm    = "migration/%u"
-* `smpboot_register_percpu_thread()` 接口函数用于注册 per-CPU 的热插拔线程，但并不调用这些线程的入口函数
 ```
-* 其中的关键点是，`smpboot_thread_fnc()` 是 per-CPU 内核线程的公用入口函数
+* `smpboot_register_percpu_thread()` 接口函数用于注册 per-CPU 的热插拔线程，但并不调用这些线程的入口函数
+* 其中的关键点是，`smpboot_thread_fn()` 是 per-CPU 内核线程的公用入口函数
 ```cpp
 smpboot_register_percpu_thread()
    for_each_online_cpu(cpu)
@@ -550,8 +549,8 @@ free_create:
     return task;  //返回创建好的内核线程
 }
 ```
-### per-CPU 内核线程的公用入口函数 `smpboot_thread_fnc()`
-* 在 Per CPU 热插拔线程这个场景中，内核线程的公用入口函数 `kthread()` 会调用 per-CPU 内核线程的公用入口函数 `smpboot_thread_fnc()`
+### per-CPU 内核线程的公用入口函数 `smpboot_thread_fn()`
+* 在 Per CPU 热插拔线程这个场景中，内核线程的公用入口函数 `kthread()` 会调用 per-CPU 内核线程的公用入口函数 `smpboot_thread_fn()`
 * 检查线程停止（stop）和停放（park）状况。为已注册的线程调用必要的设置、清理、停放和取消停放函数。
 * 最重要的是，它会调用特定的内核线程入口函数 `ht->thread_fn(td->cpu)`
 * kernel/smpboot.c
@@ -588,7 +587,7 @@ static int smpboot_thread_fn(void *data)
 ```
 
 ## Stop Task 的创建
-* `stop_cpu[s]()` 是简单化的 Per CPU 最大优先级 CPU 独占机制。
+* `stop_cpu[s]()` 是简单化的 Per CPU 最高优先级 CPU 独占机制。
   * 调用者可以指定要在单个或多个 CPU 上执行的非睡眠函数，抢占所有其他进程并独占这些 CPU，直到其完成。
   * 此机制的资源是在 CPU 启动时预先分配的，只要目标 CPU online，就保证请求得到服务。
 * 一个典型的 Per CPU 热插拔线程就是 CPU stop task 线程，也就是 `ps aux` 命令看到的 per CPU 的 `migration/*` 内核线程

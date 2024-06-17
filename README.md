@@ -39,6 +39,7 @@
 - [Kdump](kernel/kdump.md)
 - [MCE](kernel/mce.md)
 - [内核线程及 Stop Machine](kernel/stop_machine.md)
+- [CPU 热插拔](kernel/cpu_hotplug.md)
 
 ## 锁
 - [锁的基本知识](kernel/lock/Lock-1.md)
