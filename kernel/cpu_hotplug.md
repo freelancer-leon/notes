@@ -228,6 +228,9 @@ $ tail /sys/devices/system/cpu/hotplug/states
 ```
 
 ## CPU Offline 时的任务迁移
+
+![CPU Hotplug - Offlie](pic/cpuoffline_seq.png)
+
 * CPU offline 是个复杂的过程，流程一共需要四个线程和周期性调度器参与，其中四个线程分别为：
 1. 启动 CPU 热插拔命令的线程，以下将其称为 *发起线程*
 2. 用于执行热插拔状态机的 per-CPU 线程 `cpuhp/%u`，以下将其称为 *热插拔线程*
@@ -250,7 +253,16 @@ $ tail /sys/devices/system/cpu/hotplug/states
      * 且将其中断迁移到其它 CPU 上。
    * 当完成以上流程之后，`take_cpu_down()` 将其 stop machine 线程自身设置为 `park` 状态，此时该 CPU 上将只剩下 idle 进程，因此 idle 进程开始执行。
 5. 当 idle 进程检测到 CPU 已经为 `offline` 状态，就开始执行 CPU 假死流程。
-   * 它首先关闭 idle 进程自身的 nohz tick 时钟，然后进入假死状态。
+   * 它首先关闭 idle 进程自身的 nohz tick 时钟，
+   * 然后通过发起一个异步的  IPI `CALL_FUNCTION_SINGLE_VECTOR` 去唤醒阻塞在 `takedown_cpu()` 处的发起进程
+     ```cpp
+     cpuhp_report_idle_dead()
+     -> cpuhp_report_idle_dead()
+        -> cpuhp_complete_idle_dead()
+           -> smp_call_function_single(cpuhp_complete_idle_dead)
+     ···-> complete_ap_thread(st, false)
+     ```
+   * 随后调用 `arch_cpu_idle_dead()` 进入假死状态。
 6. CPU offline 发起进程被唤醒后，继续执行 CPU 下电后的一些遗留工作，比如 `__cpu_die(cpu)`，并最终完成整个 CPU offline 流程。
 
 ### 触发 CPU Offline
@@ -553,6 +565,98 @@ static int __cpuhp_invoke_callback_range(bool bringup,
     }
 
     return ret;
+}
+```
+
+### 运行在发起 CPU Offline 进程上的 `takedown_cpu()`
+* 当发起 CPU Offline 的进程进入到 `CPUHP_TEARDOWN_CPU` 的时候就会调用其回调函数 `takedown_cpu()`
+* kernel/cpu.c
+```cpp
+static int takedown_cpu(unsigned int cpu)
+{
+    struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
+    int err;
+    //停放 "cpuhp/%u"
+    /* Park the smpboot threads */
+    kthread_park(st->thread);
+
+    /*
+     * Prevent irq alloc/free while the dying cpu reorganizes the
+     * interrupt affinities.
+     */
+    irq_lock_sparse();
+    //给 offline CPU 安排一个 stop machine 的 take_cpu_down() 流程，完成第二阶段的 offline
+    /*
+     * So now all preempt/rcu users must observe !cpu_active().
+     */
+    err = stop_machine_cpuslocked(take_cpu_down, NULL, cpumask_of(cpu));
+    if (err) {
+        /* CPU refused to die */
+        irq_unlock_sparse();
+        /* Unpark the hotplug thread so we can rollback there */
+        kthread_unpark(st->thread);
+        return err;
+    }
+    BUG_ON(cpu_online(cpu));
+    //等待 stop machine 的 take_cpu_down() 流程走完
+    /*
+     * The teardown callback for CPUHP_AP_SCHED_STARTING will have removed
+     * all runnable tasks from the CPU, there's only the idle task left now
+     * that the migration thread is done doing the stop_machine thing.
+     *
+     * Wait for the stop thread to go away.
+     */
+    wait_for_ap_thread(st, false);
+    BUG_ON(st->state != CPUHP_AP_IDLE_DEAD);
+
+    /* Interrupts are moved away from the dying cpu, reenable alloc/free */
+    irq_unlock_sparse();
+
+    hotplug_cpu__broadcast_tick_pull(cpu);
+    /* This actually kills the CPU. */
+    __cpu_die(cpu);
+
+    cpuhp_bp_sync_dead(cpu);
+
+    tick_cleanup_dead_cpu(cpu);
+    rcutree_migrate_callbacks(cpu);
+    return 0;
+}
+```
+
+### 运行在 Stop Machine 进程中的 `take_cpu_down()`
+* 这个 stop machine 的 work 是发起 CPU Offline 的进程安排进来的，完成第二阶段的 offline
+* kernel/cpu.c
+```cpp
+static int take_cpu_down(void *_param)
+{
+    struct cpuhp_cpu_state *st = this_cpu_ptr(&cpuhp_state);
+    enum cpuhp_state target = max((int)st->target, CPUHP_AP_OFFLINE);
+    int err, cpu = smp_processor_id();
+
+    /* Ensure this CPU doesn't handle any more interrupts. */
+    err = __cpu_disable();
+    if (err < 0)
+        return err;
+
+    /*
+     * Must be called from CPUHP_TEARDOWN_CPU, which means, as we are going
+     * down, that the current state is CPUHP_TEARDOWN_CPU - 1.
+     */
+    WARN_ON(st->state != (CPUHP_TEARDOWN_CPU - 1));
+
+    /*
+     * Invoke the former CPU_DYING callbacks. DYING must not fail!
+     */
+    cpuhp_invoke_callback_range_nofail(false, cpu, st, target);
+
+    /* Give up timekeeping duties */
+    tick_handover_do_timer();
+    /* Remove CPU from timer broadcasting */
+    tick_offline_cpu(cpu);
+    /* Park the stopper thread */
+    stop_machine_park(cpu);
+    return 0;
 }
 ```
 

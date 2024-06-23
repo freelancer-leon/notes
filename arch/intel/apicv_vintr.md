@@ -324,7 +324,7 @@ Bit 位置 | 名称 | 描述
 4. 处理器将零写入 local APIC 中的 EOI 寄存器；这将解除来自 local APIC 的 posted-interrupt notification vector 的中断。
 5. 逻辑处理器将 PIR 与 VIRR 执行 *逻辑或*，并清除 PIR。在读取 PIR 位（以确定要用什么和 VIRR 进行或运算）和清除它之间，没有其他 agent 可以读取或写入 PIR 位（或一组位）。
 6. 逻辑处理器将 RVI 设置为 RVI 的旧值和 PIR 中设置的所有位的最高索引中的最大值；如果在 PIR 中没有设置任何位，则 RVI 保持不变。
-7. 逻辑处理器 evaluates pending 的虚拟中断，如第 29.2.1 节所述。
+7. 逻辑处理器 evaluates pending 的虚拟中断，如第 30.2.1 节所述。
 * 逻辑处理器以不可中断的方式执行上述步骤。如果第 7 步导致识别出虚拟中断，处理器可以立即传递该中断。
 * 当中断控制器向 CPU 核提供未屏蔽的外部中断时，会发生上述 1 到 7 步。
 * 以下 iterms 考虑了某些中断传递的情况：

@@ -574,10 +574,24 @@ static int smpboot_thread_fn(void *data)
         set_current_state(TASK_INTERRUPTIBLE);
         preempt_disable();
  ...
+         if (kthread_should_park()) {
+            __set_current_state(TASK_RUNNING);
+            preempt_enable();
+            if (ht->park && td->status == HP_THREAD_ACTIVE) {
+                BUG_ON(td->cpu != smp_processor_id());
+                ht->park(td->cpu);
+                td->status = HP_THREAD_PARKED;
+            }
+            kthread_parkme();
+            /* We might have been woken for stop */
+            continue;
+        }
+...
+        //由 per-CPU 线程的回调函数回答是否还需要继续运行，如果不需要则睡眠
         if (!ht->thread_should_run(td->cpu)) {
             preempt_enable_no_resched();
             schedule();
-        } else {
+        } else { //如果回调函数回答是继续运行，则调用线程函数
             __set_current_state(TASK_RUNNING);
             preempt_enable();
             ht->thread_fn(td->cpu);
@@ -898,6 +912,40 @@ static int multi_cpu_stop(void *data)
 
     local_irq_restore(flags);
     return err;
+}
+```
+
+### Stop Task 睡眠
+* 之前说过，在 `smpboot_thread_fn()` per-CPU 线程公用函数的循环中，会通过调用 `ht->thread_should_run(td->cpu)` 回调来询问 per-CPU 任务是否还能继续运行。如果不能，则会调用 `schedule()` 去睡眠
+* Stop task 的这个回调函数是 `cpu_stop_should_run()`，由此可见，当 stop task 没有 works，该函数会返回 `false`，这样 per-CPU 上的 stop task 就被调度出去了
+```cpp
+static int cpu_stop_should_run(unsigned int cpu)
+{
+    struct cpu_stopper *stopper = &per_cpu(cpu_stopper, cpu);
+    unsigned long flags;
+    int run;
+
+    raw_spin_lock_irqsave(&stopper->lock, flags);
+    run = !list_empty(&stopper->works);
+    raw_spin_unlock_irqrestore(&stopper->lock, flags);
+    return run;
+}
+```
+### 停放 Stop Task
+* `stopper->enabled = false` 会阻止往 work list 上添加 work，见 `cpu_stop_queue_work()`
+* 接着 `kthread_park()` 会将自身的 `kthread->flags` 的 `KTHREAD_SHOULD_PARK` 标志位设上
+* kernel/stop_machine.c
+```cpp
+void stop_machine_park(int cpu)
+{
+    struct cpu_stopper *stopper = &per_cpu(cpu_stopper, cpu);
+    /*
+     * Lockless. cpu_stopper_thread() will take stopper->lock and flush
+     * the pending works before it parks, until then it is fine to queue
+     * the new works.
+     */
+    stopper->enabled = false;      //该标志会阻止往 work list 上添加 work
+    kthread_park(stopper->thread);
 }
 ```
 
