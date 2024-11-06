@@ -485,36 +485,37 @@ echo nop > /sys/kernel/debug/tracing/current_tracer
 # 跟踪选项
 ## 通用 trace_options
 * `/sys/kernel/debug/tracing/trace_options`文件
-	```
+	```sh
 	# cat /sys/kernel/debug/tracing/trace_options
-	print-parent
-	nosym-offset
-	nosym-addr
-	noverbose
-	noraw
-	nohex
-	nobin
-	noblock
-	nostacktrace
-	trace_printk
-	noftrace_preempt
-	nobranch
-	annotate
-	nouserstacktrace
-	nosym-userobj
-	noprintk-msg-only
-	context-info
-	nolatency-format
-	sleep-time
-	graph-time
-	record-cmd
-	overwrite
-	nodisable_on_free
-	irq-info
-	markers
-	function-trace
-	notest_nop_accept
-	notest_nop_refuse
+  print-parent
+  nosym-offset
+  nosym-addr
+  noverbose
+  noraw
+  nohex
+  nobin
+  noblock
+  nofields
+  trace_printk
+  annotate
+  nouserstacktrace
+  nosym-userobj
+  noprintk-msg-only
+  context-info
+  latency-format
+  record-cmd
+  norecord-tgid
+  overwrite
+  nodisable_on_free
+  irq-info
+  markers
+  noevent-fork
+  pause-on-trace
+  hash-ptr
+  function-trace
+  nofunction-fork
+  display-graph
+  nostacktrace
 	```
 * 通过修改`/sys/kernel/debug/tracing/options`下的文件可以使能这些`trace_options`
 
@@ -558,11 +559,15 @@ echo nop > /sys/kernel/debug/tracing/current_tracer
 	```
 
 ### function-trace
-* 如果该选项使能（缺省情况），延迟型 tracer 会启用函数跟踪功能
+* 如果该选项使能（缺省情况），延迟型 tracer 会启用函数跟踪功能（栈回溯）
 * 当禁用该选项时，延迟型 tracer 不跟踪函数，从而降低执行延迟测试时的开销
 
 ### stacktrace
 * 当启用该选项时，任何 **trace event** 的栈跟踪将会被记录下来
+
+### display-graph
+* 设置后，延迟 tracer（irqsoff、wakeup 等）将使用 function graph tracing 而不是 function tracing。
+* 建议采用 latency tracers 时设置该选项
 
 ## function tracer 选项
 ### func_stack_trace
@@ -604,6 +609,12 @@ rtc_test.2029-2902  [001] ....  7694.642015: <stack trace>
 * `funcgraph-irqs`：当禁用时，发生在中断上下文的函数不会被跟踪
 ### sleep-time
 * `sleep-time`：当使能时，会把任务被调度出去的时间也算作函数调用的一部份。
+### funcgraph-retval
+* 设置后，每个跟踪函数的返回值将在等号“`=`”后打印。默认情况下，此功能处于关闭状态。
+### funcgraph-retval-hex
+* 设置后，返回值将始终以十六进制格式打印。
+* 如果未设置此选项且返回值为错误代码，则将以有符号十进制格式打印；否则也将以十六进制格式打印。
+* 默认情况下，此选项处于关闭状态。
 
 # 基于 kprobes 的事件跟踪
 * 与基于 tracepoint 的事件跟踪相似，kprobes 事件跟踪是基于 kprobes 点的跟踪

@@ -146,6 +146,170 @@
   * PAT 有 8 个条目来指定 cache 的行为，它的实体存储在一个 MSR 里
   * 每个页表条目包含 3 bit 的索引，指向一个 PAT 条目，所以系统软件通过控制页表可以用一个非常细的粒度来指定 cache 的行为
 
+## 查询 Cache 的信息
+### x86 平台
+* 在 x86 平台上可以用 `CPUID - 0x4` 来查询 cache 的信息
+* 当 `CPUID` 执行时，`EAX` 设置为 `0x04`，`ECX` 包含索引值，处理器将返回编码数据，该数据描述一组确定性 cache 参数（针对与 `ECX` 中的输入关联的 cache 级别）。有效索引值从 `0` 开始。
+* 软件可以从索引值 `0` 开始枚举 cache 层次结构中每个级别的确定性 cache 参数，直到参数报告与缓存类型字段关联的值为 `0`。
+* cache 大小（以字节为单位）的计算公式为：
+  ```c
+  = (Ways + 1) * (Partitions + 1) * (Line_Size + 1) * (Sets + 1)
+  = (EBX[31:22] + 1) * (EBX[21:12] + 1) * (EBX[11:0] + 1) * (ECX + 1)
+  ```
+  * `cpuid` 工具的返回结果会帮助 `+1`
+* `CPUID - 0x4` 还报告可用于导出物理封装中处理器核心拓扑的数据。
+  * 此信息对于所有有效索引值都是恒定的。
+  * 软件可以通过执行 `EAX=0x4` 和 `ECX=0` 的 `CPUID` 来查询报告的原始数据，并将其用作 SDM vol.3A 第 9 章“多处理器管理”中描述的拓扑枚举算法的一部分。
+
+#### 示例
+* 在一台 2 个 packages，每个 package 64 个 cores，支持超线程的 CPU 的机器上枚举 cache 信息
+  * 总共就是 256 个逻辑处理器，128 个物理 cores，2 个 sockets
+```sh
+# lscpu
+...
+CPU(s):                  256
+  On-line CPU(s) list:   0-255
+...
+    Thread(s) per core:  2
+    Core(s) per socket:  64
+    Socket(s):           2
+...
+Caches (sum of all):
+  L1d:                   6 MiB (128 instances)
+  L1i:                   4 MiB (128 instances)
+  L2:                    256 MiB (128 instances)
+  L3:                    640 MiB (2 instances)
+...
+# lscpu -C
+NAME ONE-SIZE ALL-SIZE WAYS TYPE        LEVEL   SETS PHY-LINE COHERENCY-SIZE
+L1d       48K       6M   12 Data            1     64        1             64
+L1i       32K       4M    8 Instruction     1     64        1             64
+L2         2M     256M   16 Unified         2   2048        1             64
+L3       320M     640M   20 Unified         3 262144        1             64
+```
+
+##### L1 dCache 为 `48KB`
+* 枚举的索引值 `ECX = 0`
+```sh
+# cpuid -1 -l 0x4 -s 0
+CPU:
+   deterministic cache parameters (4):
+      --- cache 0 ---
+      cache type                         = data cache (1) # cache 类型是数据 cache
+      cache level                        = 0x1 (1)        # L1 cache
+      self-initializing cache level      = true           # 自初始化 cache 级别（不需要 SW 初始化）
+      fully associative cache            = false          # 不是全相联
+      maximum IDs for CPUs sharing cache = 0x1 (1)        # 共享此缓存的逻辑处理器的最大可寻址 ID 数量（2 threads/core）
+      maximum IDs for cores in pkg       = 0x3f (63)      # 物理处理器核心的最大可寻址 ID 数量（64 cores/pkg）
+      system coherency line size         = 0x40 (64)      # 一条 cache line 的大小是 64 Bytes
+      physical line partitions           = 0x1 (1)        # cache line 的分区是 1
+      ways of associativity              = 0xc (12)       # 12 路（way）
+      number of sets                     = 0x40 (64)      # 64 组（set）
+      WBINVD/INVD acts on lower caches   = false          # 共享此 cache 的线程的 WBINVD/INVD 作用于共享此 cache 的线程的低级 cache
+      inclusive to lower caches          = false          # cache 不包括较低级别的 cache
+      complex cache indexing             = false          # 直接映射 cache
+      number of sets (s)                 = 64
+      (size synth)                       = 49152 (48 KB)
+```
+* 那么 L1 数据 cache 为 `48KB`
+  ```c
+  L1_dCache_Size = (Ways + 1) * (Partitions + 1) * (Line_Size + 1) * (Sets + 1)
+                 = 12 * 1 * 64 * 64 = 49152 ~= 48K
+  ```
+
+##### L1 iCache 为 `32KB`
+* 枚举的索引值 `ECX = 1`
+```sh
+# cpuid -1 -l 0x4 -s 1
+CPU:
+      --- cache 1 ---
+      cache type                         = instruction cache (2) # cache 类型是指令 cache
+      cache level                        = 0x1 (1)               # L1 cache
+      self-initializing cache level      = true                  # 自初始化 cache 级别（不需要 SW 初始化）
+      fully associative cache            = false                 # 不是全相联
+      maximum IDs for CPUs sharing cache = 0x1 (1)               # 共享此缓存的逻辑处理器的最大可寻址 ID 数量（2 threads/core）
+      maximum IDs for cores in pkg       = 0x3f (63)             # 物理处理器核心的最大可寻址 ID 数量（64 cores/pkg）
+      system coherency line size         = 0x40 (64)             # 一条 cache line 的大小是 64 Bytes
+      physical line partitions           = 0x1 (1)               # cache line 的分区是 1
+      ways of associativity              = 0x8 (8)               # 8 路（way）
+      number of sets                     = 0x40 (64)             # 64 组（set）
+      WBINVD/INVD acts on lower caches   = false                 # 共享此 cache 的线程的 WBINVD/INVD 作用于共享此 cache 的线程的低级 cache
+      inclusive to lower caches          = false                 # cache 不包括较低级别的 cache
+      complex cache indexing             = false                 # 直接映射 cache
+      number of sets (s)                 = 64
+      (size synth)                       = 32768 (32 KB)
+```
+* 那么 L1 指令 cache 为 `32KB`
+  ```c
+  L1_iCache_Size = (Ways + 1) * (Partitions + 1) * (Line_Size + 1) * (Sets + 1)
+                 = 8 * 1 * 64 * 64 = 32768 ~= 32K
+  ```
+
+##### L2 Cache 为 `2048KB`
+* L2 cache 为同一 core 上的所有 threads 共享
+* 枚举的索引值 `ECX = 2`
+```sh
+# cpuid -1 -l 0x4 -s 2
+CPU:
+      --- cache 2 ---
+      cache type                         = unified cache (3) # cache 类型是统一 cache
+      cache level                        = 0x2 (2)           # L2 cache
+      self-initializing cache level      = true              # 自初始化 cache 级别（不需要 SW 初始化）
+      fully associative cache            = false             # 不是全相联
+      maximum IDs for CPUs sharing cache = 0x1 (1)           # 共享此缓存的逻辑处理器的最大可寻址 ID 数量（2 threads/core）
+      maximum IDs for cores in pkg       = 0x3f (63)         # 物理处理器核心的最大可寻址 ID 数量（64 cores/pkg）
+      system coherency line size         = 0x40 (64)         # 一条 cache line 的大小是 64 Bytes
+      physical line partitions           = 0x1 (1)           # cache line 的分区是 1
+      ways of associativity              = 0x10 (16)         # 16 路（way）
+      number of sets                     = 0x800 (2048)      # 2048 组（set）
+      WBINVD/INVD acts on lower caches   = false             # 同上，不变
+      inclusive to lower caches          = false             # 同上，不变
+      complex cache indexing             = false             # 同上，不变
+      number of sets (s)                 = 2048
+      (size synth)                       = 2097152 (2 MB)
+```
+* 那么 L2 统一 cache 为 `2048KB`
+  ```c
+  L2_Cache_Size = (Ways + 1) * (Partitions + 1) * (Line_Size + 1) * (Sets + 1)
+                 = 16 * 1 * 64 * 2048 = 2097152 ~= 2048K
+  ```
+
+##### L3 Cache 为 `320MB`
+* L3 cache 为同一 package 上的所有 cores 共享，该 CPU 上的一个 package 上有 64 个 cores，支持超线程，因此 `maximum IDs for CPUs sharing cache` 的值是 `128`
+* 枚举的索引值 `ECX = 3`
+```sh
+# cpuid -1 -l 0x4 -s 3
+CPU:
+      --- cache 3 ---
+      cache type                         = unified cache (3) # cache 类型是统一 cache
+      cache level                        = 0x3 (3)           # L3 cache
+      self-initializing cache level      = true              # 自初始化 cache 级别（不需要 SW 初始化）
+      fully associative cache            = false             # 不是全相联
+      maximum IDs for CPUs sharing cache = 0x7f (127)        # 共享此缓存的逻辑处理器的最大可寻址 ID 数量（128 threads/pkg）
+      maximum IDs for cores in pkg       = 0x3f (63)         # 物理处理器核心的最大可寻址 ID 数量（64 cores/pkg）
+      system coherency line size         = 0x40 (64)         # 一条 cache line 的大小是 64 Bytes
+      physical line partitions           = 0x1 (1)           # cache line 的分区是 1
+      ways of associativity              = 0x14 (20)         # 20 路（way）
+      number of sets                     = 0x40000 (262144)  # 262144 组（set）
+      WBINVD/INVD acts on lower caches   = false             # 同上，不变
+      inclusive to lower caches          = false             # 同上，不变
+      complex cache indexing             = true              # 使用复杂的 function 来索引缓存，可能使用所有地址位
+      number of sets (s)                 = 262144
+      (size synth)                       = 335544320 (320 MB)
+```
+* 那么 L3 统一 cache 为 `320MB`
+  ```c
+  L3_Cache_Size = (Ways + 1) * (Partitions + 1) * (Line_Size + 1) * (Sets + 1)
+                 = 20 * 1 * 64 * 262144 = 335544320 ~= 320M
+  ```
+* L3 cache 通常是最后一级 cache（LLC），再枚举的索引值 `ECX = 4` 返回 `cache type == 0`，没有下一级的 cache 了
+```sh
+# cpuid -1 -l 0x4 -s 4
+CPU:
+      --- cache 4 ---
+      cache type                         = no more caches (0)
+```
+
 ## References
 
 - [quick-path-interconnect-introduction-paper.pdf](https://www.intel.ca/content/dam/doc/white-paper/quick-path-interconnect-introduction-paper.pdf)

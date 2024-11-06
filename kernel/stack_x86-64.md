@@ -96,7 +96,7 @@ struct irq_stack {
   1. CPU 依然会将被中断进程的`ss`、`rsp`、`rflags`、`cs`、`rip`、`error code`等压入 *当前内核栈*
   2. 软件保存被中断进程的通用目的寄存器在当前进程栈，然后清除 GPRs 的内容
   3. 软件将栈切换到预设好的 per-CPU 的中断栈，栈的地址由 per-CPU 变量来记录，类似`moveq PER_CPU_VAR(irq_stack_ptr), %rsp`（此外还需在切换前将当前内核栈地址放入中断栈的栈顶，见 `call_on_stack` 的注释）
-  4. 中断处理完成后，切换回被中断的 *当前内核栈*，类似 `"popq  %%rsp`（之前在中断栈顶的当前内核栈地址弹出到 `%rsp`）
+  4. 中断处理完成后，切换回被中断的 *当前内核栈*，类似 `popq  %%rsp`（之前在中断栈顶的当前内核栈地址弹出到 `%rsp`）
 
 ### 中断栈的分配和初始化
 ```cpp
@@ -161,9 +161,10 @@ irq_entries_start
 * 在这个 commit 后中断栈的使用发生了一些变化，
   * [[patch V2 00_13] x86_irq_64 Inline irq stack switching](https://lore.kernel.org/all/20210209234041.127454039@linutronix.de/)
   * [x86/entry: Convert system vectors to irq stack macro](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=569dd8b4eb7ef666b467c41b8e8e4f2820d07f67)
-  * 对于用户程序被中断或者已经有中断正在 per-CPU 的中断栈上被处理的情况，直接调用`__common_interrupt()`，不切换栈
-    * 被中断的是用户程序，第一站是 trampoline stack
-    * 已经有中断正在 per-CPU 中断栈上被处理，继续使用 *中断栈*
+  * 对于用户程序被中断或者已经有中断正在 per-CPU 的中断栈上被处理的情况，`call_on_irqstack_cond()` 直接调用 `func => __common_interrupt()`，不切换栈
+    * 被中断的是用户程序，第一站是 trampoline stack，走到 `asm_common_interrupt -> call error_entry; movq %rax, %rsp` 会把栈切到进程内核栈
+    * 被中断的是内核，`asm_common_interrupt` 不会切换栈，走到 `call_on_irqstack_cond()` 如果已经有中断正在 per-CPU 中断栈上被处理，继续使用 *当前内核栈*
+      * 这是什么情况？中断嵌套？
 * arch/x86/include/asm/irq_stack.h
 ```cpp
 /*
@@ -292,7 +293,7 @@ irq_entries_start
 
 ## Privilege-level 发生变化时的栈
 * 对于 privilege-level 变化的情况，比如异常或中断发生时 CPU 运行在用户态，handler 要使用的栈的 segment selector 和 stack pointer 是从当前执行任务的 TSS 中获得的。
-  * 对于 x86-64 Linux 这个栈由`cpu_tss_rw.x86_tss.sp0`指示，也就是 CPU entry trampoline stack
+  * 对于 x86-64 Linux 这个栈由 `cpu_tss_rw.x86_tss.sp0` 指示，也就是 CPU entry trampoline stack
   * 对于中断，内核会随后切换到中断栈上去处理中断（commit 569dd8b4eb7e 后有变化，见上面，也切换到进程内核栈上去处理中断）
   * 对于异常，随即切换到进程内核栈上去处理异常
 

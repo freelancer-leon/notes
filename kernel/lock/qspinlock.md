@@ -762,11 +762,15 @@ static __always_inline void clear_pending_set_locked(struct qspinlock *lock)
 
 #### 进入 MCS node 队列
 
+* 自旋锁关抢占，CPU 进入忙等，如果某个 CPU 因为竞争某把锁已经在自旋了，在同级的上下文就不会有其他 task 来抢锁了
+* 因此 `qnodes[MAX_NODES]` 是个 per-CPU 的数组，在 task、softirq、hardirq、NMI 四个级别上在每个 CPU 各占 `struct qnode` 实例
+* 自旋时，检查的是分属各 CPU 的 `qnode.mcs` 的锁字，而不是给每把锁在每个 CPU 上都分配一个 `struct mcs_spinlock` 实例
+
 ##### MCS node
 
 * kernel/locking/mcs_spinlock.h
 
-```c
+```cpp
 struct mcs_spinlock {
     struct mcs_spinlock *next;
     int locked; /* 1 if lock acquired */
@@ -777,7 +781,7 @@ struct mcs_spinlock {
 * `locked`初始化为`0`，并在这上面自旋；变为`1`时表示锁前一个竞争者已获得锁，现在把第 1 竞争者的位置传给我
 * kernel/locking/qspinlock.c
 
-```c
+```cpp
 #define MAX_NODES   4
 
 /*

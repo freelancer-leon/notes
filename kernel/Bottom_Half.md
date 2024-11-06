@@ -622,8 +622,8 @@ EXPORT_SYMBOL(tasklet_init);
   * 注意，其他地方仍有可能将tasklet再度放回链表
   * 可能会引起休眠，**禁止在中断上下文使用**
 
-# 工作队列（work queue)
-
+# 工作队列（work queue）
+* 现在工作队列的实现是 [CMWQ（Concurrency Managed Workqueue）](cmwq.md)
 * 工作队列是将工作推后执行的一种方式，可以用来实现中断下半部
 * 工作队列在**进程上下文**，允许在工作中重新调度或睡眠。
   * 需要大量内存
@@ -632,133 +632,18 @@ EXPORT_SYMBOL(tasklet_init);
 
 ## 工作队列的实现
 * **工作者线程**（worker thread）是内核线程，由工作队列子系统提供的接口创建，负责执行由内核其他部分排到队列里的任务。
-* 驱动程序可以创建一个专门的worker thread来处理要推后的工作。
-* 工作队列子系统也提供缺省的worker thread，每个处理器对应一个。
-* 创建属于自己的worker thread的情况：
-  * 要在worker thread执行大量的处理操作
-  * CPU密集型和性能要求严格的任务。可减轻缺省worker thread的负担，避免饥饿
+* 驱动程序可以创建一个专门的 worker thread 来处理要推后的工作。
+* 工作队列子系统也提供缺省的 worker thread，每个处理器对应一个。
+* 创建属于自己的 worker thread 的情况：
+  * 要在 worker thread 执行大量的处理操作
+  * CPU 密集型和性能要求严格的任务。可减轻缺省 worker thread 的负担，避免饥饿
 
-### worker thread结构体
-* 每种类型的work thread都对应到一个`workqueue_struct`结构体。
-* `workqueue_struct`结构体包含一个Per CPU的`cpu_workqueue_struct`结构体。
-* 每种类型的work thread在每个CPU上有一个thread。
-* 因此每个work thread可以用一个`cpu_workqueue_struct`。
-* `cpu_workqueue_struct`结构的成员`worklist`为链表头，链表成员是`work_struct`类型的任务。
-
-#### 新的结构体定义
-```c
-/*
- * The externally visible workqueue.  It relays the issued work items to
- * the appropriate worker_pool through its pool_workqueues.
- */
-struct workqueue_struct {
-    struct list_head    pwqs;       /* WR: all pwqs of this wq */
-    struct list_head    list;       /* PR: list of all workqueues */
-    ...
-    struct pool_workqueue __percpu *cpu_pwqs; /* I: per-cpu pwqs */
-    ...
-};
-
-/*
- * The per-pool workqueue.  While queued, the lower WORK_STRUCT_FLAG_BITS
- * of work_struct->data are used for flags and the remaining high bits
- * point to the pwq; thus, pwqs need to be aligned at two's power of the
- * number of flag bits.
- */
-struct pool_workqueue {
-    struct worker_pool  *pool;      /* I: the associated pool */
-    struct workqueue_struct *wq;        /* I: the owning workqueue */
-    ...
-    struct list_head    pwqs_node;  /* WR: node on wq->pwqs */
-    ...
-} __aligned(1 << WORK_STRUCT_FLAG_BITS);
-
-struct worker_pool {
-    spinlock_t      lock;       /* the pool lock */
-    int         cpu;        /* I: the associated cpu */
-    int         node;       /* I: the associated node ID */
-    int         id;     /* I: pool ID */
-    ...
-    struct list_head    worklist;   /* L: list of pending works */
-    int         nr_workers; /* L: total number of workers */
-    ...
-    /* see manage_workers() for details on the two manager mutexes */
-    struct mutex        manager_arb;    /* manager arbitration */
-    struct worker       *manager;   /* L: purely informational */
-    struct mutex        attach_mutex;   /* attach/detach exclusion */
-    struct list_head    workers;    /* A: attached workers */
-    ...
-    int         refcnt;     /* PL: refcnt for unbound pools */
-
-    /*   
-     * The current concurrency level.  As it's likely to be accessed
-     * from other CPUs during try_to_wake_up(), put it in a separate
-     * cacheline.
-     */
-    atomic_t        nr_running ____cacheline_aligned_in_smp;
-    ...
-} ____cacheline_aligned_in_smp;
-
-struct work_struct {
-    atomic_long_t data;
-    struct list_head entry;
-    work_func_t func;
-#ifdef CONFIG_LOCKDEP
-    struct lockdep_map lockdep_map;
-#endif
-};
-...*```
-```
-
-## 使用工作队列
-1. 创建推后的工作
-* 静态创建
-   ```c
-   DECLARE_WORK(name, void (*func)(void *), void *data);
-   ```
-* 动态创建
-   ```c
-   INIT_WORK(struct work_struct *work, void (*func)(void *), void *data);
-   ```
-2. 工作队列handler
-   ```c
-   void work_handler(void *data)
-   ```
-* 注意：工作队列处理函数不能访问用户空间。因为它是在内核线程中执行的，而内核线程在用户空间没有相关的内存映射。
-  * Q：什么时候内核可以访问用户空间？
-  * A： 通常发生系统调用时，内核会代表用户空间的进程运行，此时会映射用户空间的内存。
-3. 对工作进行调度
-   ```c
-   schedule_work(&work);
-   schedule_delayed_work(&work, delay);
-   ```
-4. 刷新工作队列
-   ```c
-   void flush_scheduled_work(void);
-   ```
-* 该函数会一直等待，直到队列中所有队列中所有对象都被执行完后才返回。
-* 等待过程中该函数会休眠，所以只能在进程上下文中使用。
-* 该函数不取消任何延迟执行的工作。
-* 取消延迟工作应调用：
-   ```c
-   int cancel_delayed_work(struct work_struct *work);
-   ```
-5. 创建新的工作队列
-* 创建
-  ```c
-  struct workqueue_struct *create_workqueue(const char *name);
-  ```
-* 调度
-  ```c
-  int queue_work(struct workqueue_struct *wq, struct work_struct *work);
-  int queue_delayed_work(struct workqueue_struct *wq,
-        struct work_struct *work,
-        unsigned long delay);
-  ```
-* 刷新
-  ```c
-  void flush_workqueue(struct workqueue_struct *wq);
-  ```
+### worker thread 结构体
+* 每种类型的 work thread 都对应到一个 `workqueue_struct` 结构体。
+* `workqueue_struct` 结构体包含一个 Per CPU 的 `cpu_workqueue_struct` 结构体。
+* 每种类型的 work thread 在每个 CPU 上有一个 thread。
+* 因此每个 work thread 可以用一个 `cpu_workqueue_struct`。
+* `cpu_workqueue_struct` 结构的成员 `worklist` 为链表头，链表成员是`work_struct` 类型的任务。
 
 # 下半部之间加锁
 * 在使用下半部机制时，即使是在单处理器系统下，避免共享数据被同时访问也是置关重要的。
