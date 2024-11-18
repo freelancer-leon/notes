@@ -1363,24 +1363,95 @@ cpuhp_invoke_callback()
 * 因为`cpuhp_setup_state_multi()`设定好了回调函数`trace_rb_cpu_prepare()`，随后有 CPU 热插的时候仍然是通过`rb_allocate_cpu_buffer()`接口初始化其他 CPU 的 ring buffer
 
 * `ring_buffer_alloc()`这个宏很关键，能让每个调用它的地方有一个与之绑定的`struct lock_class_key __key`
-	* include/linux/ring_buffer.h
-	```c
-	/*
-	 * Because the ring buffer is generic, if other users of the ring buffer get
-	 * traced by ftrace, it can produce lockdep warnings. We need to keep each
-	 * ring buffer's lock class separate.
-	 */
-	#define ring_buffer_alloc(size, flags)          \
-	({                          \
-	    static struct lock_class_key __key;     \
-	    __ring_buffer_alloc((size), (flags), &__key);   \
-	})
-	...__
-	```
+  * include/linux/ring_buffer.h
+    ```c
+    /*
+     * Because the ring buffer is generic, if other users of the ring buffer get
+     * traced by ftrace, it can produce lockdep warnings. We need to keep each
+     * ring buffer's lock class separate.
+     */
+    #define ring_buffer_alloc(size, flags)          \
+    ({                          \
+        static struct lock_class_key __key;     \
+        __ring_buffer_alloc((size), (flags), &__key);   \
+    })
+    ...
+    ```
   * 比如说，tracer 的 ring buffer 和 instances 的 ring buffer 都认为是同一个类
+
 ### Instances
 * Instances 功能的 ring buffer 也是通过`allocate_trace_buffers()`来分配的（见`create_trace_instances()`、`instance_mkdir()`等函数），所以 instance 的 ring buffer 是独立的
 * 因为`cpuhp_setup_state_multi(CPUHP_TRACE_RB_PREPARE, "trace/RB:preapre", trace_rb_cpu_prepare, NULL)`这里将`CPUHP_TRACE_RB_PREPARE`类型的回调函数设定为`trace_rb_cpu_prepare()`，所以当`instance_mkdir()`调用`allocate_trace_buffers()`去分配 ring buffers 的时候，最终也会通过`trace_rb_cpu_prepare()`这个接口来分配其他 CPU 的 instances ring buffer，只需要传递不同的`node`就可以了
+
+# 一些赋值调试的代码修改
+## 调整时间戳打印精度
+* 默认的时间戳打印精度为“微秒”，如果需要更高的精度需要修改代码。在 `/sys/kernel/debug/tracing/trace_clock` 选中的时钟源支持纳米级精度的情况下，可以通过如下修改打印“纳秒级”的时间戳
+```diff
+diff --git a/kernel/trace/trace.c b/kernel/trace/trace.c
+index 5afa58302b06..fc3299fdeccf 100644
+--- a/kernel/trace/trace.c
++++ b/kernel/trace/trace.c
+@@ -4303,8 +4303,8 @@ static void print_func_help_header(struct array_buffer *buf, struct seq_file *m,
+
+        print_event_info(buf, m);
+
+-       seq_printf(m, "#           TASK-PID    %s CPU#     TIMESTAMP  FUNCTION\n", tgid ? "   TGID   " : "");
+-       seq_printf(m, "#              | |      %s   |         |         |\n",      tgid ? "     |    " : "");
++       seq_printf(m, "#           TASK-PID    %s CPU#     TIMESTAMP     FUNCTION\n", tgid ? "   TGID   " : "");
++       seq_printf(m, "#              | |      %s   |         |            |\n",      tgid ? "     |    " : "");
+ }
+
+ static void print_func_help_header_irq(struct array_buffer *buf, struct seq_file *m,
+@@ -4322,8 +4322,8 @@ static void print_func_help_header_irq(struct array_buffer *buf, struct seq_file
+        seq_printf(m, "#                            %.*s|| / _--=> preempt-depth\n", prec, space);
+        seq_printf(m, "#                            %.*s||| / _-=> migrate-disable\n", prec, space);
+        seq_printf(m, "#                            %.*s|||| /     delay\n", prec, space);
+-       seq_printf(m, "#           TASK-PID  %.*s CPU#  |||||  TIMESTAMP  FUNCTION\n", prec, "     TGID   ");
+-       seq_printf(m, "#              | |    %.*s   |   |||||     |         |\n", prec, "       |    ");
++       seq_printf(m, "#           TASK-PID  %.*s CPU#  |||||  TIMESTAMP     FUNCTION\n", prec, "     TGID   ");
++       seq_printf(m, "#              | |    %.*s   |   |||||     |            |\n", prec, "       |    ");
+ }
+
+ void
+diff --git a/kernel/trace/trace_output.c b/kernel/trace/trace_output.c
+index db575094c498..329c9c2edb7d 100644
+--- a/kernel/trace/trace_output.c
++++ b/kernel/trace/trace_output.c
+@@ -593,14 +593,14 @@ lat_print_timestamp(struct trace_iterator *iter, u64 next_ts)
+ static void trace_print_time(struct trace_seq *s, struct trace_iterator *iter,
+                             unsigned long long ts)
+ {
+-       unsigned long secs, usec_rem;
++       unsigned long secs, nsec_rem;
+        unsigned long long t;
+
+        if (iter->iter_flags & TRACE_FILE_TIME_IN_NS) {
+-               t = ns2usecs(ts);
+-               usec_rem = do_div(t, USEC_PER_SEC);
++               t = ts; //ns2usecs(ts);
++               nsec_rem = do_div(t, NSEC_PER_SEC);
+                secs = (unsigned long)t;
+-               trace_seq_printf(s, " %5lu.%06lu", secs, usec_rem);
++               trace_seq_printf(s, " %5lu.%09lu", secs, nsec_rem);
+        } else
+                trace_seq_printf(s, " %12llu", ts);
+ }
+```
+* 修改打印精度后的事件输出如下：
+```c
+#                                _-----=> irqs-off/BH-disabled
+#                               / _----=> need-resched
+#                              | / _---=> hardirq/softirq
+#                              || / _--=> preempt-depth
+#                              ||| / _-=> migrate-disable
+#                              |||| /     delay
+#           TASK-PID     CPU#  |||||  TIMESTAMP     FUNCTION
+#              | |         |   |||||     |            |
+          <idle>-0       [110] d.h2.   172.663432001: contention_begin: 00000000807337b1 (flags=SPIN)
+          <idle>-0       [110] d.h2.   172.663434747: contention_end: 00000000807337b1 (ret=0)
+          <idle>-0       [063] d.h2.   175.465644550: contention_begin: 00000000807337b1 (flags=SPIN)
+          <idle>-0       [063] d.h2.   175.465647405: contention_end: 00000000807337b1 (ret=0)
+```
 
 # Reference
 * [ftrace 简介](https://www.ibm.com/developerworks/cn/linux/l-cn-ftrace/)

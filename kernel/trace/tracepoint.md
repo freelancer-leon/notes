@@ -53,5 +53,5 @@ TRACE_EVENT(sched_switch,
                 __entry->prev_state & TASK_STATE_MAX ? "+" : "",
                 __entry->next_comm, __entry->next_pid, __entry->next_prio)
 );
-...__```
+...
 ```
