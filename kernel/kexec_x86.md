@@ -5,10 +5,11 @@
 ```c
 start_kernel()
 -> setup_arch()
-   -> reserve_crashkernel()
+   -> arch_reserve_crashkernel()
       -> parse_crashkernel() //解析 crashkernel=XM 参数
-      -> memblock_phys_alloc_range() //根据参数分配 memblock
-      -> insert_resource(&iomem_resource, &crashk_res); //这样在 /proc/iomem 就能看到分配的 "Crash kernel" range 了
+      -> reserve_crashkernel_generic()
+         -> memblock_phys_alloc_range() //根据参数分配 memblock
+         -> insert_resource(&iomem_resource, &crashk_res); //这样在 /proc/iomem 就能看到分配的 "Crash kernel" range 了
 ```
 
 ### 用户态 kexec-tools
@@ -878,6 +879,7 @@ err:
 * 对于 kernel panic 的场景有，则通过`__crash_kexec()`调用`machine_kexec()`
   ```c
   panic()
+  -> atomic_notifier_call_chain(&panic_notifier_list, 0, buf) //这里通知 panic_notifier_list 上的 notifier，各子系统可扩展 panic 时的动作
   -> __crash_kexec(NULL)
      -> machine_kexec(kexec_crash_image)
   ```

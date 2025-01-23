@@ -407,7 +407,7 @@ SYM_CODE_END(\asmsym)
     jmp error_return
 .endm
 ```
-* `sync_regs()` 帮忙找到进程内核栈，真正地将栈切换到进程内核栈在 `call error_entry; movq %rax, %rsp`
+* 如果中断代码在用户模式，`sync_regs()` 帮忙运行在一个 per-CPU（IST 或 entry trampoline）栈上，找到普通的内核线程栈，真正地将栈切换到进程内核栈在 `call error_entry; movq %rax, %rsp`
 ```cpp
 /*
  * Help handler running on a per-cpu (IST or entry trampoline) stack
@@ -415,11 +415,11 @@ SYM_CODE_END(\asmsym)
  * user mode. The actual stack switch is done in entry_64.S
  */
 asmlinkage __visible noinstr struct pt_regs *sync_regs(struct pt_regs *eregs)
-{
+{   //pcpu_hot.top_of_stack 是进程内核栈顶，-1 在栈上开辟一个 struct pt_regs 的空间
     struct pt_regs *regs = (struct pt_regs *)this_cpu_read(pcpu_hot.top_of_stack) - 1;
     if (regs != eregs)
-        *regs = *eregs;
-    return regs;
+        *regs = *eregs; //把中断上下文结构体赋值到进程内核栈顶的 struct pt_regs 空间
+    return regs;        //返回栈顶的地址
 }
 ```
 * `idtentry_body`里切换到进程内核栈，

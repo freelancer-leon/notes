@@ -1,6 +1,7 @@
 # 内存管理
 
 ![http://ilinuxkernel.com/wp-content/uploads/2011/09/091011_1614_Linux1.png](pic/mm_segm_paging.png)
+![https://www.zhihu.com/question/274054284/answer/3203970743](https://picx.zhimg.com/80/v2-23f68bb6a217c98bde3120aa39cf29b5_1440w.webp?source=2c26e567)
 
 # 页（Pages）
 
@@ -531,3 +532,4 @@ static inline void *kmap_atomic(struct page *page)
 * [Per-CPU variables](https://0xax.gitbooks.io/linux-insides/content/Concepts/linux-cpu-1.html)
 * [High Memory Handling — The Linux Kernel documentation](https://www.kernel.org/doc/html/next/mm/highmem.html)
 * [LWN：把atomic kmap改成local kmap！_LinuxNews搬运工](https://blog.csdn.net/Linux_Everything/article/details/110016935)
+* [Linux系统启动之后，物理内存的布局是怎么样的？](https://www.zhihu.com/question/274054284/answer/3203970743)
