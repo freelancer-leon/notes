@@ -315,3 +315,4 @@ CPU:
 - [quick-path-interconnect-introduction-paper.pdf](https://www.intel.ca/content/dam/doc/white-paper/quick-path-interconnect-introduction-paper.pdf)
 - [高速缓存与一致性专栏索引](https://zhuanlan.zhihu.com/p/136300660)
 - [memory ordering – Gavin's Blog](http://gavinchou.github.io/summary/c++/memory-ordering/)
+- https://decodezp.github.io/tags/CPU/

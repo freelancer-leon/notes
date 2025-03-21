@@ -743,7 +743,7 @@ Date:   Mon Jun 13 21:25:21 2022 +0000
   * `kvm_page_fault.max_level`：可以为该缺页创建的最大页面的大小，作为 `FNAME(fetch)`、`__direct_map()` 和 `kvm_tdp_mmu_map()` 的输入
   * `kvm_page_fault.req_level`：基于 `max_leve` 和 host 映射所用的页面大小计算出的 *缺页可以创建的页面大小*
   * `kvm_page_fault.goal_level`：基于 `req_level` 和 `huge_page_disallowed` 计算出的 *缺页将要创建的页面大小*
-* `kvm_page_fault.huge_page_disallowed`：标识该缺页是否可以创建一个大于 4KB 的页（`false`）或者由于不可执（NX）行巨页而被禁止创建巨页（`true`）
+* `kvm_page_fault.huge_page_disallowed`：标识该缺页是否可以创建一个大/巨页（`false`）或者由于不可执行（`NX`）巨页而被禁止创建巨页（`true`）
 
 * `kvm_mmu_max_mapping_level()` 根据传入的信息选择 `gfn` 所能支持的最大页面级别
   * 在缺页路径上，传入的 `fault.max_level = KVM_MAX_HUGEPAGE_LEVEL`

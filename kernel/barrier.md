@@ -3,8 +3,14 @@
 * 谈及内存屏障，不理解 Store Buffer 和 Write Combine Buffer 不行，这两个 buffer 涉及处理器微架构，搬出两张微架构块图镇楼
 #### Intel Skylake
 ![https://mdsattacks.com/images/skylake-color.svg](pic/skylake-color.svg)
+* Skylake (Client) Microarchitecture
+  * [https://en.wikichip.org/w/images/7/7e/skylake_block_diagram.svg](pic/skylake_block_diagram.svg)
+* Skylake (Server) Microarchitecture
+  * [https://en.wikichip.org/w/images/e/ee/skylake_server_block_diagram.svg](pic/skylake_server_block_diagram.svg)
 #### AMD ZEN 5
 ![https://en.wikichip.org/w/images/0/02/zen_block_diagram.svg](pic/zen_block_diagram.svg)
+* Zen 2 - Microarchitecture
+  * [https://en.wikichip.org/w/images/f/f2/zen_2_core_diagram.svg](pic/zen_2_core_diagram.svg)
 
 * **barrier**：可能重新排序和写的处理器提供了机器指令来确保顺序要求，这些确保顺序的指令称为 *屏障*。
 * `volatile`关键字可以 **防止编译器的优化**，主要体现在以下三个方面：
