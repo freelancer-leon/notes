@@ -6,7 +6,7 @@
 # 页（Pages）
 
 * 物理页为内存管理的最基本单元。
-* 内存管理单元（MMU)——管理内存并把虚拟地址转化为物理地址的硬件。
+* 内存管理单元（MMU）——管理内存并把虚拟地址转化为物理地址的硬件。
 * MMU以 **页（page）** 为单位进行处理，以页大小为单位管理系统中的页表。
 * 从虚拟内存角度来看，*页* 就是最小单位。
 * 体系结构不同，支持的页大小也不尽相同。32位支持4K的页，64位支持8K的页。
@@ -525,6 +525,156 @@ static inline void *kmap_atomic(struct page *page)
 #define PTR_ALIGN_DOWN(p, a)    ((typeof(p))ALIGN_DOWN((unsigned long)(p), (a)))
 #define IS_ALIGNED(x, a)        (((x) & ((typeof(x))(a) - 1)) == 0)
 ```
+
+# 参数
+
+## lowmem_reserve_ratio
+* [lowmem_reserve_ratio](https://www.kernel.org/doc/html/latest/admin-guide/sysctl/vm.html#lowmem-reserve-ratio) 位于 `/proc/sys/vm/lowmem_reserve_ratio`
+* 它是一个比率，意思是处于更低端的 zone 的对更高端的内存回退到低端内存分配时，低端内存的保留率，是一个防御性参数
+* 默认值为：
+```sh
+# cat /proc/sys/vm/lowmem_reserve_ratio
+256     256     32      0       0
+```
+* 比如对于 `sysctl` 中 `lowmem_reserve_ratio` 为 `256, 32` 的值的时候：
+  * 对于 `1G` 内存的机器 -> `(16M dma, 800M-16M normal, 1G-800M high)`
+  * 得到 `1G` 内存的机器 => `(16M dma, 784M normal, 224M high)`
+  *  `NORMAL` 回退到 `ZONE_DMA` 分配时，会给 `ZONE_DMA` 保留 `784M/256` 的内存给 `ZONE_DMA`
+  *  `HIGHMEM` 回退到 `ZONE_NORMAL` 分配时，会给 `ZONE_NORMAL` 保留 `224M/32` 的内存给 `ZONE_NORMAL`
+  *  `HIGHMEM` 回退到 `ZONE_DMA` 分配时，会给 `ZONE_DMA` 保留 `(224M+784M)/256` 的内存给 `ZONE_DMA`
+* 源码中的定义在 mm/page_alloc.c
+```c
+/*
+ * results with 256, 32 in the lowmem_reserve sysctl:
+ *  1G machine -> (16M dma, 800M-16M normal, 1G-800M high)
+ *  1G machine -> (16M dma, 784M normal, 224M high)
+ *  NORMAL allocation will leave 784M/256 of ram reserved in the ZONE_DMA
+ *  HIGHMEM allocation will leave 224M/32 of ram reserved in ZONE_NORMAL
+ *  HIGHMEM allocation will leave (224M+784M)/256 of ram reserved in ZONE_DMA
+ *
+ * TBD: should special case ZONE_DMA32 machines here - in those we normally
+ * don't need any ZONE_NORMAL reservation
+ */
+static int sysctl_lowmem_reserve_ratio[MAX_NR_ZONES] = {
+#ifdef CONFIG_ZONE_DMA
+    [ZONE_DMA] = 256,
+#endif
+#ifdef CONFIG_ZONE_DMA32
+    [ZONE_DMA32] = 256,
+#endif
+    [ZONE_NORMAL] = 32,
+#ifdef CONFIG_HIGHMEM
+    [ZONE_HIGHMEM] = 0,
+#endif
+    [ZONE_MOVABLE] = 0,
+};
+```
+* 举个例子：
+```c
+Node 0, zone      DMA
+  pages free     2816
+        boost    0
+        min      0
+        low      3
+        high     6
+        spanned  4095
+        present  3996
+        managed  3840
+        cma      0
+        protection: (0, 1040, 256496, 256496, 256496)
+...
+Node 0, zone      DMA32
+  pages free     264998
+        boost    0
+        min      32
+        low      284
+        high     536
+        spanned  1044480
+        present  414089
+        managed  266274
+        cma      0
+        protection: (0, 0, 255456, 255456, 255456)
+...
+Node 0, zone   Normal
+  pages free     63195905
+        boost    0
+        min      8389
+        low      73785
+        high     139181
+        spanned  66445312
+        present  66445312
+        managed  65396889
+        cma      0
+        protection: (0, 0, 0, 0, 0)
+...
+```
+* 在此示例中，
+  * 如果 normal 的页面（`index = 2`）分配请求到此 DMA zone，并且 `watermark[WMARK_HIGH]` 用于水标（watermark），则内核判断 **不应使用此 zone**，因为此时 DMA zone 的 `pages_free(2816)` **小于** `watermark + protection[2]（6 + 256496 = 256502）`。
+  * 如果 DMA32 的页面（`index = 1`）分配请求到此 DMA zone，并且 `watermark[WMARK_HIGH]` 用于水标（watermark），则 **可以使用此 zone**，因为此时 DMA zone 的 `pages_free(2816)` **大于** `watermark + protection[2]（6 + 1040 = 1046）`。
+  * 如果此 `protection` 值为 `0`，则此 zone 将用于 normal 页面要求。如果要求是 DMA zone（`index = 0`），则使用 `protection[0]（=0）`。
+* `zone[i]` 的 `protection[j]` 通过以下表达式计算：
+```c
+(i < j):
+  zone[i]->protection[j]
+  = (total sums of managed_pages from zone[i+1] to zone[j] on the node)
+    / lowmem_reserve_ratio[i];
+(i = j):
+   (should not be protected. = 0;)
+(i > j):
+   (not necessary, but looks 0)
+```
+* 从上面那个例子也可以看到 DMA zone（`zone[0]`）的 `protection[2] = 256496` 大于 DMA32 zone（`zone[1]`）的 `protection[2] = 255456`，因为比 DMA zone 高的 zone 的可管理页面比 DMA32 zone 的页面要多
+* 这个公式也意味着：
+  * **横比**：越高阶的 zone（比如 Normal zone）比它低阶的 zone（比如 DMA32 zone）更难从更低阶的 zone（比如 DMA zone）分到内存，例如在上面的例子中 `1040 < 256496`；
+  * **纵比**：高阶的 zone（比如 DMA32 zone）会比它低阶的 zone（比如 DMA zone）向上（比如 Normal zone）提供更多的内存，保留的内存会更少，例如在上面例子中 `255456 < 256496`
+* 如果想保护更多页面，较小的值是有效的。
+  * 最小值为 `1` (`1/1 -> 100%`)。阻止对应的高阶 zone 从本 zone 分配内存。
+  * 小于 `1` 的值将完全禁用页面保护。
+* 设置 `lowmem_reserve_ratio` 的代码实现在 mm/page_alloc.c::`setup_per_zone_lowmem_reserve()`
+* 可以想象为填充一个三维数组 `nodes[n].zone[i].protection[j]`
+  * 第一维：按照公式计算出 `zone[j]` 想从 `zone[i]` 分时，保留给 `zone[i]` 的页面数
+  * 第二维：NUMA node 的每个 zone 构成
+  * 第三维：NUMA nodes
+```c
+/*
+ * setup_per_zone_lowmem_reserve - called whenever
+ *  sysctl_lowmem_reserve_ratio changes.  Ensures that each zone
+ *  has a correct pages reserved value, so an adequate number of
+ *  pages are left in the zone after a successful __alloc_pages().
+ */
+static void setup_per_zone_lowmem_reserve(void)
+{
+    struct pglist_data *pgdat;
+    enum zone_type i, j;
+    //遍历 NUMA nodes，即 struct pglist_data 数组；三维
+    for_each_online_pgdat(pgdat) {
+        for (i = 0; i < MAX_NR_ZONES - 1; i++) { //遍历一个 NUMA node 的每个 zone；二维
+            struct zone *zone = &pgdat->node_zones[i];
+            int ratio = sysctl_lowmem_reserve_ratio[i];
+            bool clear = !ratio || !zone_managed_pages(zone); //如果该 zone 的 ratio 为零或者可管理页面为零，清除 lowmem_reserve[i]
+            unsigned long managed_pages = 0;
+
+            for (j = i + 1; j < MAX_NR_ZONES; j++) { //从 zone[i+1] 开始遍历高阶 zone
+                struct zone *upper_zone = &pgdat->node_zones[j]; //高阶 zone 指针
+                //根据公式，可管理页面数为同一 NUMA node 从 zone[i+1] 到 zone[j] 的可管理页面数的总和
+                managed_pages += zone_managed_pages(upper_zone);
+                //如果该 zone 的 ratio 为零或者可管理页面为零，清除 lowmem_reserve[i]
+                if (clear)
+                    zone->lowmem_reserve[j] = 0;
+                else  //按照公式计算出 zone[j] 想从 zone[i] 分时，保留给 zone[i] 的页面数
+                    zone->lowmem_reserve[j] = managed_pages / ratio; //一维
+            }
+        }
+    }
+    //更新/更新总的保留页面
+    /* update totalreserve_pages */
+    calculate_totalreserve_pages();
+}
+```
+* `calculate_totalreserve_pages()` 的大概思路如下：
+  * 先在一维找出 *最大的保留页面 zone->lowmem_reserve[j]* 加上该 zone 的高水标 `high_wmark_pages(zone)` 得到 `max`
+  * 在第二维 zone 一级上遍历，各级 zone 的 `max` 累加进 `pgdat->totalreserve_pages`
+  * 第三维 nodes 一级上遍历，累加进全局变量 `totalreserve_pages`
 
 # 参考资料
 * [/PROC/MEMINFO之谜](http://linuxperf.com/?p=142)

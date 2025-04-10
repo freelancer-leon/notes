@@ -42,6 +42,11 @@ CONFIG_VIRTIO_VSOCKETS_COMMON=y
 CONFIG_VIRTIO_VSOCKETS=y
 ```
 
+### `CID` 的指定
+
+* Host 侧监听用的 `CID` 可以是 `VMADDR_CID_HOST (2)` 或者 `VMADDR_CID_ANY (-1)`，但不能任意指定。为什么这样，见后面的代码部分
+* Guest 侧的 `CID` 通过 Qemu 配置 `-device vhost-vsock-pci,guest-cid=${VSOCK_GUEST_CID}` 来指定
+
 ### C 语言版本
 
 #### Host 收包
@@ -55,7 +60,6 @@ CONFIG_VIRTIO_VSOCKETS=y
 #include <linux/vm_sockets.h>
 
 #define CID  VMADDR_CID_HOST
-//#define CID  5
 #define PORT 4050
 #define BUFFER_SIZE 1024
 
@@ -269,7 +273,7 @@ wireshark -k -i vsockmon0
 ```
 * 解释如下，
   * Host 监听在 `CID = VMADDR_CID_HOST` 端口为 `4050`
-  * Guest Qemu 配置了 `-device vhost-vsock-pci,guest-cid=4`，因此发包 `CID` 是 `4`，端口未指定，是随机值
+  * Guest 由于 Qemu 配置了 `-device vhost-vsock-pci,guest-cid=4`，因此发包 `CID` 是 `4`，端口未指定，是随机值
 
 ## Host 绑定 vsock
 * Host 用的是 `vhost-vsock.ko`，初始化时把 `vhost_transport.transport = transport_h2g`

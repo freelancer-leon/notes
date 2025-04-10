@@ -822,7 +822,7 @@ noinstr void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)
     /* Check whether this returns to user mode */
     if (user_mode(regs)) {
         irqentry_exit_to_user_mode(regs);
-    } else if (!regs_irqs_disabled(regs)) {
+    } else if (!regs_irqs_disabled(regs)) { //检查 EFLAGS 的 IF bit，如果中断未关闭
 ...
         instrumentation_begin();
         if (IS_ENABLED(CONFIG_PREEMPTION))
@@ -857,4 +857,95 @@ SYM_CODE_START_LOCAL(error_return)
     jz  restore_regs_and_return_to_kernel
     jmp swapgs_restore_regs_and_return_to_usermode
 SYM_CODE_END(error_return)
+```
+* 进入硬件中断处理函数时，修改硬中断 `preempt_count()` 的抢占计数的地方比较隐蔽，在 `run_irq_on_irqstack_cond()` 的第三个参数中构造的内联汇编中调用 `call irq_enter_rcu/call irq_exit_rcu` 来实现
+  * arch/x86/include/asm/irq_stack.h
+```c
+#define call_on_stack(stack, func, asm_call, argconstr...)      \
+{                                   \
+    register void *tos asm("r11");                  \
+                                    \
+    tos = ((void *)(stack));                    \
+                                    \
+    asm_inline volatile(                        \
+    "movq   %%rsp, (%[tos])             \n"     \
+    "movq   %[tos], %%rsp               \n"     \
+                                    \
+    asm_call                            \
+                                    \
+    "popq   %%rsp                   \n"     \
+                                    \
+    : "+r" (tos), ASM_CALL_CONSTRAINT               \
+    : [__func] "i" (func), [tos] "r" (tos) argconstr        \
+    : "cc", "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10",   \
+      "memory"                          \
+    );                              \
+}
+
+#define ASM_CALL_ARG0                           \
+    "1: call %c[__func]             \n"     \
+    ANNOTATE_REACHABLE(1b)
+
+#define ASM_CALL_ARG1                           \
+    "movq   %[arg1], %%rdi              \n"     \
+    ASM_CALL_ARG0
+
+#define ASM_CALL_ARG2                           \
+    "movq   %[arg2], %%rsi              \n"     \
+    ASM_CALL_ARG1
+
+#define ASM_CALL_ARG3                           \
+    "movq   %[arg3], %%rdx              \n"     \
+    ASM_CALL_ARG2
+
+#define call_on_irqstack(func, asm_call, argconstr...)          \
+    call_on_stack(__this_cpu_read(pcpu_hot.hardirq_stack_ptr),  \
+              func, asm_call, argconstr)
+...
+/*
+ * Macro to invoke system vector and device interrupt C handlers.
+ */
+#define call_on_irqstack_cond(func, regs, asm_call, constr, c_args...)  \
+{                                   \
+    /*                              \
+     * User mode entry and interrupt on the irq stack do not    \
+     * switch stacks. If from user mode the task stack is empty.    \
+     */                             \
+    if (user_mode(regs) || __this_cpu_read(pcpu_hot.hardirq_stack_inuse)) { \
+        irq_enter_rcu();                    \
+        func(c_args);                       \
+        irq_exit_rcu();                     \
+    } else {                            \
+        /*                          \
+         * Mark the irq stack inuse _before_ and unmark _after_ \
+         * switching stacks. Interrupts are disabled in both    \
+         * places. Invoke the stack switch macro with the call  \
+         * sequence which matches the above direct invocation.  \
+         */                         \
+        __this_cpu_write(pcpu_hot.hardirq_stack_inuse, true);   \
+        call_on_irqstack(func, asm_call, constr);       \
+        __this_cpu_write(pcpu_hot.hardirq_stack_inuse, false);  \
+    }                               \
+}
+...
+/*
+ * As in ASM_CALL_SYSVEC above the clobbers force the compiler to store
+ * @regs and @vector in callee saved registers.
+ */
+#define ASM_CALL_IRQ                            \
+    "call irq_enter_rcu             \n"     \ //增加 HARDIRQ_OFFSET 的抢占计数
+    ASM_CALL_ARG2                           \ //调用 __common_interrupt()
+    "call irq_exit_rcu              \n"       //减小 HARDIRQ_OFFSET 的抢占计数
+
+#define IRQ_CONSTRAINTS , [arg1] "r" (regs), [arg2] "r" ((unsigned long)vector)
+
+#define run_irq_on_irqstack_cond(func, regs, vector)            \
+{                                   \
+    assert_function_type(func, void (*)(struct pt_regs *, u32));    \
+    assert_arg_type(regs, struct pt_regs *);            \
+    assert_arg_type(vector, u32);                   \
+                                    \
+    call_on_irqstack_cond(func, regs, ASM_CALL_IRQ,         \
+                  IRQ_CONSTRAINTS, regs, vector);       \
+}
 ```
