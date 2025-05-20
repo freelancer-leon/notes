@@ -15,7 +15,7 @@
 
 ![pic/MESI_states.png](pic/MESI_states.png)
 
-* cache 颠簸问题：两个无关的全局数据在同一个 cache line，分别对它们写会照成不停地互相 *使无效*，该现象为伪共享（false sharing），例子见 [example/c/test_mmap.c](https://github.com/freelancer-leon/example/blob/master/c/test_mmap.c)
+* cache 颠簸问题：两个无关的全局数据在同一个 cache line，分别对它们写会照成不停地互相 *使无效*，该现象为伪共享（false sharing），例子见 [example/c/false-sharing.c](https://github.com/freelancer-leon/example/blob/master/c/false-sharing.c)
 
 ## References
 

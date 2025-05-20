@@ -889,3 +889,4 @@ struct kvm_mmu_memory_cache {
 - [KVM的ept机制](https://www.cnblogs.com/scu-cjx/p/6878568.html)
 - [KVM MMU EPT内存管理](https://blog.csdn.net/xelatex_kvm/article/details/17685123)
 - [[PATCH v2 00/20] Introduce the TDP MMU](https://lore.kernel.org/all/20201014182700.2888246-1-bgardon@google.com/)
+- [[PATCH v2 00/28] Allow parallel MMU operations with TDP MMU](https://lore.kernel.org/all/20210202185734.1680553-1-bgardon@google.com/)

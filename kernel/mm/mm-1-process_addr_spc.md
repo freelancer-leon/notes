@@ -248,7 +248,70 @@ context_switch(struct rq *rq, struct task_struct *prev,
     return finish_task_switch(prev);
 }
 ```
+### 进程切换时刷新 TLB
+* `mov` to `CR3` 可能会 invalidate TLB entry。分多种情况：
+  * 如果 PCID 关闭的话（`CR4.PCIDE = 0`），会 flush（invalidate）掉所有的 TLB entry
+  * 如果 PCID 开启的话（`CR4.PCIDE = 1`），
+    * 当 `NOFLUSH` bit（`CR3` 最高位，`63` bit）设置时，不会进行 flush 操作；
+    * 当 `NOFLUSH` bit（`CR3` 最高位，`63` bit）未设置时，会 flush（invalidate）掉当前 PCID（`CR3` 低 `12` bit）对应的 TLB entry。
+* 进程切换时 `context_switch() -> switch_mm_irqs_off()` 去切换 `mm_struct`，还是 `load_new_mm_cr3()` 往 `CR3` 中 load 新进程的 PGD
+* arch/x86/mm/tlb.c
+```cpp
+#ifdef CONFIG_X86_64
+/* Mask off the address space ID and SME encryption bits. */
+#define CR3_ADDR_MASK   __sme_clr(PHYSICAL_PAGE_MASK)
+#define CR3_PCID_MASK   0xFFFull
+#define CR3_NOFLUSH BIT_ULL(63)
+#else
+...
+#endif
 
+static inline unsigned long build_cr3(pgd_t *pgd, u16 asid, unsigned long lam)
+{
+    unsigned long cr3 = __sme_pa(pgd) | lam;
+
+    if (static_cpu_has(X86_FEATURE_PCID)) {
+        cr3 |= kern_pcid(asid);
+    } else {
+        VM_WARN_ON_ONCE(asid != 0);
+    }
+
+    return cr3;
+}
+//CR3 的 63 bit 为 1，即 CR3_NOFLUSH，不会进行 flush 操作
+static inline unsigned long build_cr3_noflush(pgd_t *pgd, u16 asid,
+                          unsigned long lam)
+{
+    /*
+     * Use boot_cpu_has() instead of this_cpu_has() as this function
+     * might be called during early boot. This should work even after
+     * boot because all CPU's the have same capabilities:
+     */
+    VM_WARN_ON_ONCE(!boot_cpu_has(X86_FEATURE_PCID));
+    return build_cr3(pgd, asid, lam) | CR3_NOFLUSH;
+}
+...
+//新进程的 PGD 写入 CR3
+static void load_new_mm_cr3(pgd_t *pgdir, u16 new_asid, unsigned long lam,
+                bool need_flush)
+{
+    unsigned long new_mm_cr3;
+
+    if (need_flush) {
+        invalidate_user_asid(new_asid);
+        new_mm_cr3 = build_cr3(pgdir, new_asid, lam);
+    } else {
+        new_mm_cr3 = build_cr3_noflush(pgdir, new_asid, lam);
+    }
+
+    /*
+     * Caution: many callers of this function expect
+     * that load_cr3() is serializing and orders TLB
+     * fills with respect to the mm_cpumask writes.
+     */
+    write_cr3(new_mm_cr3);
+}
+```
 # 虚拟内存区域（vm_area_struct）
 
 ![http://static.duartes.org/img/blogPosts/memoryDescriptorAndMemoryAreas.png](pic/memoryDescriptorAndMemoryAreas.png)

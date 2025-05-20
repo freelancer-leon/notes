@@ -352,14 +352,14 @@ VMM    | Virtual Machine Monitor    | 控制虚拟化的软件层。
   * 第三代 MBA 功能是代号为 Granite Rapids 的服务器微架构上的默认操作模式。
 * 注意，MBA MSR 已列于附录 A.5 中以作完整说明，但这些旧版 MSR 的详细信息可在 Intel® 64 和 IA-32 架构软件开发人员手册第 3B 卷中找到。有关 MBA 功能支持的产品详细信息，请参阅附录 A.2。
 
-### 3.2.4 缓存带宽分配
+### 3.2.4 Cache 带宽分配
 * **Cache 带宽分配（Cache Bandwidth Allocation，CBA）** 允许操作系统、虚拟机管理程序或类似的系统管理 agent 控制每个逻辑处理器的内部 core 和 downstream 内存带宽。此功能与 MBA 互补，并为 OS/VMM 提供了限制 core 内线程的能力。
 * CBA 功能与现有的 MBA 功能一起提供了一种系统范围的机制，用于限制系统中不同 cache（包括外部内存）的带宽，以及控制处理器 core 或 module 内的带宽。
   * CBA 和 MBA 结合起来，提供带宽资源的确定性控制和动态管理，以满足系统 Service Level Objectives（SLO）。
   * CBA 功能重用并扩展了 Intel RDT 功能集的现有构造，包括 Classes of Service（CLOS）。
 * 例如，用于 L3 CAT 的给定 CLOS 与用于 CBA 的 CLOS 含义相同。
   * 基础设施（例如用于将线程与 CLOS 关联的 MSR（`IA32_PQR_ASSOC_MSR`））和 CPUID 枚举的某些元素（例如 CPUID leaf `0x10`（Cache Allocation Technology Enumeration Leaf））是共享的。
-* 缓存带宽分配（CBA）功能可控制每个逻辑处理器的 1 级（L1）cache、2 级（L2）cache 和 3 级（L3）cache（如适用）之间的可用带宽。
+* **Cache 带宽分配（CBA）** 功能可控制每个逻辑处理器的 1 级（L1）cache、2 级（L2）cache 和 3 级（L3）cache（如适用）之间的可用带宽。
   * 由于减少 upstream 带宽也会减少外部内存的带宽，因此这也提供了对内存带宽的间接控制。
   * 这种对外部内存带宽的间接控制也可以减少内存带宽。
   * CBA 功能与 MBA 一起提供了一种控制不同应用程序带宽的机制。
@@ -402,13 +402,13 @@ VMM    | Virtual Machine Monitor    | 控制虚拟化的软件层。
 * 性能管理软件可以使用此信息来编程 RDT 功能（包括 CBA），以满足软件内存带宽和延迟要求。
 
 # 4 适用于 Non-CPU Agents 的 Intel® Resource Director Technology
-* 本章详细介绍了 non-CPU agents 的 Intel RDT 功能。讨论包括用例以及如何通过扩展基础 CPU 代理 Intel RDT 功能为 non-CPU agents 提供 Intel RDT 监控和控制。第 3 章介绍了 Intel RDT 功能集中常见的组件。
+* 本章详细介绍了 non-CPU agents 的 Intel RDT 功能。讨论包括用例以及如何通过扩展基础 CPU Agent Intel RDT 功能为 non-CPU agents 提供 Intel RDT 监控和控制。第 3 章介绍了 Intel RDT 功能集中常见的组件。
 
 ## 4.1 介绍
 * 面向 non-CPU agents 的 Intel RDT 是一组功能，用于监控和控制 non-CPU agents（包括 PCI Express* (PCIe*) [5] 和 Compute Express Link (CXL)* [6] 设备和集成加速器）的资源利用率。
   * 该功能集支持监控共享 cache 和内存带宽的使用情况，并控制 non-CPU agents 的 cache 使用情况。
   * 该功能集为 I/O 设备提供相当于 CMT、MBM 和 CAT 的 CPU agents 的 Intel RDT 功能。
-* Non-CPU agents Intel RDT 在某些情况下包括设备级别和通道级别粒度的控制。
+* Non-CPU agents Intel RDT 在某些情况下包括 *设备级别* 和 *通道级别* 粒度的控制。
   * 但是，这种粒度从根本上来说比软件线程更粗。
   * CPU cores 可以执行数百个线程，所有线程都标有 RMID 和 CLOS，而 I/O 设备（如 NIC）可以服务于数百个软件线程，但它只能在设备级别或通道级别进行监控和控制（有关通道级别监控和控制的详细信息，请参阅后续章节）。
 * Figure 4-1. Non-CPU Agent Building Atop CPU Agent Intel® RDT Features
@@ -423,27 +423,27 @@ VMM    | Virtual Machine Monitor    | 控制虚拟化的软件层。
 
 ## 4.3 Enumeration
 * Intel RDT 使用 `CPUID` 指令枚举支持的功能，并使用架构 Model-Specific Registers（MSR）作为监控和分配功能的接口，如第 3 章和《Intel® 64 和 IA-32 架构软件开发人员手册》第 3B 卷中所述。
-* 没有为 non-CPU agents Intel RDT 创建的 CPUID leaves 或 sub-leaves；相反，现有的 CPUID leaves 被扩充（augmented）。
+* 没有为 non-CPU agents Intel RDT 创建的 `CPUID` leaves 或 sub-leaves；相反，现有的 `CPUID` leaves 被扩充（augmented）。
   * `CPUID.0xF`（Shared Resource Monitoring Enumeration leaf）。
     * `[ResID=1]:EAX[bit 9,10]` 枚举 non-CPU agents 的 CMT 和 MBM 功能的存在。
   * `CPUID.0x10`（Cache Allocation Technology Enumeration Leaf）。
-    * `[ResID=1（L3 CAT）]:ECX[bit 1]` 枚举 non-CPU agents 的 L3 CAT 功能的存在。
+    * `[ResID=1 (L3 CAT)]:ECX[bit 1]` 枚举 non-CPU agents 的 L3 CAT 功能的存在。
 * **I/O Intel RDT 表（IRDT）** 提供了 non-CPU agents 的 Intel RDT 的其他枚举信息，IRDT 是高级配置和电源接口（ACPI）[4] 的 vendor-specific 扩展。
   * IRDT 表提供了有关支持的功能、连接到 I/O block 后面特定 link 的设备的结构、每个 link 上支持的 tagging 和控件的形式，以及用于控制给定设备的特定 MMIO 接口的信息。
 * 确认存在用于 CPU agents 的 Intel RDT 是使用等效 non-CPU agents Intel RDT 功能的先决条件。
   * 附录 A.4 中提供了兼容性矩阵。
   * 如果不存在特定的 CPU agent Intel RDT 功能，则任何使用 non-CPU agent Intel RDT 等效功能的尝试都会导致 MSR 接口出现 general protection fault（`#GP`）。
   * 尝试启用 I/O complex 中不受支持的功能将导致忽略对相应 MMIO 启用或配置接口的写入。
-* 软件可能会使用现有的 CPUID leaves 来收集每个资源级别（例如 L3 cache）的最大 RMID 和 CLOS tags 数量，non-CPU agent Intel RDT 也受这些限制。
+* 软件可能会使用现有的 `CPUID` leaves 来收集每个资源级别（例如 L3 cache）的最大 RMID 和 CLOS tags 数量，non-CPU agent Intel RDT 也受这些限制。
 * 某些平台可能支持多种功能，例如支持 L3 CAT 和 non-CPU agent Intel RDT 等效功能，但不支持 CMT 或 MBM 监控。
 
 ## 4.4 接口
-* 在配置 non-CPU agent Intel RDT（通过 MMIO）之前，应启用该功能。如果存在一个或多个 CPUID bits，表示支持一个或多个 non-CPU agent Intel RDT 功能，则意味着存在 `IA32_L3_IO_RDT_CFG` 架构 MSR。此 MSR 用于启用 non-CPU agent Intel RDT 功能。
+* 在配置 non-CPU agent Intel RDT（通过 MMIO）之前，应启用该功能。如果存在一个或多个 `CPUID` bits，表示支持一个或多个 non-CPU agent Intel RDT 功能，则意味着存在 `IA32_L3_IO_RDT_CFG` 架构 MSR。此 MSR 用于启用 non-CPU agent Intel RDT 功能。
 * 此 MSR 中定义了两个 bits。
-  * `IRAE（Bit[0]）` 启用 non-CPU agent Intel RDT 资源分配功能。
-  * `IRME（Bit[1]）` 启用 non-CPU agent RDT 监控功能。
-* 如果 CPUID 指示存在一个或多个 non-CPU agent Intel RDT 资源监控功能，则支持 non-CPU agent Intel RDT 监控 bit。
-* 如果 CPUID 指示存在一个或多个 non-CPU agent Intel RDT 资源分配功能，则支持 non-CPU agent Intel RDT 分配 bit。
+  * `IRAE (Bit[0])` 启用 non-CPU agent Intel RDT 资源 **分配** 功能。
+  * `IRME (Bit[1])` 启用 non-CPU agent RDT **监控** 功能。
+* 如果 `CPUID` 指示存在一个或多个 non-CPU agent Intel RDT 资源 **监控** 功能，则支持 non-CPU agent Intel RDT 监控 bit。
+* 如果 `CPUID` 指示存在一个或多个 non-CPU agent Intel RDT 资源 **分配** 功能，则支持 non-CPU agent Intel RDT 分配 bit。
 * 默认值为 `0x0`（默认情况下，监控和分配功能均被禁用）。所有未定义的 bits 均保留。对保留 bits 的任何写入都将生成 General Protection Fault（`#GP(0)`）。
 * 此 MSR 是 die-scoped 的，并在系统重置时清除。预计软件将在特定 SOC die 上可能存在的所有 L3 cache 中一致地配置此 MSR。
 * `IA32_L3_IO_RDT_CFG` MSR 的定义如图 4-2 所示，其 MSR 地址为 `0x0C83`。
@@ -481,7 +481,7 @@ VMM    | Virtual Machine Monitor    | 控制虚拟化的软件层。
   3. 使设备能够与 RMID 和 CLOS tags 关联。
 
 ## 4.6 I/O Blocks 和 Channels
-* I/O 接口 blocks 用于从有序的 non-coherent domain（例如 PCIe）桥接到无序的 coherent domain（例如，托管 L3 cache 的共享互连 fabric）。
+* I/O 接口 blocks 用于从 *有序的 non-coherent domain*（例如 PCIe）桥接到 *无序的 coherent domain*（例如，托管 L3 cache 的共享互连 fabric）。
   * Non-CPU agent Intel RDT 接口描述每个 I/O complex（可能包含 downstream PCIe root ports 或 CXL links）后面连接的设备，并为其启用配置 RMID/CLOS 标记。
 * I/O 架构形式化如下图所示。通道映射可能发生在设备和 I/O block 之间的任何位置。
 * Figure 4-4. Mapping of Channels in the I/O Domain (PCIe Example)
@@ -513,8 +513,8 @@ VMM    | Virtual Machine Monitor    | 控制虚拟化的软件层。
 * 利用 non-CPU agent Intel RDT 所需的关键软件操作包括 
   1. 枚举支持的功能及其支持的详细信息，以及 
   2. 通过架构平台接口使用这些功能。
-* 该软件可以通过解析 CPUID 和 IRDT ACPI 表中的位域的组合来枚举 non-CPU agent Intel RDT 的存在。
-  * CPUID 基础架构提供有关 CPU agent Intel RDT 和 non-CPU agent Intel RDT 支持级别的基本信息，以及与 CPU agent Intel RDT 共享的通用 CLOS/RMID tags 的详细信息。
+* 该软件可以通过解析 `CPUID` 和 IRDT ACPI 表中的位域的组合来枚举 non-CPU agent Intel RDT 的存在。
+  * `CPUID` 基础架构提供有关 CPU agent Intel RDT 和 non-CPU agent Intel RDT 支持级别的基本信息，以及与 CPU agent Intel RDT 共享的通用 CLOS/RMID tags 的详细信息。
   * IRDT ACPI 扩展专门提供有关 non-CPU agent RDT 的更多详细信息，例如
     * 哪些 I/O block 支持 non-CPU agent Intel RDT，以及
     * 配置 I/O block 的控制接口在 MMIO 空间中的位置。
@@ -654,7 +654,7 @@ VMM    | Virtual Machine Monitor    | 控制虚拟化的软件层。
 
 * 图 5-2 显示了 RMUD 映射到 DSS 和 RCS 结构的示例。
 * 连接到 I/O block 的每个设备都由 DSS 描述，并具有一个或多个 links，其属性在 RCS 结构中描述。
-* RCS 结构包含指向 MMIO 位置的指针（以绝对地址形式，而不是 BAR 相对形式），以允许软件在 I/O block 中配置 RMID/CLOS tag 和带宽整形属性（如果支持）。
+* **RCS 结构** 包含指向 MMIO 位置的指针（以绝对地址形式，而不是 BAR 相对形式），以允许软件在 I/O block 中配置 RMID/CLOS tag 和带宽整形属性（如果支持）。
 * Figure 5-3. Mapping from RCS Structures to MMIO Addresses for Per-link Control
 
 ![Mapping from RCS Structures to MMIO Addresses for Per-link Control](pic/spec-mapping-rcs-mmio-ctrl.png)
@@ -1233,8 +1233,8 @@ MSR 名称             | 注释
 * 以下小节描述了 Intel RDT 监控功能在每个 socket 存在多个 NUMA 域的情况下的行为，以及其他产品实现中由于逻辑或物理资源分区而导致每个处理器可能出现多个 NUMA 域的情况。
 * 本节引用 Intel RDT 功能，例如第 3 章和第 4 章分别描述的 CPU agents 和 non-CPU agents 的 MBA、MBM、CMT 和 CAT。
 * **Sub-NUMA 集群（Sub-NUMA Clustering，SNC）** 功能通过将地址从 *本地内存控制器* 映射到 *距离附近内存控制器较近的 L3 slices 的子集*，在处理器内创建本地化域，从而减少延迟并增加内存通道控制器之间的等效 traffic 隔离。
-* MBA 使用不受 SNC 的存在的影响；带宽目标适用于所有 SNC 域。
-* L3 CAT 和监控功能（L3 CMT 和 MBM）的使用在存在 SNC 时会受到影响。以下章节提供详细信息。
+* **MBA 使用不受 SNC 的存在的影响**；带宽目标适用于所有 SNC 域。
+* **L3 CAT 和监控功能（L3 CMT 和 MBM）的使用在存在 SNC 时会受到影响**。以下章节提供详细信息。
 * 有关 Intel RDT 和 Sub-Numa Clustering（SNC）兼容性功能支持的产品详细信息（例如，同时支持这些功能的产品），请参阅附录 A.3。
 
 #### B.1.2.2 支持 SNC 和 L3 Cache 分配技术
@@ -1311,7 +1311,7 @@ Remote Memory BW = (Total Memory BW - Local Memory BW) * Scaling Factor.
 #### B.1.2.5 缩放系数（Scaling Factor）调整
 * CPUID 提供的缩放因子（`CPUID(0xF(Shared Resource Monitoring Enumeration leaf).0x1).EBX[31:0]`）需要在系统配置为 SNC 模式时在软件中进行调整，软件将使用该缩放因子将 MBM 计数转换为带宽数字。
 * 此外，计算不同类型的带宽（例如本地、总带宽或远程带宽）也需要特殊考虑。本节介绍软件如何处理这些特殊情况。
-* 在 SNC 模式下使用缩放因子时，`CPUID` 提供的缩放因子不会考虑 *处理本地 traffic 的 L3 slices 的数量* 的减少。
+* 在 SNC 模式下使用缩放因子时，`CPUID` 提供的缩放因子 **不会考虑** *处理本地 traffic 的 L3 slices 的数量* 的减少。
 * 缩放因子值将与任何其他 clustering 模式保持不变。然后软件需要调整缩放因子。为此，我们定义：
 ```c
 AdjustedScalingFactor = ScalingFactor / SNCClusterCount
@@ -1530,7 +1530,7 @@ STLB_FILL_TRANSLATION | `0x1A8E` | Core | `3:0`   | WO | CLOS     | 用于填充
 * 对于支持 Intel® Time Coordinated Computing（Intel® TCC）的处理器，可以为需要改进 L3 cache 隔离的处理器提供优化。
 
 #### B.1.4.4 软件注意事项
-* 使用 `CPUID(EAX=07H(Structured Extended Feature Flags), ECX=0)` 发现枚举的架构 L3 CAT 支持的软件将不会自动与非架构实现一起使用。
+* 使用 `CPUID(EAX=0x07(Structured Extended Feature Flags), ECX=0)` 发现枚举的架构 L3 CAT 支持的软件将不会自动与非架构实现一起使用。
   * 本节将介绍与 model specific 的非架构 L3 CAT 一起使用的已知细微差别和建议。
 * **注意**：支持 L2 CAT 和 L3 CAT 的处理器在 L2 和 L3 之间支持的 CLOS 数量可能会有所不同。Intel 建议限制软件使用的 classes of service 不超过两个值中较小者。
 
@@ -1538,7 +1538,7 @@ STLB_FILL_TRANSLATION | `0x1A8E` | Core | `3:0`   | WO | CLOS     | 用于填充
 * Intel 通过资源控制（`CONFIG_X86_CPU_RESCTRL`）在 Linux* 内核中启用对 Intel RDT 功能的支持。
 * 资源控制提供了一个操作系统接口，用于配置和使用 Cache 分配技术（CAT）、Cache 监控技术（CMT）、内存带宽监控（MBM）和内存带宽分配（MBA）。
 * 资源控制利用 `CPUID` 来检测对各种 Intel RDT 子功能的硬件支持。
-  * 在支持 model specific 的非架构 L3 CAT 的处理器上，`CPUID.(EAX=07H(Structured Extended Feature Flags),ECX=0)` 将不会枚举支持，因此资源控制将不支持 L3 CAT。
+  * 在支持 model specific 的非架构 L3 CAT 的处理器上，`CPUID.(EAX=0x07(Structured Extended Feature Flags),ECX=0)` 将不会枚举支持，因此资源控制将不支持 L3 CAT。
   * 无法通过 *resctrl* 接口配置 `L3_MASK_n` 寄存器，必须通过直接 MSR 访问来完成。
 * 资源控制的一项功能是能够将 Class of Service 与 Process Identifier（PID）关联，并让内核在上下文切换时自动更新 CLOS。
 * 如果希望使用支持 model specific 非架构 L3 CAT 的 CPU 并在上下文切换时更新 class of service，则如果平台还支持 L2 CAT，则可以实现这一点。

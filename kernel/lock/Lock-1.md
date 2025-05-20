@@ -671,3 +671,8 @@ preempt_enable_no_resched() | Enables kernel preemption but does not check for a
 preempt_count() | Returns the preemption count
 
 * 注意：`preempt_enable()`是触发内核抢占的一个点，因为此时内核抢占再次可用。
+
+# References
+* [An Introduction to Lock-Free Programming](https://preshing.com/20120612/an-introduction-to-lock-free-programming/)
+* [Atomic vs. Non-Atomic Operations](https://preshing.com/20130618/atomic-vs-non-atomic-operations/)
+* [Acquire and Release Fences](https://preshing.com/20130922/acquire-and-release-fences/)
