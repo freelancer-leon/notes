@@ -76,31 +76,56 @@ extern struct root_domain def_root_domain;
 
 # CPU优先级管理
 * CPU 优先级管理（CPU Priority Management）跟踪系统中每个 CPU 的优先级，为了让进程迁移的决定更有效率。
-* CPU 优先级有 `102` 个:
+* CPU 优先级有 `101` 个:
 
-cpupri | prio
----|---
+cpupri              | prio
+--------------------|------
 CPUPRI_INVALID (-1) | -1
-CPUPRI_IDLE (0) | MAX_PRIO (140)
-CPUPRI_NORMAL (1) | MAX_RT_PRIO ~ MAX_PRIO-1 (100~139)
-2~101 | 99~0
+CPUPRI_NORMAL (0)   | MAX_RT_PRIO-1 (99)
+1 ~ 99              | 98 ~ 0
+CPUPRI_HIGHER (100) | MAX_RT_PRIO (100)
 
 * `prio`转`cpupri`的函数如下：
   * kernel/sched/cpupri.c
 ```cpp
-/* Convert between a 140 based task->prio, and our 102 based cpupri */
+/*
+ * p->rt_priority   p->prio   newpri   cpupri
+ *
+ *                                -1       -1 (CPUPRI_INVALID)
+ *
+ *                                99        0 (CPUPRI_NORMAL)
+ *
+ *              1        98       98        1
+ *            ...
+ *             49        50       50       49
+ *             50        49       49       50
+ *            ...
+ *             99         0        0       99
+ *
+ *                               100      100 (CPUPRI_HIGHER)
+ */
+
 static int convert_prio(int prio)
 {
         int cpupri;
 
-        if (prio == CPUPRI_INVALID)
-                cpupri = CPUPRI_INVALID;
-        else if (prio == MAX_PRIO)
-                cpupri = CPUPRI_IDLE;
-        else if (prio >= MAX_RT_PRIO)
-                cpupri = CPUPRI_NORMAL;
-        else
-                cpupri = MAX_RT_PRIO - prio + 1;
+        switch (prio) {
+        case CPUPRI_INVALID:
+                cpupri = CPUPRI_INVALID;        /* -1 */
+                break;
+
+        case 0 ... 98:
+                cpupri = MAX_RT_PRIO-1 - prio;  /* 1 ... 99 */
+                break;
+
+        case MAX_RT_PRIO-1:
+                cpupri = CPUPRI_NORMAL;         /*  0 */
+                break;
+
+        case MAX_RT_PRIO:
+                cpupri = CPUPRI_HIGHER;         /* 100 */
+                break;
+        }
 
         return cpupri;
 }
@@ -114,7 +139,7 @@ static int convert_prio(int prio)
 * 通过`cpupri_find()`和`cpupri_set()`来查找和设置 CPU 优先级是实时负载均衡快速找到要迁移的任务的关键。
 * kernel/sched/cpupri.h
 ```cpp
-#define CPUPRI_NR_PRIORITIES    (MAX_RT_PRIO + 2)
+#define CPUPRI_NR_PRIORITIES    (MAX_RT_PRIO+1)
 ...
 struct cpupri_vec {
         atomic_t        count;
@@ -128,11 +153,12 @@ struct cpupri {
 ```
 #### `struct cpupri`
 * `pri_to_cpu` 持有关于一个 cpuset 在 *某个特定的优先级上的* 所有 CPU 的信息。
-* `cpu_to_pri` 指示一个 CPU 的优先级。注意与任务的优先级区分。
+* `cpu_to_pri` 指示一个 *CPU 的优先级* 数组。注意与 *任务的优先级* 区分。
+  * 某个 CPU 只能处于某一个 CPU 优先级，即数组元素 `cpu_to_pri[n]` 的值为它上面运行的任务的最高优先级
 
 #### `struct cpupri_vec`
 * `count` 在这个优先级上的 CPU 的数量。
-* `mask` 在这个优先级上的 CPU 位码。
+* `mask` 在这个优先级上的 CPU 位码，即处于某个优先级的一些任务分别运行哪些不同的 CPU 上。
 
 ## cpupri_find()
 * `cpupri_find()` 查找系统（root domain）中最佳（优先级最低）的 CPU。
@@ -162,10 +188,7 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
         /*给定任务的 CPU 优先级不能超过 CPU 优先级的合理范围*/
         BUG_ON(task_pri >= CPUPRI_NR_PRIORITIES);
         /*从最低优先级开始检查，因为跑着低优先级任务的 CPU 更适合被 routing。
-          为什么是从 0 开始？
-          还记得 idle 状态的 CPU 和运行普通任务的 CPU 优先级分别是：
-          CPUPRI_IDLE (0)、CPUPRI_NORMAL (1)。
-          所以这个查找涵盖了空闲的 CPU 和运行普通任务的 CPU。*/
+          从 CPU 优先级 CPUPRI_NORMAL (0) 开始查找 CPU。*/
         for (idx = 0; idx < task_pri; idx++) {
                 struct cpupri_vec *vec  = &cp->pri_to_cpu[idx];
                 int skip = 0;
@@ -245,8 +268,9 @@ int cpupri_find(struct cpupri *cp, struct task_struct *p,
 ```
 
 ## cpupri_set()
-* 设置 CPU 的优先级
-* kernel/sched/cpupri.c
+* `cpupri_set()` 设置 CPU 的优先级。
+* 虽然处于某个优先级的一些任务分别运行不同的 CPU 上，即 `cpupri.pri_to_cpu[prio].mask` 可以有多个 bit 被设置，但某个 CPU 只能处于某一个 *CPU 优先级*，即数组元素 `cpu_to_pri[n]` 的值为它上面运行的任务的最高优先级，当 CPU 优先级发生改变时，需先设置 `cpupri.pri_to_cpu[new_prio].mask` 中的 bit，然后将旧的 `cpupri.pri_to_cpu[old_prio].mask` 中的 bit 清除。
+  * kernel/sched/cpupri.c
 ```cpp
 /**
  * cpupri_set - update the cpu priority setting
@@ -279,7 +303,7 @@ void cpupri_set(struct cpupri *cp, int cpu, int newpri)
 	 */
 	/*如果 cpu 当前被映射到一个不同的值，我们需要把它映射到 pri_to_cpu 优先级向量里的掩码
 	  对应的位，然后把旧向量里的掩码位清除。注意，我们必须先添加新的值，否则我们会有在
-		cpupri_find 循环优先级时错过该 cpu 的风险*/
+	  cpupri_find 循环优先级时错过该 cpu 的风险*/
 	if (likely(newpri != CPUPRI_INVALID)) { /*新优先级的值是有效值*/
 		struct cpupri_vec *vec = &cp->pri_to_cpu[newpri]; /*取将要设置的优先级向量*/
 
@@ -669,7 +693,6 @@ static void push_rt_tasks(struct rq *rq)
         while (push_rt_task(rq))
                 ;
 }
-...`_
 ```
 
 # 拉任务迁移
@@ -807,7 +830,7 @@ static void pull_rt_task(struct rq *this_rq)
 	 * see overloaded we must also see the rto_mask bit.
 	 */
 	smp_rmb();
-	/*这个 feature 容我们稍后阐述，很多情况下不会开启这个 feature*/
+	/*这个 feature 容我们稍后阐述，默认情况下这个 feature 是开启的*/
 #ifdef HAVE_RT_PUSH_IPI
 	if (sched_feat(RT_PUSH_IPI)) {
 		tell_cpu_to_push(this_rq); /*告诉过载的 CPU 将任务推给我们（this_rq）*/
@@ -950,7 +973,7 @@ SYSCALL_DEFINE3(sched_setscheduler, ...)
 ![pic/sched_rt_chk_cls_chg.png](pic/sched_rt_chk_cls_chg.png)
 
 #### check_class_changed()
-* `switched_from`，`switched_from`和`prio_changed`绝不能丢掉`rq->lock`，如果想进行负载均衡，用`balance_callback()`链表的方式
+* `switched_from`，`switched_to`和`prio_changed`绝不能丢掉`rq->lock`，如果想进行负载均衡，用`balance_callback()`链表的方式
 * 这就意味着任何调用`check_class_changed()`的地方都必须紧接着调用`balance_callback()`
 * 回忆`pull_rt_task()`或`push_rt_tasks()`期间，调用`double_lock_balance()`函数的时候有可能会丢掉`rq->lock`锁
 * 如果进程调度器类和优先级同时改变，也只会调用一次`queue_pull_task()`，注意，用的是`if ... else if ...`
@@ -1090,7 +1113,6 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio)
                         resched_curr(rq);
         }
 }
-...
 ```
 
 # balance_callback()调用
@@ -1137,7 +1159,7 @@ struct rq {
 ## 回调函数链表
 * `balance_callback()`调用时遍历的链表是 **per-CPU** 的
 * `queue_push_tasks()`和`queue_pull_task()`可以将实时调度负载均衡函数`push_rt_tasks()`和`pull_rt_task()`放入`rq->balance_callback`链表
-* 注意，如果 CPU A 上调用`queue_push_tasks()`或`queue_pull_task()`放入的时 A 所在运行队列的`rq->balance_callback`链表，而不是其他 CPU 的链表
+* 注意，如果 CPU A 上调用`queue_push_tasks()`或`queue_pull_task()`放入的是 A 所在运行队列的`rq->balance_callback`链表，而不是其他 CPU 的链表
 * 这些链表上的负载均衡函数会等到调用`balance_callback()`时执行均衡负载，遍历的是调用函数时所在运行队列`balance_callback`链表上的操作，而不是遍历各个 CPU 上的`balance_callback`
 * 尽管排队操作的是本运行队列，然而负载均衡结果却会影响到其他队列
 * kernel/sched/rt.c
@@ -1199,9 +1221,9 @@ static void __balance_callback(struct rq *rq)
         rq->balance_callback = NULL;
         while (head) {
                 func = (void (*)(struct rq *))head->func;
-                next = head->next;
+                next = head->next; //得到当前结点的后继
                 head->next = NULL; /*这个操作很重要，能确保链表中存在环时，不会出现死循环*/
-                head = next;
+                head = next;       //头结点指向被删除链表结点的后继，删除结点
 
                 func(rq);
         }
@@ -1263,6 +1285,7 @@ static inline void balance_callback(struct rq *rq)
 * 当所有过载 CPU 的可推任务都比源 CPU 的任务优先级低的时候，IPI 停止
 * 如果在这期间源 CPU 再次降低它的优先级，那么设置一个标志位，告诉 IPI 遍历需从源 CPU 之后的第一个 RT 过载 CPU 重新开始
 * 这里的顺序是按 root domain 中 rto_mask 的位置为顺序，和 CPU 优先级没关系
+## 数据结构和初始化
 * `struct rt_rq` 新增 4 个相关的成员
 * kernel/sched/sched.h
 ```cpp
@@ -1277,6 +1300,40 @@ struct rt_rq {
 #endif
 ...
 };
+```
+* 工作内容 `rq->rt.push_work` 是在初始化实时任务运行队列的时候进行的初始化
+  * kernel/sched/rt.c
+```cpp
+void init_rt_rq(struct rt_rq *rt_rq)
+{
+...
+#ifdef HAVE_RT_PUSH_IPI
+        rt_rq->push_flags = 0;
+        rt_rq->push_cpu = nr_cpu_ids; /*初始化 push_cpu*/
+        raw_spin_lock_init(&rt_rq->push_lock);
+        init_irq_work(&rt_rq->push_work, push_irq_work_func); /*在此初始化 irq work*/
+#endif
+...
+}
+```
+## 发起负载均衡 IPI
+* 在调度器选择下一个任务时，对于实时进程来说是一个很好的负载均衡的时机，确保实时进程能尽早地被调度到
+```c
+pick_next_task()/__pick_next_task()
+-> prev_balance()
+   -> class->balance(rq, prev, rf)
+   => balance_rt() //对于实时进程通过 .balance 函数指针调用
+      -> pull_rt_task(rq)
+         -> tell_cpu_to_push(this_rq)
+            -> irq_work_queue_on(&rq->rd->rto_push_work, cpu)
+               -> irq_work_claim(work)
+                  -> atomic_fetch_or(IRQ_WORK_CLAIMED | CSD_TYPE_IRQ_WORK, &work->node.a_flags)
+               -> __smp_call_single_queue(cpu, &work->node.llist)/__irq_work_queue_local(work)
+                  -> send_call_function_single_ipi(cpu)
+                     -> arch_send_call_function_single_ipi(cpu)
+                        -> smp_ops.send_call_func_single_ipi(cpu)
+                        => native_send_call_func_single_ipi(cpu)
+                           -> __apic_send_IPI(cpu, CALL_FUNCTION_SINGLE_VECTOR)
 ```
 * kernel/sched/rt.c
 ```cpp
@@ -1309,7 +1366,7 @@ static int rto_next_cpu(struct rq *rq)
         /*如果前一个 cpu 小于 rq 的 CPU，那么表明此前已经越过了掩码的结束边界，并且这是一
           轮从掩码起始开始的搜索。我们在上面得到的 cpu 大于等于 rq 的 CPU 时结束搜索。*/
         if (prev_cpu < rq->cpu) {
-                if (cpu >= rq->cpu) /*绕了一圈回到自己，结束搜索*/
+                if (cpu >= rq->cpu) /*绕了一圈回到自己或越过了自己，结束搜索*/
                         return nr_cpu_ids; /*搜索结束标志为 nr_cpu_ids*/
 
         } else if (cpu >= nr_cpu_ids) {
@@ -1321,7 +1378,7 @@ static int rto_next_cpu(struct rq *rq)
                 /*我们到达掩码的边界，回绕到掩码的起始进行搜索。如果结果仍然大于或等于 rq
                   的 CPU，那么循环结束。*/
                 cpu = cpumask_first(rq->rd->rto_mask); /*回绕到掩码起始*/
-                if (cpu >= rq->cpu)
+                if (cpu >= rq->cpu) //这种情况 rq->cpu 是 rto_mask 的第一个 CPU
                         return nr_cpu_ids; /*示意搜索结束*/
         }
         rq->rt.push_cpu = cpu; /*记录下一个要检查推操作的 cpu*/
@@ -1342,7 +1399,7 @@ static int find_next_push_cpu(struct rq *rq)
                 next_rq = cpu_rq(cpu); /*得到要检查 cpu 所在运行队列*/
 
                 /* Make sure the next rq can push to this rq */
-                /*检查 cpu 所在运行队列的下一个要调度的实时任务优先级是否比当前队列实时
+                /*要检查的 cpu 所在运行队列的下一个要调度的实时任务优先级是否比当前队列实时
                   任务优先级最高的任务优先级高，如果优先级更高，则表示找到了，否则进行下一次
                   迭代找下一个，直到回到回绕到 rq->cpu 为止，此时返回 nr_cpu_ids*/
                 if (next_rq->rt.highest_prio.next < rq->rt.highest_prio.curr)
@@ -1403,35 +1460,33 @@ bool irq_work_queue_on(struct irq_work *work, int cpu)
 
         /* Arch remote IPI send/receive backend aren't NMI safe */
         WARN_ON_ONCE(in_nmi());
-
+        //排入一个 work->node.a_flags 是 IRQ_WORK_CLAIMED | CSD_TYPE_IRQ_WORK 的 work
         /* Only queue if not already pending */
         if (!irq_work_claim(work))
                 return false;
-        /*将工作放入指定的 cpu 的 raised_list 链表，通过体系结构相关的函数发送 ipi 到指定 cpu*/
+        /*将工作放入指定的 cpu 的 raised_list 链表*/
         if (llist_add(&work->llnode, &per_cpu(raised_list, cpu)))
-                arch_send_call_function_single_ipi(cpu);
-
+                arch_send_call_function_single_ipi(cpu); //发送 IPI(CALL_FUNCTION_SINGLE_VECTOR) 到指定 cpu
         return true;
 }
 EXPORT_SYMBOL_GPL(irq_work_queue_on);
 ```
-* `rq->rt.push_work`是在初始化实时任务运行队列的时候进行的初始化
-  * kernel/sched/rt.c
-```cpp
-void init_rt_rq(struct rt_rq *rt_rq)
-{
-...
-#ifdef HAVE_RT_PUSH_IPI
-        rt_rq->push_flags = 0;
-        rt_rq->push_cpu = nr_cpu_ids; /*初始化 push_cpu*/
-        raw_spin_lock_init(&rt_rq->push_lock);
-        init_irq_work(&rt_rq->push_work, push_irq_work_func); /*在此初始化 irq work*/
-#endif
-...
-}
-```
-* 当指定的推 CPU 收到触发的 IPI 后，会调用`raised_list`链表上的工作的回调函数处理 irq 工作
-* `push_irq_work_func()`在执行推任务的 CPU 收到 IPI 后异步地调用
+## 处理负载均衡 IPI
+* 当指定的推 CPU 收到触发的 IPI 后，会调用`raised_list`链表上的工作的回调函数 `push_irq_work_func()` 异步地处理 irq 工作
+* 调用 `push_irq_work_func()` 的函数是 `irq_work_single()`，它在目标 CPU 收到 `IPI(CALL_FUNCTION_SINGLE_VECTOR)`，检查到类型是 `CSD_TYPE_IRQ_WORK` 后被调用：
+  ```c
+  sysvec_call_function_single()
+    -> generic_smp_call_function_single_interrupt()
+        -> __flush_smp_call_function_queue(true)
+              else if (type == CSD_TYPE_IRQ_WORK)
+              -> irq_work_single(work)
+                 -> work->func(work)
+                 => push_irq_work_func(work)
+                    -> try_to_push_tasks(rt_rq)
+                       -> push_rt_task(rq) //从推队列上推一个任务到（源）拉队列
+                       -> cpu = find_next_push_cpu(src_rq)
+                       -> irq_work_queue_on(&rt_rq->push_work, cpu)
+  ```
 * kernel/sched/rt.c
 ```cpp
 /* Called from hardirq context */
@@ -1458,7 +1513,7 @@ again:
         }
 
         /* Pass the IPI to the next rt overloaded queue */
-        /*下面是把 IPI 发给下一个实时过载队列的过程*/
+        /*下面是把发 IPI 的事情传递给下一个实时过载队列的过程*/
         raw_spin_lock(&rt_rq->push_lock);
         /*
          * If the source queue changed since the IPI went out,
@@ -1501,19 +1556,12 @@ static void push_irq_work_func(struct irq_work *work)
         try_to_push_tasks(rt_rq);
 }
 ```
-* 调用`push_irq_work_func()`的函数是`irq_work_run_list()`，它也是 irq 工作队列的遍历函数，比如，会在时钟中断的处理过程中被调用
-  ```c
-  update_process_times()
-    -> irq_work_tick()
-        -> irq_work_run_list()
-  ```
-## 思考以下几个问题
 
-#### `RT_PUSH_IPI` 将拉操作转为推操作，但推操作有其选定推目标 cpu 的方法，未必会将任务推给原来执行拉操作的 cpu ？
+## 思考以下问题
 
 #### `RT_PUSH_IPI` 的效率问题
 * `RT_PUSH_IPI` 是以 root domain 的 `rto_mask` 为顺序遍历的，如果攻击 CPU 同时降到同一优先级，那么 IPI 都会发到被攻击 CPU（即优先级最高的）上，这是理想的情况。
-  * cpu[4] 为被攻击的 CPU，IPI 会发给它，它只需要把任务推出来就完了。
+  * `cpu[4]` 为被攻击的 CPU，IPI 会发给它，它只需要把任务推出来就完了。
   ```
   RT priority
       ^
@@ -1530,7 +1578,7 @@ static void push_irq_work_func(struct irq_work *work)
         0  1  2  3  4  5  6  7  
   ```
 * 最坏的情况是，如果攻击 CPU 降到的是不同的优先级，且按顺序排列，而最先发起 `RT_PUSH_IPI` 遍历的恰好是优先级最低的 CPU，那么会不会又造成 *任务弹跳* 的问题？
-  * 例如下面场景，cpu[5] 最先开始发起 `RT_PUSH_IPI`，会不会造成逐个发送 IPI，而且推算法都选中 cpu[5] 作为推的目标的情况？
+  * 例如下面场景，`cpu[5]` 最先开始发起 `RT_PUSH_IPI`，会不会造成逐个发送 IPI，而且推算法都选中 `cpu[5]` 作为推的目标的情况？
   ```
   RT priority
       ^

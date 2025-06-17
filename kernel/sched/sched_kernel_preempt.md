@@ -21,9 +21,9 @@
 * 进程进入内核态后（例如系统调用）即使时间片用完（例如在系统调用期间发生了时钟中断，并且计算发现其时间片用完）也不立即切换，而是等到返回用户态时（例如系统调用返回）。
 
 ## 内核抢占发生的时机
-* 中断处理程序正在执行，且返回内核空间之前。
-* 内核代码再一次具有可抢占性的时候（例如，调用`preempt_enable()`的时候）。
-* 如果内核中的任务阻塞（这同样也会导致调用`schedule()`）。
+* 中断处理程序正在执行，且返回内核空间之前（需要 `CONFIG_PREEMPTION=y`）。
+* 内核代码再一次具有可抢占性的时候（例如，调用`preempt_enable()`的时候。需要 `CONFIG_PREEMPTION=y`）。
+* 如果内核中的任务阻塞（例如 mutex、semaphore、waitqueue，这同样也会导致调用`schedule()`）。
 * 除了以上场景，如果内核中的任务显式调用`schedule()`。
 
 ## 是否能被抢占？
@@ -74,7 +74,6 @@
 	#define preemptible()               0
 
 	#endif /* CONFIG_PREEMPT_COUNT */
-	...__```
 	```
 
 * `___preempt_schedule()`的实现x86平台进行了重载，其他平台则采用通用的宏替换成`preempt_schedule()`。
@@ -99,16 +98,49 @@
 	}
 	NOKPROBE_SYMBOL(preempt_schedule);
 	EXPORT_SYMBOL(preempt_schedule);
-	...*```
 	```
 
 ## 抢占计数 preempt_count
 
 ![Preempt Count](pic/preemt_count.png)
 
+* include/linux/preempt.h
+  ```c
+  /*
+   * We put the hardirq and softirq counter into the preemption
+   * counter. The bitmask has the following meaning:
+   *
+   * - bits 0-7 are the preemption count (max preemption depth: 256)
+   * - bits 8-15 are the softirq count (max # of softirqs: 256)
+   *
+   * The hardirq count could in theory be the same as the number of
+   * interrupts in the system, but we run all interrupt handlers with
+   * interrupts disabled, so we cannot have nesting interrupts. Though
+   * there are a few palaeontologic drivers which reenable interrupts in
+   * the handler, so we need more than one bit here.
+   *
+   *         PREEMPT_MASK:    0x000000ff
+   *         SOFTIRQ_MASK:    0x0000ff00
+   *         HARDIRQ_MASK:    0x000f0000
+   *             NMI_MASK:    0x00f00000
+   * PREEMPT_NEED_RESCHED:    0x80000000
+   */
+  #define PREEMPT_BITS    8
+  #define SOFTIRQ_BITS    8
+  #define HARDIRQ_BITS    4
+  #define NMI_BITS    4
+  //根据上面定义的各个域的位宽生成域的位移
+  #define PREEMPT_SHIFT   0
+  #define SOFTIRQ_SHIFT   (PREEMPT_SHIFT + PREEMPT_BITS)
+  #define HARDIRQ_SHIFT   (SOFTIRQ_SHIFT + SOFTIRQ_BITS)
+  #define NMI_SHIFT   (HARDIRQ_SHIFT + HARDIRQ_BITS)
+  ...
+  #define INIT_PREEMPT_COUNT  PREEMPT_OFFSET
+  ```
+### 增减抢占计数
 * `preempt_count_add()`和`preempt_count_sub()`调用可重载的`__preempt_count_add()`和`__preempt_count_sub()`
-* 目前就x86重载`__preempt_count_add()`和`__preempt_count_sub()`的实现
-* 非Debug版本的`preempt_count_add()`和`preempt_count_sub()`
+* 目前就 x86 重载`__preempt_count_add()`和`__preempt_count_sub()`的实现
+* 非 Debug 版本的`preempt_count_add()`和`preempt_count_sub()`
   * include/linux/preempt.h
 	```c
 	#if defined(CONFIG_DEBUG_PREEMPT) || defined(CONFIG_PREEMPT_TRACER)
@@ -120,71 +152,12 @@
 	#define preempt_count_sub(val)  __preempt_count_sub(val)
 	...
 	#endif
-	...__```
-	```
-
-* Debug版本的`preempt_count_add()`和`preempt_count_sub()`
-  * kernel/sched/core.c
-	```c
-	#if defined(CONFIG_PREEMPT) && (defined(CONFIG_DEBUG_PREEMPT) || \
-	                defined(CONFIG_PREEMPT_TRACER))
-
-	void preempt_count_add(int val)
-	{
-	#ifdef CONFIG_DEBUG_PREEMPT
-	    /*
-	     * Underflow?
-	     */
-	    if (DEBUG_LOCKS_WARN_ON((preempt_count() < 0)))
-	        return;
-	#endif
-	    __preempt_count_add(val);
-	#ifdef CONFIG_DEBUG_PREEMPT
-	    /*
-	     * Spinlock count overflowing soon?
-	     */
-	    DEBUG_LOCKS_WARN_ON((preempt_count() & PREEMPT_MASK) >=
-	                PREEMPT_MASK - 10);
-	#endif
-	    if (preempt_count() == val) {
-	        unsigned long ip = get_lock_parent_ip();
-	#ifdef CONFIG_DEBUG_PREEMPT
-	        current->preempt_disable_ip = ip;
-	#endif
-	        trace_preempt_off(CALLER_ADDR0, ip);
-	    }
-	}   
-	EXPORT_SYMBOL(preempt_count_add);
-	NOKPROBE_SYMBOL(preempt_count_add);
-
-	void preempt_count_sub(int val)
-	{   
-	#ifdef CONFIG_DEBUG_PREEMPT
-	    /*
-	     * Underflow?
-	     */
-	    if (DEBUG_LOCKS_WARN_ON(val > preempt_count()))
-	        return;
-	    /*
-	     * Is the spinlock portion underflowing?
-	     */
-	    if (DEBUG_LOCKS_WARN_ON((val < PREEMPT_MASK) &&
-	            !(preempt_count() & PREEMPT_MASK)))
-	        return;
-	#endif
-
-	    if (preempt_count() == val)
-	        trace_preempt_on(CALLER_ADDR0, get_lock_parent_ip());
-	    __preempt_count_sub(val);
-	}
-	EXPORT_SYMBOL(preempt_count_sub);
-	NOKPROBE_SYMBOL(preempt_count_sub);
-	...*```
 	```
 
 ### x86 的 preempt_count
-* x86的`thread_info`结构里并没有`preempt_count`成员，而是通过Per-CPU变量`__preempt_count`存储的。
-* arch/x86/include/asm/thread_info.h
+* x86 的`thread_info`结构里并没有`preempt_count`成员，而是通过 Per-CPU 变量`__preempt_count`存储的。
+* 但进程需要被调度的标志位 `TIF_NEED_RESCHED` 是设置在 `thread_info.flags` 域的
+  * arch/x86/include/asm/thread_info.h
 	```c
 	struct thread_info {
 	    struct task_struct  *task;      /* main task structure */
@@ -196,45 +169,93 @@
 	    unsigned int        uaccess_err:1;  /* uaccess failed */
 	};
 	```
+* x86 重载的`preempt_count`相关的实现
+  * arch/x86/include/asm/preempt.h
+    ```c
+    DECLARE_PER_CPU_CACHE_HOT(int, __preempt_count); //声明 Per-CPU 的 __preempt_count
+    //注意：这个标志位与其语义是相反的
+    /* We use the MSB mostly because its available */
+    #define PREEMPT_NEED_RESCHED    0x80000000
+    //我们将 PREEMPT_NEED_RESCHED bit 用作反转的 NEED_RESCHED，这样减量达到 0 意味着我们可以并且应该重新调度。
+    /*
+     * We use the PREEMPT_NEED_RESCHED bit as an inverted NEED_RESCHED such
+     * that a decrement hitting 0 means we can and should reschedule.
+     */
+    #define PREEMPT_ENABLED (0 + PREEMPT_NEED_RESCHED)
+    //用 preempt_count() 返回抢占计数时要屏蔽 PREEMPT_NEED_RESCHED bit，以免让所有当前用户感到困惑，认为非零值表示我们无法抢占。
+    /*
+     * We mask the PREEMPT_NEED_RESCHED bit so as not to confuse all current users
+     * that think a non-zero value indicates we cannot preempt.
+     */
+    static __always_inline int preempt_count(void)
+    {
+        return raw_cpu_read_4(__preempt_count) & ~PREEMPT_NEED_RESCHED;
+    }
 
-* x86重载的`preempt_count`相关的实现
-* arch/x86/include/asm/preempt.h
-	```c
-	DECLARE_PER_CPU(int, __preempt_count);
-	...
-	/*
-	 * We mask the PREEMPT_NEED_RESCHED bit so as not to confuse all current users
-	 * that think a non-zero value indicates we cannot preempt.
-	 */
-	static __always_inline int preempt_count(void)
-	{   /*返回抢占计数*/
-	    return raw_cpu_read_4(__preempt_count) & ~PREEMPT_NEED_RESCHED;
-	}
+    static __always_inline void preempt_count_set(int pc)
+    {
+        int old, new;
 
-	static __always_inline void preempt_count_set(int pc)
-	{   /*设置抢占计数*/
-	    raw_cpu_write_4(__preempt_count, pc);
-	}
-	...
-	/*
-	 * The various preempt_count add/sub methods
-	 */
+        old = raw_cpu_read_4(__preempt_count);
+        do {
+            new = (old & PREEMPT_NEED_RESCHED) | //提取旧的 bit
+                (pc & ~PREEMPT_NEED_RESCHED);    //屏蔽传入的 bit
+        } while (!raw_cpu_try_cmpxchg_4(__preempt_count, &old, new));
+    }
+    ...
+    /*
+     * The various preempt_count add/sub methods
+     */
+    static __always_inline void __preempt_count_add(int val)
+    {   //给抢占计数增加 val
+        raw_cpu_add_4(__preempt_count, val);
+    }
+    static __always_inline void __preempt_count_sub(int val)
+    {   //给抢占计数减小 val
+        raw_cpu_add_4(__preempt_count, -val);
+    }
+    ```
+* 定义 Per-CPU 的抢占计数 `__preempt_count`
+  * arch/x86/kernel/cpu/common.c
+    ```c
+    DEFINE_PER_CPU_CACHE_HOT(int, __preempt_count) = INIT_PREEMPT_COUNT;
+    ```
+#### `PREEMPT_NEED_RESCHED` 标志位
+* 比较诡吊的是 `__preempt_count` 中的 `PREEMPT_NEED_RESCHED` 标志位，它的 **置位与否** 和它的字面含义是 **相反的**
+  * 当希望该 CPU 重新调度时，`set_preempt_need_resched()` 清除该 bit，`__preempt_count` 才有可能为 `0`，从而允许调度
+  * 当不希望该 CPU 重新调度时，`clear_preempt_need_resched()` 设置该 bit，`__preempt_count` 不为 `0`，不需要被调度
+  * arch/x86/include/asm/preempt.h
+    ```c
+    /*
+     * We fold the NEED_RESCHED bit into the preempt count such that
+     * preempt_enable() can decrement and test for needing to reschedule with a
+     * single instruction.
+     *
+     * We invert the actual bit, so that when the decrement hits 0 we know we both
+     * need to resched (the bit is cleared) and can resched (no preempt count).
+     */
 
-	static __always_inline void __preempt_count_add(int val)
-	{
-	    raw_cpu_add_4(__preempt_count, val);
-	}
+    static __always_inline void set_preempt_need_resched(void)
+    {   //清除：表示此时需要被调度
+        raw_cpu_and_4(__preempt_count, ~PREEMPT_NEED_RESCHED);
+    }
 
-	static __always_inline void __preempt_count_sub(int val)
-	{
-	    raw_cpu_add_4(__preempt_count, -val);
-	}
-	...
-	```
+    static __always_inline void clear_preempt_need_resched(void)
+    {   //置位：表示此时不需要被调度
+        raw_cpu_or_4(__preempt_count, PREEMPT_NEED_RESCHED);
+    }
+
+    static __always_inline bool test_preempt_need_resched(void)
+    {
+        return !(raw_cpu_read_4(__preempt_count) & PREEMPT_NEED_RESCHED);
+    }
+    ```
+* 这么做的原因是：将 `NEED_RESCHED` bit 合并（fold）到抢占计数中，以便 `preempt_enable()` 可以递减计数，并用一条指令测试是否需要重新调度。
+  * 将实际的位反转，这样当递减计数达到 `0` 时，我们就知道既需要重新调度（该 bit 被清除），又可以重新调度（无抢占计数）。
 
 ### ARM 的 preempt_count
 * ARM的`thread_info`结构有`preempt_count`成员，这和x86的不一样。
-* arch/arm/include/asm/thread_info.h
+  * arch/arm/include/asm/thread_info.h
 	```c
 	/*
 	 * low level task data that entry.S needs immediate access to.
@@ -310,7 +331,6 @@
 	{
 	    *preempt_count_ptr() -= val;
 	}
-	...*```
 	```
 
 * `preempt_count_ptr()`仅在以下函数中被调用，x86`thread_info`没有`preempt_count`成员，因此以下函数也是独立实现的：

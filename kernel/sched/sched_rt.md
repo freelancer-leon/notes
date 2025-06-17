@@ -156,11 +156,11 @@ struct sched_rt_entity {
 * `on_rq` 调度实体在运行队列上的标志。
 * `on_list` 调度实体在实时调度优先级队列的数组列表上的标志。
 * `time_slice` 实时调度任务的时间片。
-* `watchdog_stamp` watchdog的时间戳，每次时钟中断会更新为`jiffies`的值，仅在`RLIMIT_RTTIME`软限制启用时更新。
-* `timeout` 记录该调度实体的运行次数，每次时钟中断加 1，仅在`RLIMIT_RTTIME`软限制启用时更新。
+* `watchdog_stamp` watchdog 的时间戳，每次时钟中断会更新为`jiffies`的值，仅在`RLIMIT_RTTIME`软限制启用时更新。
+* `timeout` 记录该调度实体的运行次数，每次时钟中断加 `1`，仅在`RLIMIT_RTTIME`软限制启用时更新。
 * `parent` 指向调度实体的父实体。
 * `rt_rq` 指向调度实体所在的实时运行队列，即调度实体属于谁。
-* `my_q` 指向调度实体所拥有的实时运行队列，即谁属于调度实体。如果调度单元是`task_group`，`my_q`才会有值；如果当前调度单元是task，那么`my_q`自然为`NULL`。
+* `my_q` 指向调度实体所拥有的实时运行队列，即谁属于调度实体。如果调度单元是`task_group`，`my_q`才会有值；如果当前调度单元是 task，那么`my_q`自然为`NULL`。
 
 
 ## 实时调度器类 rt_sched_class
@@ -253,14 +253,14 @@ static void enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
         dequeue_rt_stack(rt_se, flags); /*先将任务出列，后面有详细解释*/
         for_each_sched_rt_entity(rt_se)            /*根据 parent 指针自底向上*/
                 __enqueue_rt_entity(rt_se, flags); /*将调度实体加入实时调度队列*/
-        enqueue_top_rt_rq(&rq->rt);     /*处理实时任务入列对运行队列rq的影响*/
+        enqueue_top_rt_rq(&rq->rt);     /*更新实时任务入列对实时运行队列 rt_rq 的影响*/
 }
 ...
 static void
 enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 {
         struct sched_rt_entity *rt_se = &p->rt;
-
+        //每次进程被唤醒而入列的时候就是喂狗的时机，将 watchdog 观测的每 tick 增加的 timeout 清零
         if (flags & ENQUEUE_WAKEUP)
                 rt_se->timeout = 0;
         /*完成入列的实际工作*/
@@ -283,22 +283,21 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
 * 因为一个上层的条目的优先级依赖于底层的条目，所以出列时必须自顶向下移除。
 * kernel/sched/rt.c
 ```c
-...
 static void
-dequeue_top_rt_rq(struct rt_rq *rt_rq)
+dequeue_top_rt_rq(struct rt_rq *rt_rq, unsigned int count)
 {
-        struct rq *rq = rq_of_rt_rq(rt_rq);
-        /*运行队列里的 rt 域与 rt_rq 所指的不是同一个实时调度队列是一个bug
-          也就是说，该函数只用于最顶层的实时调度队列*/
-        BUG_ON(&rq->rt != rt_rq);
-        /*如果实时调度队列不在可运行队列上，则无需做什么事情*/
-        if (!rt_rq->rt_queued)
-                return;
-        /*rq 记录的可运行任务数为 0 肯定是bug*/
-        BUG_ON(!rq->nr_running);
-        /*运行队列的可运行任务数减去实时调度队列上的可运行任务数*/
-        sub_nr_running(rq, rt_rq->rt_nr_running);
-        rt_rq->rt_queued = 0;        /*实时调度队列在可运行队列上的标志清零*/
+    struct rq *rq = rq_of_rt_rq(rt_rq);
+    /*运行队列里的 rt 域与 rt_rq 所指的不是同一个实时调度队列是一个 bug*/
+    BUG_ON(&rq->rt != rt_rq);
+    /*如果实时调度队列不在可运行队列上，则无需做什么事情*/
+    if (!rt_rq->rt_queued)
+        return;
+    /*rq 记录的可运行任务数为 0 肯定是 bug*/
+    BUG_ON(!rq->nr_running);
+    /*运行队列的可运行任务数减去传入的实时调度队列上的可运行任务数*/
+    sub_nr_running(rq, count);
+    rt_rq->rt_queued = 0;   /*实时调度队列在可运行队列上的标志清零*/
+
 }
 ...
 static void
@@ -309,12 +308,11 @@ dec_rt_prio(struct rt_rq *rt_rq, int prio)
         if (rt_rq->rt_nr_running) {
                 /*出列的任务优先级比记录的最高优先级还高，警告*/
                 WARN_ON(prio < prev_prio);
-
+                /*出列的如果是队列上优先级最高的进程需要更新队列的最高优先级记录*/
                 /*
                  * This may have been our highest task, and therefore
                  * we may have some recomputation to do
                  */
-                /*出列的如果是队列上优先级最高的进程需要更新队列的最高优先级记录*/
                 if (prio == prev_prio) {
                         struct rt_prio_array *array = &rt_rq->active;
                         /*找到位映射中第一个被设置的位的位置作为最高优先级记录下来*/
@@ -323,8 +321,8 @@ dec_rt_prio(struct rt_rq *rt_rq, int prio)
                 }
                 /*如果出列的不是最高优先级任务，则最高优先级记录维持不变*/
         } else        /*否则，队列最高优先级记录设置为最低实时优先级*/
-                rt_rq->highest_prio.curr = MAX_RT_PRIO;
-        /*涉及CPU优先级管理的更新*/
+                rt_rq->highest_prio.curr = MAX_RT_PRIO-1;
+        /*涉及 CPU 优先级管理的更新*/
         dec_rt_prio_smp(rt_rq, prio, prev_prio);
 }
 ...
@@ -333,9 +331,9 @@ void dec_rt_tasks(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
 {
         WARN_ON(!rt_prio(rt_se_prio(rt_se))); /*调度实体优先级不是实时的，警告*/
         WARN_ON(!rt_rq->rt_nr_running);       /*实时调度队列的可运行任务为0，警告*/
-        /*实时调度队列的可运行任务减小，对于实时组调度减小的数目包含调度组的任务数*/
+        /*实时调度队列的可运行任务数减小，对于实时组调度减小的数目包含调度组的任务数*/
         rt_rq->rt_nr_running -= rt_se_nr_running(rt_se);
-        /*实时调度队列的可轮转运行任务减小，对于实时组调度减小的数目包含调度组的可轮转任务数*/
+        /*实时调度队列的可轮转运行任务数减小，对于实时组调度减小的数目包含调度组的可轮转任务数*/
         rt_rq->rr_nr_running -= rt_se_rr_nr_running(rt_se);
         /*调度实体出列时，更新实时调度队列的优先级记录*/
         dec_rt_prio(rt_rq, rt_se_prio(rt_se));
@@ -371,7 +369,7 @@ static void __dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
 {
         struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
         struct rt_prio_array *array = &rt_rq->active;
-        /*除非 DEQUEUE_SAVE flag被设置，否则该实体在队列中的位置是可移动的*/
+        /*除非 DEQUEUE_SAVE flag 被设置，否则该实体在队列中的位置是可移动的*/
         if (move_entity(flags)) {
                 WARN_ON_ONCE(!rt_se->on_list); /*调度实体不在列表上，警告一次*/
                 __delist_rt_entity(rt_se, array);/*将调度实体从数组列表中移除*/
@@ -387,28 +385,28 @@ static void __dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
  */
 static void dequeue_rt_stack(struct sched_rt_entity *rt_se, unsigned int flags)
 {
-        struct sched_rt_entity *back = NULL;
-        /*将 back 指针随着任务的 parent 指针逐渐指向最顶层的任务*/
-        for_each_sched_rt_entity(rt_se) {
-                rt_se->back = back;
-                back = rt_se;
-        }
-        /*将实时任务出列会对运行队列rq造成一些影响，这里要处理一下，
-          此时back必须是最顶层的实时调度队列上的调度实体*/
-        dequeue_top_rt_rq(rt_rq_of_se(back));
-        /*自顶向下将在队列上的实时调度实体移出队列*/
-        for (rt_se = back; rt_se; rt_se = rt_se->back) {
-                if (on_rt_rq(rt_se))
-                        __dequeue_rt_entity(rt_se, flags);
-        }
+    struct sched_rt_entity *back = NULL;
+    unsigned int rt_nr_running;
+    /*随着任务的 parent 指针由下往上逐渐指向最顶层的任务，顺着 back 指针构成一条从上往下的回溯路径*/
+    for_each_sched_rt_entity(rt_se) {
+        rt_se->back = back;
+        back = rt_se;
+    }
+    //此时 back 是最顶层的实时调度队列上的调度实体
+    rt_nr_running = rt_rq_of_se(back)->rt_nr_running;
+    /*自顶向下将在队列上的实时调度实体移出队列*/
+    for (rt_se = back; rt_se; rt_se = rt_se->back) {
+        if (on_rt_rq(rt_se))
+            __dequeue_rt_entity(rt_se, flags);
+    }
+    /*将实时任务出列会对运行队列 rq 造成一些影响，由上至下处理一下*/
+    dequeue_top_rt_rq(rt_rq_of_se(back), rt_nr_running);
 }
-...
 ```
 
 ### 实时任务加入队列
 * kernel/sched/rt.c
 ```c
-...
 #if defined CONFIG_SMP || defined CONFIG_RT_GROUP_SCHED
 static void
 inc_rt_prio(struct rt_rq *rt_rq, int prio)
@@ -417,7 +415,7 @@ inc_rt_prio(struct rt_rq *rt_rq, int prio)
         /*如果入队的任务优先级高于时是调度队列的最高优先级记录，则更新该记录*/
         if (prio < prev_prio)
                 rt_rq->highest_prio.curr = prio;
-        /*涉及CPU优先级管理的更新*/
+        /*涉及 CPU 优先级管理的更新*/
         inc_rt_prio_smp(rt_rq, prio, prev_prio);
 }
 ...
@@ -429,9 +427,9 @@ void inc_rt_tasks(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
         int prio = rt_se_prio(rt_se);
 
         WARN_ON(!rt_prio(prio));
-        /*实时调度队列的可运行任务增加，对于实时组调度增加的数目包含调度组的任务数*/
+        /*实时调度队列的可运行任务数增加，对于实时组调度增加的数目包含调度组的任务数*/
         rt_rq->rt_nr_running += rt_se_nr_running(rt_se);
-        /*实时调度队列的可轮转运行任务增加，对于实时组调度增加的数目包含调度组的可轮转任务数*/
+        /*实时调度队列的可轮转运行任务数增加，对于实时组调度增加的数目包含调度组的可轮转任务数*/
         rt_rq->rr_nr_running += rt_se_rr_nr_running(rt_se);
         /*调度实体入列时，更新实时调度队列的优先级记录*/
         inc_rt_prio(rt_rq, prio);
@@ -469,7 +467,7 @@ static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flag
                 else                         /*否则插入队尾*/
                         list_add_tail(&rt_se->run_list, queue);
                 /*实时调度优先级队列的数组位映射置位*/
-                __set_bit(rt_se_prio(rt_se), array->bitmap); /*__*/
+                __set_bit(rt_se_prio(rt_se), array->bitmap);
                 rt_se->on_list = 1;          /*调度实体在列表上了*/
         }
         /*不可移动的调度实体无需出列入列，rt_se->on_list成员也不会变*/
@@ -485,8 +483,7 @@ static void
 enqueue_top_rt_rq(struct rt_rq *rt_rq)
 {
         struct rq *rq = rq_of_rt_rq(rt_rq);
-        /*运行队列里的 rt 域与 rt_rq 所指的不是同一个实时调度队列是一个bug，
-          也就是说，该函数只用于最顶层的实时调度队列*/
+        /*运行队列里的 rt 域与 rt_rq 所指的不是同一个实时调度队列是一个 bug*/
         BUG_ON(&rq->rt != rt_rq);
         /*如果实时调度队列已经在可运行队列上，则无需做什么事情*/
         if (rt_rq->rt_queued)
@@ -540,7 +537,7 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
          * Current can't be migrated, useless to reschedule,
          * let's hope p can move out.
          */
-        /*允许运行当前任务任务的CPU只有一个，即不能迁移，无法被抢占，无需重新调度*/
+        /*允许运行当前任务任务的 CPU 只有一个，即不能迁移，无法被抢占，无需重新调度*/
         if (tsk_nr_cpus_allowed(rq->curr) == 1 ||
             !cpupri_find(&rq->rd->cpupri, rq->curr, NULL))
                 return;
@@ -559,7 +556,7 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
          * current and none to run 'p', so lets reschedule
          * to try and push current away:
          */
-        /*其他 CPU 能接受当前任务且没有能运行 'p' 的CPU，则另其重新调度，尝试把当前任务推走
+        /*其他 CPU 能接受当前任务且没有能运行 'p' 的 CPU，则令其重新调度，尝试把当前任务推走
           注意，这里第三个参数 head 的值是 1，会导致把 p 排在列表前面，表示会抢占*/
         requeue_task_rt(rq, p, 1);
         resched_curr(rq); /*设置重新调度标志*/
@@ -611,10 +608,9 @@ static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flag
 # Real Time Scheduler Throttling
 
 * 在介绍实时任务的周期性调度之前需要先了解一下 *Real Time Scheduler Throttling*，如果除去这部分内容和负载均衡，实时进程的周期性调度做的事情非常简单。
-* 实时进程是根据优先级抢占运行的。当没有更高优先级的实时进程抢占，而此进程如果有 bug 等原因长时间运行，不调度其它进程，系统就会出现无响应。
+* 实时进程是根据优先级抢占运行的。当没有更高优先级的实时进程抢占，而此实时进程又一直处于运行状态长时间占着 CPU，该 CPU 就会出现无法调度普通任务的情况。
 * **Real Time Scheduler Throttling** 是为了防止出现这种情况的防护机制，它允许管理员给实时任务分配带宽。
-
-* Realtime throttling 可以通过两个 sysctl 参数进行控制
+* Realtime throttling 可以通过两个 `sysctl` 参数进行控制
   * **/proc/sys/kernel/sched_rt_period_us**
 
   > Defines the period in μs (microseconds) to be considered as 100% of CPU bandwidth. The default value is 1,000,000 μs (1 second). Changes to the value of the period must be very well thought out as a period too long or too small are equally dangerous.
@@ -718,8 +714,8 @@ static void task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
   };
   ```
 * `SCHED_RR`任务的时间片可以通过`sysctl`修改。
-  ```
-  >cat /proc/sys/kernel/sched_rr_timeslice_ms
+  ```sh
+  $ cat /proc/sys/kernel/sched_rr_timeslice_ms
   25
   ```
 * **所以这里尤其需要注意**：即使某一优先级的`SCHED_RR`任务只有一个，即使它的时间片用完了，比它优先级低的实时任务并不会被调度，而是该进程获得新的时间片继续运行。
@@ -760,10 +756,10 @@ static void update_curr_rt(struct rq *rq)
 
         /* Kick cpufreq (see the comment in kernel/sched/sched.h). */
         cpufreq_update_this_cpu(rq, SCHED_CPUFREQ_RT);
-        /*更新一些统计值*/
+        /*如果需要，更新最大运行时间的统计值，需通过 /proc/sys/kernel/sched_schedstats 开启*/
         schedstat_set(curr->se.statistics.exec_max,
                       max(curr->se.statistics.exec_max, delta_exec));
-        /*sum_exec_runtime是进程累计使用的CPU时间，不断累加。*/
+        /*sum_exec_runtime 是进程累计使用的 CPU 时间，不断累加。*/
         curr->se.sum_exec_runtime += delta_exec;
         account_group_exec_runtime(curr, delta_exec); /*运行时间记账*/
         /*实际流逝的时间计算完了，更新 exec_start 以备下次 update_curr_rt() 使用*/
@@ -863,7 +859,7 @@ static inline u64 sched_avg_period(void)
 * `sched_rt_runtime_exceeded()`返回值为 **1** 时，`update_curr_rt()`会设置重新调度标志，表示需要限流。
 * `sched_rt_runtime_exceeded()`返回值为 **0** 时，实时任务至少不会因为 RT Throttling 的原因被抢占（当然，还有其他别的原因而被抢占）。
 * `rt_rq->rt_queued` 作为实时调度队列的标志位，大于 0 时表示未被限流。
-* 被限流的是调度实体是进程时比较简单，只是简单地关闭 `rt_rq->rt_queued = 0`，不会改变进程状态。
+* 被限流的调度实体是进程时比较简单，只是简单地关闭 `rt_rq->rt_queued = 0`，不会改变进程状态。
 * 被限流的调度实体是调度组的情况比较复杂。调度实体会被移出所属调度组的实时调度队列，但也不会处于任何一个睡眠队列，因为它并不是真正睡眠，而且它也不是一个进程。
   * 实时调度队列 `rt_rq->rt_queued = 0`
   * 等到限流被放开时，它会被放回实时调度队列
@@ -1093,12 +1089,12 @@ static inline unsigned int cpumask_weight(const struct cpumask *srcp)
 * `cpumask_bits(srcp)`很简单，就是返回`struct cpumask`结构的`bits`成员。
 * `nr_cpumask_bits`在 *SMP* 系统中就是 CPU 的数目，注意其值与`NR_CPUS`和`nr_cpu_ids`的关联，在上面列出。通常情况下，会走上面的分支，被替换为`nr_cpu_ids`，系统中实际支持的 CPU 数。
 * 重点看`bitmap_weight()`
-* include/linux/bitmap.h
+  * include/linux/bitmap.h
 ```c
 #define BITMAP_LAST_WORD_MASK(nbits) (~0UL >> (-(nbits) & (BITS_PER_LONG - 1)))
 
 #define small_const_nbits(nbits) \
-        (__builtin_constant_p(nbits) && (nbits) <= BITS_PER_LONG) /*__*/
+        (__builtin_constant_p(nbits) && (nbits) <= BITS_PER_LONG)
 ...
 static __always_inline int bitmap_weight(const unsigned long *src, unsigned int nbits)
 {
@@ -1108,6 +1104,11 @@ static __always_inline int bitmap_weight(const unsigned long *src, unsigned int 
 }
 ...
 ```
+* `__builtin_constant_p()` 是 **GCC 的内建函数（编译器扩展）**
+  * **功能**：判断一个表达式是否在编译时是常量（即编译器能确定其值的表达式）。
+  * **返回值**：
+    * **1**：表达式是编译时常量（例如 `5`，`sizeof(int)`，`(1 << 3)` 等）。
+    * **0**：表达式是运行时的变量（例如函数参数、全局变量等）。
 * 假设是 32 位平台，`BITS_PER_LONG`的值为 32，64 位的类推。
 * 假设当前系统有 8 个 CPU，则`nr_cpu_ids`为 8，即`bitmap_weight()`的入参`nbits`的值为 8。
 * 难理解的地方在`BITMAP_LAST_WORD_MASK()`的实现，这个宏的目的是，根据给定的 *位数* 返回 *位掩码*，比如，`nbits`为 8，返回位掩码为 `00000000 00000000 00000000 11111111`，即将`~0UL`右移 24 位得到。这 24 位怎么得来的呢？
@@ -1130,7 +1131,7 @@ short int | bit code | unsigned short int | 5 bit maximum = 31
 
 * 当类型为`unsigned short int`时，16 bit 整数的极限值为`65536 - 1= 65535`。我们没有 65535 这么多个 CPU，也不需要一个最多 65535 个 bit 的位掩码。
 * 依据之前的假设 32 位平台，`BITS_PER_LONG`的值为 32，如果我们当前支持的最大 CPU 数少于或等于 32 个（`if (small_const_nbits(nbits))`），我们计算时采用一个极限值为`BITS_PER_LONG - 1 = 31`的整数就够了，其二进制为`1 1111`，只有 5 个 bit 有效的位掩码，此时`-(nbits)`得到`nbits`所对应的负整数的二进制位码，再与 5 bit 所能表示的整数的极限值`BITS_PER_LONG - 1`做`&`运算去掉高位（因为我们没有这么多 CPU），如前所述，这个二进制的位码与`(BITS_PER_LONG - 1) + 1 - nbits = BITS_PER_LONG - nbits`的结果是一致的。
-* 比如说，当`nbits`为 8，那么`-(nbits) = -8 = 1 1000`作为无符号整数的解释结果为 24，也就是上表的第四列，5 bit的位宽。将`~0UL`右移 24 位得到`00000000 00000000 00000000 11111111`的位掩码。
+* 比如说，当`nbits`为 8，那么`-(nbits) = -8 = 1 1000`作为无符号整数的解释结果为 24，也就是上表的第四列，5 bit 的位宽。将`~0UL`右移 24 位得到`00000000 00000000 00000000 11111111`的位掩码。
 * 这个位掩码和`rd->span`里的 CPU 范围的`&` 运算的结果再交给`hweight_long()`计算里面被置位的数目。
 * 当 64 位平台`BITS_PER_LONG`的值为 64 的时候，且多于 64 个有效 CPU 的时候，`__bitmap_weight()`其实是做了个拆分计算，余数部分还是会用到`BITMAP_LAST_WORD_MASK()`得到余数部分的位掩码。
 
@@ -1172,7 +1173,7 @@ void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
         rt_b->rt_runtime = runtime;
 
         raw_spin_lock_init(&rt_b->rt_runtime_lock);
-
+        //初始化高精度定时器，到期时的回调为 sched_rt_period_timer()
         hrtimer_init(&rt_b->rt_period_timer,
                         CLOCK_MONOTONIC, HRTIMER_MODE_REL);
         rt_b->rt_period_timer.function = sched_rt_period_timer;
@@ -1182,7 +1183,7 @@ static void start_rt_bandwidth(struct rt_bandwidth *rt_b)
 {
         if (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF)
                 return;
-
+        //如果该队列的任务组的周期性定时器尚未启动，则会在此时启动
         raw_spin_lock(&rt_b->rt_runtime_lock);
         if (!rt_b->rt_period_active) {
                 rt_b->rt_period_active = 1;
@@ -1240,13 +1241,13 @@ static enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
         假设这里周期 P 为 8，
         a) 某时刻 T1 为 12，此时旧定时器时刻 timer1 为 6，那么调用 hrtimer_forward_now()，
            新定时器时刻 timer2 为 6 + 8 = 14，overrun = 1。
-           do_sched_rt_period_timer() 返回时，时刻 T2 为 13，T2 在 timer2 之前，
-           hrtimer_forward_now() 返回 overrun = 0，循环结束。
+           do_sched_rt_period_timer() 返回时，时刻 T2 为 13，T2 在 timer2 之前，没错过下
+           一个到期时间，hrtimer_forward_now() 返回 overrun = 0，循环结束。
         b) 某时刻 T1 为 12，此时旧定时器时刻 timer1 为 6，那么调用 hrtimer_forward_now()，
            新定时器时刻 timer2 为 6 + 8 = 14，overrun = 1。
            由于某种原因 do_sched_rt_period_timer() 得到运行的时间过长（注意，它不在
            rt_b->rt_runtime_lock 保护的临界区），返回时时刻 T2 为 16，
-           T2 在 timer2 之后，新定时器时间已经错过了，这种情况也需要处理。再次调用
+           T2 在 timer2 之后，新定时器到期时间已经错过了，这种情况也需要处理。再次调用
            hrtimer_forward_now()，将更新定时器 14 + 8 = 22，返回 overrun = 1，需要下
            次循环。且此期间的时间还要调用 do_sched_rt_period_timer() 再次处理。
            直至 do_sched_rt_period_timer() 返回时间在新定时器之前，也即是 case a）。*/
@@ -1377,24 +1378,22 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
           等到有新的实时进程进入队列时，定时器会被再次激活。*/
         return idle;
 }
-...`_
 ```
 
 ## 实时调度的watchdog
 
 ### RLIMIT_RTTIME
 * 关于`RLIMIT_RTTIME`参看[`setrlimit(2)`](https://linux.die.net/man/2/setrlimit)
-* 以 **微秒** 为单位，指定一个采用实时调度策略的进程在没有因系统调用造成的阻塞下可以运行的CPU时间限制。
-* 为了达到限制的目的，每次一个进程进行阻塞式的系统调用的时候，它消耗的CPU时间的计数会被清零。
-* CPU时间计数在以下情况不会清零：
-  * 进程继续尝试使用CPU，但被抢占了；
+* 以 **微秒** 为单位，指定一个采用实时调度策略的进程在没有因系统调用造成的阻塞下可以运行的 CPU 时间限制。
+* 为了达到限制的目的，每次一个进程进行阻塞式的系统调用的时候，它消耗的 CPU 时间的计数会被清零。
+  * `enqueue_task_rt()` 在每次进程因被唤醒而入列的时候喂狗，将 watchdog 观测的每 tick 增加的 `timeout` 清零
+* CPU 时间计数在以下情况不会清零：
+  * 进程继续尝试使用 CPU，但被抢占了；
   * 它的时间片超时了；
   * 它调用[`sched_yield(2)`](https://linux.die.net/man/2/sched_yield)。
 * 到达软限制之后，进程会收到一个`SIGXCPU`信号。如果进程捕捉或忽略这个信号并且继续消耗 CPU 时间，那么`SIGXCPU`会每秒产生一次直到到达硬限制，那时进程会收到一个`SIGKILL`信号。
 * 使用这个限制的目的是在一个锁住的系统中停止一个失控的实时进程。
-* 有关进程的`RLIMIT_RTTIME`可以通过`proc`文件系统查看：
-
-
+* 有关进程的`RLIMIT_RTTIME`可以通过`/proc/<PID>/limits`文件查看：
   ```
   $ cat /proc/self/limits
   Limit                     Soft Limit           Hard Limit           Units     
@@ -1438,7 +1437,7 @@ static void watchdog(struct rq *rq, struct task_struct *p)
                 /*- USEC_PER_SEC：硬编码为 1000000L
                   - USEC_PER_SEC/HZ：每次 tick 逝去了多少微秒，不同体系结构 HZ 有差异
                   - min(soft, hard)：取软硬限制中的最小值，微秒为单位
-                  - DIV_ROUND_UP(n,d)：向上取整
+                  - DIV_ROUND_UP(n,d)：n/d，商向上取整
                   - next：到达下次 RLIMIT_RTTIME 限制经过的 tick 数*/
                 next = DIV_ROUND_UP(min(soft, hard), USEC_PER_SEC/HZ);
                 /*当实时进程的运行 tick 数超过 RLIMIT_RTTIME 限制的 tick 数，更新进程的
@@ -1510,7 +1509,7 @@ static void check_thread_timers(struct task_struct *tsk,
 ```
 
 # 进程唤醒
-* 进程唤醒时，实时调度器要做的事情和进程入列时的类似，主要是`enqueue_task_rt()`和`check_preempt_curr_rt(）`完成核心调度器交给的`enqueue_task`和`check_preempt_curr`等工作，这两个函数在分析新进程入列时已经展示过了。
+* 进程唤醒时，实时调度器要做的事情和进程入列时的类似，主要是`enqueue_task_rt()`和`check_preempt_curr_rt()`完成核心调度器交给的`enqueue_task`和`check_preempt_curr`等工作，这两个函数在分析新进程入列时已经展示过了。
 * 不同之处在于，核心调度器在调用`ttwu_do_wakeup()`时，除了调用`check_preempt_curr()`，还会调用`p->sched_class->task_woken`方法。
 * CFS 并未实现`task_woken`方法，但实时调度器实现了该方法。对于实时进程，在这里要做的事情是：如果 *被唤醒* 的实时任务不是正在运行的任务，并且也不会很快被调度，这种情况要把它推到别的队列上。
 * kernel/sched/rt.c
@@ -1551,7 +1550,7 @@ static inline int task_running(struct rq *rq, struct task_struct *p)
   * 被唤醒的任务不是正在运行的任务，如何判断见`task_current()`
   * 当前队列上正在运行的任务重新调度的标志位`TIF_NEED_RESCHED`没有被设置
   * 被唤醒的任务可在多于一个的 CPU 上运行
-  * 当前队列上正在运行的任务的有效优先级是实时优先级（deadline或者RT）
+  * 当前队列上正在运行的任务的有效优先级是实时优先级（deadline 或者 RT）
   * 当前队列上正在运行的任务 **只能在一个 CPU 上运行** 或者 **当前任务优先级高于被唤醒的任务**
 * 关于最后一个条件看这里：
   * [Using KernelShark to analyze the real-time scheduler](https://lwn.net/Articles/425583/)
@@ -1728,12 +1727,13 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 
         for_each_sched_rt_entity(rt_se) { /*根据 parent 指针自底向上遍历*/
                 struct rt_rq *rt_rq = group_rt_rq(rt_se); /*取得调度实体拥有的调度队列*/
-                 /*在组调度场景，如果调度实体还拥有调度队列，该调度实体不能贸然删除，还须把
-                   它的父调度实体所在的调度队列的。*/
+                 /*在组调度场景，如果调度实体是调度组，该调度实体不能贸然删除，还须把它放回调度队列。
+                   如果调度实体是进程，不是调度组，则无需再放入调度队列，即调度实体出列了。
+                   然而不管调度实体是进程还是调度组，都得由底向上处理父队列的入列问题*/
                 if (rt_rq && rt_rq->rt_nr_running)
                         __enqueue_rt_entity(rt_se, flags);
         }
-        enqueue_top_rt_rq(&rq->rt); /*处理实时任务入列对运行队列rq的影响*/
+        enqueue_top_rt_rq(&rq->rt); /*更新上面实时调度实体入列对运行队列 rt_rq 的影响*/
 }
 ...
 static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags)

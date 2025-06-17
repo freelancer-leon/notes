@@ -97,8 +97,9 @@
 * https://en.wikipedia.org/wiki/Shortest_remaining_time
 
 # 交互式系统调度算法
-###轮转调度（Round robin）
+### 轮转调度（Round robin）
 * **时间片（time slice/quantum）** 每个进程被分配一个时间段，允许该进程运行的时间。
+
 ![pic/sched_round_robin.png](pic/sched_round_robin.png)
 * 假设所有进程同等重要
 * https://en.wikipedia.org/wiki/Round-robin_scheduling

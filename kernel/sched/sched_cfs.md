@@ -24,7 +24,7 @@
 ![pic/sched_cfs_struct.gif](pic/sched_cfs_struct.gif)
 
 ## CFS调度实体 sched_entity
-* include/linux/sched.h::sched_entity
+* include/linux/sched.h::`sched_entity`
 ```c
 struct sched_entity {
     struct load_weight  load;       /*for load-balancing*/
@@ -42,17 +42,17 @@ struct sched_entity {
 * `load` 权重，决定了各个实体占队列总负荷的比例。虚拟时钟的速度最终依赖于权重。
 * `run_node` 树节点，将实体与红黑树关联起来，完成树相关的操作。
 * `on_rq` 表示该实体是否在运行队列上接受调度。
-	* 注意，当前正在运行的进程虽然不再红黑树上，但`on_rq`也为**1**。
-* `exec_start` 主要在`update_curr()`时用当前时间减去`exec_start`得到`delta_exec`，并更新为当前时间。
-* `sum_exec_runtime` 累计消耗的CPU时间，在`update_curr()`时会把`delta_exec`累加到`sum_exec_runtime`。检查能否抢占时需要用到该值。
+	* 注意：当前正在运行的进程虽然不再红黑树上，但`on_rq`也为 **1**。
+* `exec_start` 主要在`update_curr()`时用 *当前时间* 减去`exec_start`得到`delta_exec`，并更新为当前时间。
+* `sum_exec_runtime` 累计消耗的 CPU 时间，在`update_curr()`时会把`delta_exec`累加到`sum_exec_runtime`。检查能否抢占时需要用到该值。
 * `vruntime` 记录进程执行期间虚拟时钟上流逝的时间。
-* `prev_sum_exec_runtime` 进程上一次被撤销CPU时的累计运行时间。
+* `prev_sum_exec_runtime` 进程上一次被撤销 CPU 时的累计运行时间。
 	* 当进程被选中为下一次被调度的进程时，将`sum_exec_runtime`保存到`prev_sum_exec_runtime`。
-	* 此后，在进程抢占时`sum_exec_runtime - prev_sum_exec_runtime`就是进程在CPU上执行花费的实际时间。
-	* 注意，`sum_exec_runtime`并不会被重置，而是持续单调增长。
+	* 此后，在进程抢占时`sum_exec_runtime - prev_sum_exec_runtime`就是进程在 CPU 上执行花费的实际时间。
+	* 注意：`sum_exec_runtime`并不会被重置，而是持续单调增长。
 
 ## CFS调度运行队列 cfs_rq
-* kernel/sched/sched.h::cfs_rq
+* kernel/sched/sched.h::`cfs_rq`
 ```c
 /* CFS-related fields in a runqueue */
 struct cfs_rq {
@@ -155,7 +155,7 @@ static void task_fork_fair(struct task_struct *p)
     unsigned long flags;
 
     raw_spin_lock_irqsave(&rq->lock, flags);
-    /*更新运行队列的时钟，这个值会在后面update_curr()用到*/
+    /*更新运行队列的时钟，这个值会在后面 update_curr() 用到*/
     update_rq_clock(rq);
 
     cfs_rq = task_cfs_rq(current);
@@ -170,12 +170,12 @@ static void task_fork_fair(struct task_struct *p)
     rcu_read_lock();
     __set_task_cpu(p, this_cpu);
     rcu_read_unlock();
-    /*更新当前进程的vruntime，该函数还会顺带更新当前队列的min_vruntime__*/
+    /*更新当前进程的 vruntime，该函数还会顺带更新当前队列的 min_vruntime*/
     update_curr(cfs_rq);
-    /* 如果当前进程所在队列不为空，将所在队列当前进程的`vruntime`作为新进程`vruntime`的基础 */
+    /*如果当前进程所在队列不为空，将所在队列当前进程的 vruntime 作为新进程 vruntime 的基础 */
     if (curr)
         se->vruntime = curr->vruntime;
-    place_entity(cfs_rq, se, 1); /* 设置新进程的vruntime值, 1表示是新进程 */
+    place_entity(cfs_rq, se, 1); /* 设置新进程的 vruntime 值, 1 表示是新进程 */
     /* sysctl_sched_child_runs_first值表示是否设置了让子进程先运行 */
     if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
         /*
@@ -214,35 +214,34 @@ static void task_fork_fair(struct task_struct *p)
 static void update_curr(struct cfs_rq *cfs_rq)
 {
     struct sched_entity *curr = cfs_rq->curr;
-    /*获取所在队列的时钟，该值刚在task_fork_fair调用update_rq_clock更新过*/
+    /*获取所在队列的时钟，该值刚在 task_fork_fair() 调用 update_rq_clock() 更新过*/
     u64 now = rq_clock_task(rq_of(cfs_rq));
     u64 delta_exec;
     /* 如果当前队列上没有进程在运行，什么都不做 */
     if (unlikely(!curr))
         return;
-    /* exec_start记录的是上一次调用update_curr()的时间，我们用当前时间减去exec_start  
-     * 就得到了从上次计算vruntime到现在进程又运行的实际时间。
-     */
+    /* exec_start 记录的是上一次调用 update_curr() 的时间，我们用当前时间减去 exec_start
+     * 就得到了从上次计算 vruntime 到现在进程又运行的实际时间。*/
     delta_exec = now - curr->exec_start;
     if (unlikely((s64)delta_exec <= 0))
         return;
-    /* 实际流逝的时间计算完了，更新exec_start以备下次使用 */
+    /* 实际流逝的时间计算完了，更新 exec_start 以备下次使用 */
     curr->exec_start = now;
 
     ...
-    /* sum_exec_runtime是进程累计使用的CPU时间，因此是实际时间。在此处更新*/
+    /* sum_exec_runtime 是进程累计使用的 CPU 时间，因此是实际时间。在此处更新*/
     curr->sum_exec_runtime += delta_exec;
     ...
-    /* vruntime是进程累计使用的虚拟时间，需要将delta_exec经过加权运算后得到 */
+    /* vruntime 是进程累计使用的虚拟时间，需要将 delta_exec 经过加权运算后得到 */
     curr->vruntime += calc_delta_fair(delta_exec, curr);
-    /*因为有进程的vruntime变了，因此该队列的min_vruntime可能也发生了变化，更新它*/
+    /*因为有进程的 vruntime 变了，因此该队列的 min_vruntime 可能也发生了变化，更新它*/
     update_min_vruntime(cfs_rq);
     ...
 }
 ```
 
-#### 计算虚拟运行时间增量calc_delta_fair
-* 函数`calc_delta_fair()`根据传入的实际时间增量以及进程的权重计算虚拟时间的增量
+#### 计算虚拟运行时间增量 calc_delta_fair
+* 函数`calc_delta_fair()`根据传入的 *实际时间增量* 以及 *进程的权重* 计算 *虚拟时间的增量*
 * 计算公式之前讨论过，计算的细节`__calc_delta()`后面在专门讨论
   * kernel/sched/fair.c
 ```c
@@ -257,10 +256,10 @@ static inline u64 calc_delta_fair(u64 delta, struct sched_entity *se)
     return delta;
 }
 ```
-* 根据CFS的设计，`nice`为**0**的进程的权重为`NICE_0_LOAD`，此时实际时间和虚拟时间是相等的。
+* 根据 CFS 的设计，`nice`为 **0** 的进程的权重为`NICE_0_LOAD`，此时实际时间和虚拟时间是相等的。
 
-#### 更新CFS运行队列的min_vruntime
-* `update_min_vruntime`函数通常要从**当前进程**与**运行队列里的进程**中选出**最小**的`vruntime`作为CFS运行队列的`min_vruntime`
+#### 更新 CFS 运行队列的 min_vruntime
+* `update_min_vruntime()`函数通常要从 **当前进程** 与 **运行队列里的进程** 中选出 **最小的`vruntime`** 作为 CFS 运行队列的`min_vruntime`
   * kernel/sched/fair.c
 ```c
 static void update_min_vruntime(struct cfs_rq *cfs_rq)
@@ -276,24 +275,23 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
                            struct sched_entity,
                            run_node);
 
-        if (!cfs_rq->curr)/*如果当前并没有进程在运行，则用树上最左结点的vruntime*/
+        if (!cfs_rq->curr)//如果当前并没有进程在运行，则用树上最左结点的 vruntime
             vruntime = se->vruntime;
-        else              /*否则从当前运行进程与树的最左结点调度实体中选最小的vruntime*/
+        else              //否则从当前运行进程与树的最左结点调度实体中选最小的 vruntime
             vruntime = min_vruntime(vruntime, se->vruntime);
     }    
     /* 如果运行队列上没有进程，则用当前进程的vruntime */
 
     /* ensure we never gain time by being placed backwards. */
     /* 时间不能出现回退的现象，所以这里要选出最大值。
-     * 也就是说，每个队列所记录的min_vruntime只有被超出时才能更新。
-     */
+     * 也就是说，每个队列所记录的 min_vruntime 只有被超出时才能更新。*/
     cfs_rq->min_vruntime = max_vruntime(cfs_rq->min_vruntime, vruntime);
     ...
 }
 ```
 * 设置运行队列的`min_vruntime`必须保证该值的**单调递增**。
 
-### 创建新进程时的place_entity()
+### 创建新进程时的 place_entity()
 * `task_fork_fair()`是这么调用`place_entity()`的
   * kernel/sched/fair.c
 	```c
@@ -708,7 +706,7 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
   * 当被`calc_delta_fair()`调用时，`__calc_delta(delta, NICE_0_LOAD, &se->load)`，用的是计算`vruntime`的公式`vruntime = 实际运行时间 * NICE_0_LOAD / 进程权重`，返回值是加权后的`vruntime`。
   * 当被`sched_slice()`调用时，`__calc_delta(队列的实际调度周期, 某个进程的权重, 整个队列的权重)`，因此这里返回值是进程在一个调度周期内**按比例应分得的**实际运行时间。
 
-#### 避而不谈的\__calc_delta()
+#### 避而不谈的 `__calc_delta()`
 
 很多关于kernel的书籍和讲CFS的文章在讲到`__calc_delta()`函数的时候都选择了略过，可能是由于这一部分变动的比较大，但这里有多有趣的细节值得推敲，这里根据v4.6的代码讲一下。
 
@@ -768,7 +766,7 @@ static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight
        1) 当__calc_delta()用于计算当前进程消耗的vruntime时，
           即 weight := NICE_0_LOAD, lw := &se->load 时,
           其实就是在计算：
-          fact = （2^32-1） * NICE_0_LOAD / se->load.weight
+          fact = (2^32-1) * NICE_0_LOAD / se->load.weight
           这里先乘个2^32-1能保证fact的结果不会因为NICE_0_LOAD < se->load.weight
           而导致的整形除法商为0的情况。
       2) 当__calc_delta()用于计算按权重比例分得的调度周期内墙上时钟时间片时，
@@ -791,9 +789,8 @@ static u64 __calc_delta(u64 delta_exec, unsigned long weight, struct load_weight
 ```
 
 * 这里可以考虑计算`vruntime`时（即`weight := NICE_0_LOAD`）的两种极限情况：
-  1. 当`lw->weight`特别小，比如为1时，`__update_inv_weight(lw)`会把`lw->inv_weight`置为`WMULT_CONST`（即`0x ff ff ff ff`）, `NICE_0_LOAD`等于1024相当于将`0x ff ff ff ff`再右移10位。因此，第二个while循环后`shift`的值会变为22。`mul_u64_u32_shr(delta_exec, fact, shift)`相当于`delta_exec * (2^32-1) / 2^22`变换成`delta_exec * (2^10 - 1/2^22)`，算下来应该与`delta_exec * 1024`的值差不多。
-  2. 当`lw->weight`特别大，甚至超过`WMULT_CONST`（即`0x ff ff ff ff`）时，`__update_inv_weight(lw)`会把`lw->inv_weight`置为**1**，两次while循环都不会产生`fact`右移的情况。`fact`仍然是`NICE_0_LOAD`，而`shift`还是32，故`mul_u64_u32_shr(delta_exec, fact, shift)`相当于`delta_exec >> 22`（`2^22 = 4,194,304`）。
-
+  1. 当`lw->weight`特别小，比如为 `1` 时，`__update_inv_weight(lw)`会把`lw->inv_weight`置为`WMULT_CONST`（即`0x ff ff ff ff`），乘以`NICE_0_LOAD`（等于`1024`）相当于将`0x ff ff ff ff`再左移`10`位。因此，第二个`while`循环后`shift`的值会变为`22`。`mul_u64_u32_shr(delta_exec, fact, shift)`相当于`delta_exec * (2^32-1) / 2^22`变换成`delta_exec * (2^10 - 1/2^22)`，算下来应该与`delta_exec * 1024`的值差不多。
+  2. 当`lw->weight`特别大，甚至超过`WMULT_CONST`（即`0x ff ff ff ff`）时，`__update_inv_weight(lw)`会把`lw->inv_weight`置为 **`1`**，两次while循环都不会产生`fact`右移的情况。`fact`仍然是`NICE_0_LOAD`，而`shift`还是`32`，故`mul_u64_u32_shr(delta_exec, fact, shift)`相当于`delta_exec >> 22`（`2^22 = 4,194,304`）。
 * 当`__calc_delta()`用于计算时间片的时候（即被`sched_slice()`），`lw->weight`是就绪队列权重的总和，虽然`lw->weight`有可能会非常的大，但根据`sched_slice()`的实现，`delta_exec`是调度周期，当就绪队列里任务非常多时，调度周期也会相应地增大。
 
 
@@ -1227,13 +1224,14 @@ set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 * 红黑树是不保存”*当前*”进程的，因此需要`__dequeue_entity()`，之前`pick_next_task_fair()`提到过。
 * 之前`put_prev_entity()`把旧进程放回队列时将`cfs_rq->curr`置为空，此时选出了新进程需要将`cfs_rq->curr`指向它，保持“当前”进程与运行队列的关联。
 * 最后需要更新`prev_sum_exec_runtime`，我们在[周期性调度检查check_preempt_tick](#周期性调度检查check_preempt_tick)提到过它的作用。
-* `se->on_rq`通常在`enqueue_entity()`时被设为**1**，在`dequeue_entity()`时被值为**0**。
+* `se->on_rq`通常在`enqueue_entity()`时被设为 **1**，在`dequeue_entity()`时被值为 **0**。
 
 # CFS调试接口
-* CFS提供了调试接口，还提供了运行时统计信息，分别在 **kernel/sched_debug.c** 和 **kernel/sched_stats.h** 中实现。
-* **/proc/sched_debug**: 显示运行时调度程序可调优选项的当前值、CFS 统计信息和所有可用 CPU 的运行队列信息。当读取这个 proc 文件时，将调用 `ched_debug_show()` 函数并在 *sched_debug.c* 中定义。
+* CFS 提供了调试接口，还提供了运行时统计信息，分别在 **kernel/sched_debug.c** 和 **kernel/sched_stats.h** 中实现。
+* **/proc/sched_debug**: 显示运行时调度程序可调优选项的当前值、CFS 统计信息和所有可用 CPU 的运行队列信息。当读取这个 proc 文件时，将调用 `sched_debug_show()` 函数并在 *sched_debug.c* 中定义。
 * **/proc/schedstat**: 为所有相关的 CPU 显示特定于运行队列的统计信息以及 SMP 系统中特定于域的统计信息。kernel/sched_stats.h 中定义的 `show_schedstat()` 函数将处理 proc 条目中的读操作。
 * **/proc/[PID]/sched**: 显示与相关调度实体有关的信息。在读取这个文件时，将调用 *kernel/sched_debug.c* 中定义的 `proc_sched_show_task()` 函数。
+* 如果开启 `CONFIG_SCHEDSTATS=y`，可以 `echo 1 > /proc/sys/kernel/sched_schedstats` 动态开启，或者 kernel parameter `schedstats=enable` 默认开启扩展的进程调度统计信息，在 `/proc/[PID]/sched` 中看到更多的内容。
 
 # 参考资料
 * Linux Kernel Development (3rd Edition), Robert Love
