@@ -73,23 +73,28 @@ struct softirq_action
 * **触发软中断**（raising the softirq）一个注册的软中断必须在被标记后才会被执行。
 * 通常中断处理程序会在返回前标记它的软中断，使其在稍后被执行。
 * 软中断被检查和执行的地方
-  * 在那些显式检查和执行待处理软中断的代码中，如网络子系统中（当`ksoftirqd`可运行时不会同步处理软中断）
-  * 从一个硬件中断代码处返回时（同上）
+  * ~~在那些显式检查和执行待处理软中断的代码中，如网络子系统中（当`ksoftirqd`可运行时不会同步处理软中断）~~
+  * 从一个硬件中断代码处返回时
   * 在`ksoftirqd`内核线程中
-  * 禁止软中断后再次使能软中断的时候
-* 不管用什么方法唤起，软中断都要在`__do_softirq()`中执行。
+  * 在`ktimers/%u`内核线程中`run_ktimerd() -> __do_softirq()`
+  * 禁止下半部后再次使能软中断的时候
+* 不管用什么方法唤起，软中断都要在`handle_softirqs()`中执行。
 
-### 直接调用`do_softirq()`处理软中断
-* kernel/softirq.c::`__local_bh_enable_ip()` -> `do_softirq()`
+### 禁止下半部后再次使能软中断
+* kernel/softirq.c::`__local_bh_enable_ip()` -> `__do_softirq()`
+
+### ~~直接调用`do_softirq()`处理软中断~~
 * net/core/dev.c::`netif_rx_ni()` -> `do_softirq()`
+* 该调用点已于 commit baebdf48c360 ("net: dev: Makes sure netif_rx() can be invoked in any context.") 被删除，并通过增加关闭和开启下半部，将对软中断的处理归并到上一种情况
   ```c
   do_softirq()
    -> do_softirq_own_stack()
       -> __do_softirq()
-         -> softirq_vec->action()
+         -> handle_softirqs(false)
+            -> softirq_vec->action()
   ```
 * kernel/softirq.c
-```c
+```cpp
 asmlinkage __visible void __softirq_entry __do_softirq(void)
 {
     unsigned long end = jiffies + MAX_SOFTIRQ_TIME; /*默认为 2ms*/
@@ -116,22 +121,22 @@ asmlinkage __visible void __softirq_entry __do_softirq(void)
 restart:
     /* Reset the pending bitmask before enabling irqs */
     set_softirq_pending(0);
-
-    local_irq_enable();  /*开启之前关闭的中断，如run_ksoftirqd()。因此软中断处理程序期间中断是打开的。*/
-
+    /*开启之前关闭的中断，如run_ksoftirqd()。因此软中断处理程序期间中断是打开的。*/
+    local_irq_enable();
+    //指向软中断向量数组的起始地址
     h = softirq_vec;
-
+    //按软中断向量的优先级逐级处理挂起的软中断
     while ((softirq_bit = ffs(pending))) {  /* ffs - find first set bit in word */
         unsigned int vec_nr;
         int prev_count;
-
+        //h 指向软中断向量中有软中断正在挂起的数组元素
         h += softirq_bit - 1;
-
+        //vec_nr 为正在处理的软中断向量号
         vec_nr = h - softirq_vec;
         prev_count = preempt_count();
 
         kstat_incr_softirqs_this_cpu(vec_nr);
-
+        //处理挂起的软中断
         trace_softirq_entry(vec_nr);
         h->action(h);
         trace_softirq_exit(vec_nr);
@@ -141,7 +146,7 @@ restart:
                    prev_count, preempt_count());
             preempt_count_set(prev_count);
         }
-        h++;
+        h++; //h 指向软中断向量中下一个正在挂起软中断的数组元素
         pending >>= softirq_bit;
     }
 
@@ -181,14 +186,15 @@ asmlinkage __visible void do_softirq(void)
 
     local_irq_restore(flags);
 }
-...__```
 ```
 * 注意：由此可见，调用`do_softirq()`并不意味着一定会调用`__do_softirq()`，让挂起的软中断同步得到处理。
 * 对于大部分体系结构，`do_softirq_own_stack()`的实现就是调用`__do_softirq()`
-  * include/linux/interrupt.h
+* 不同的是 `CONFIG_SOFTIRQ_ON_OWN_STACK` 选项可以控制软中断处理使用的是被打断的当前栈还是中断栈
+* 通用的 `CONFIG_SOFTIRQ_ON_OWN_STACK` 关闭时的处理：
+  * include/asm-generic/softirq_stack.h
   ```c
   ...
-  #ifdef __ARCH_HAS_DO_SOFTIRQ
+  #ifdef CONFIG_SOFTIRQ_ON_OWN_STACK
   void do_softirq_own_stack(void);
   #else
   static inline void do_softirq_own_stack(void)
@@ -198,29 +204,26 @@ asmlinkage __visible void do_softirq(void)
   #endif
   ...
   ```
-* x86-32 的`do_softirq_own_stack()`的实现比较特殊
-  * arch/x86/kernel/irq_32.c
+* x86 开启 `CONFIG_SOFTIRQ_ON_OWN_STACK` 时 `do_softirq_own_stack()` 就通过汇编 `call_on_irqstack` 切换到中断栈上，然后在处理软中断
+  * arch/x86/include/asm/irq_stack.h
   ```c
-  void do_softirq_own_stack(void)
-  {   
-      struct thread_info *curstk;
-      struct irq_stack *irqstk;
-      u32 *isp, *prev_esp;
-
-      curstk = current_stack();
-      irqstk = __this_cpu_read(softirq_stack);
-
-      /* build the stack frame on the softirq stack */
-      isp = (u32 *) ((char *)irqstk + sizeof(*irqstk));
-
-      /* Push the previous esp onto the stack */
-      prev_esp = (u32 *)irqstk;
-      *prev_esp = current_stack_pointer();
-      /*通过一段汇编指令调用函数__do_softirq，函数的栈指针为 isp*/
-      call_on_stack(__do_softirq, isp);
+  #ifdef CONFIG_SOFTIRQ_ON_OWN_STACK
+  /*
+   * Macro to invoke __do_softirq on the irq stack. This is only called from
+   * task context when bottom halves are about to be reenabled and soft
+   * interrupts are pending to be processed. The interrupt stack cannot be in
+   * use here.
+   */
+  #define do_softirq_own_stack()                                          \
+  {                                                                       \
+          __this_cpu_write(hardirq_stack_inuse, true);                    \
+          call_on_irqstack(__do_softirq, ASM_CALL_ARG0);                  \
+          __this_cpu_write(hardirq_stack_inuse, false);                   \
   }
-  ...__```
+
+  #endif
   ```
+
 ### 中断退出时处理软中断
 * 从`irq_exit()`开始看起。退出中断上下文，如果需要且可能的话，执行软中断处理。
 * kernel/softirq.c
@@ -247,7 +250,8 @@ static inline void invoke_softirq(void)
                  * be potentially deep already. So call softirq in its own stack
                  * to prevent from any overrun.
                  */
-                /*否则，用 softirq 自己的栈，该函数实现与体系结构相关*/
+                /*否则，irq_exit() 会在任务栈上调用，而该栈可能已经很深了。
+                  因此，在 softirq 自己的栈中调用它，以防止出现溢出。*/
                 do_softirq_own_stack();
 #endif
         } else {
@@ -278,7 +282,6 @@ void irq_exit(void)
         rcu_irq_exit();
         trace_hardirq_exit(); /* must be last! */
 }
-...*```
 ```
 
 ### `ksoftirqd`中断处理进程
@@ -343,12 +346,11 @@ void irq_exit(void)
           return 0;
   }
   early_initcall(spawn_ksoftirqd); /*通过 initcall 的方式来注册软中断处理进程函数*/
-  ...__```
   ```
 
 ## 使用软中断
 
-### 注册softirq
+### 注册 softirq
 
 * kernel/softirq.c
   ```c
@@ -380,20 +382,23 @@ void irq_exit(void)
           per_cpu(tasklet_hi_vec, cpu).tail =
               &per_cpu(tasklet_hi_vec, cpu).head;
       }
-      /*注意，这里注册了tasklet的softirq处理函数*/
+      /*例如，这里注册了 tasklet 和 HI_SOFTIRQ 的软中断处理函数*/
       open_softirq(TASKLET_SOFTIRQ, tasklet_action);
       open_softirq(HI_SOFTIRQ, tasklet_hi_action);
   }
   ```
-
 * 软中断处理程序执行时允许响应中断（即开中断），但不能睡眠
-* 在一个处理程序在运行时，当前处理器的软中断被禁止，但其他处理器并不禁止软中断
+* 在一个软中断处理程序在运行时，当前处理器的软中断被禁止，但其他处理器并不禁止软中断
 * 因此其他处理器可以运行软中断处理程序，甚至是同一处理程序
 * 这意味着共享数据要加锁，但加锁又影响性能，失去软中断的意义，因此尽量用单处理器数据或其他技巧避免加锁
-* 还有就是改用tasklet
+* 还有就是改用 tasklet
 
-### 触发softirq
-
+### 触发 softirq
+* `raise_softirq()` 是对 `raise_softirq_irqoff()` 的封装，会确保触发软中断前后开启和关闭中断
+* `raise_softirq_irqoff()` 是对 `__raise_softirq_irqoff()` 的封装
+  * 必须在关中断的情况下调用，否则会唤醒 `ksoftirqd` 确保软中断会被尽快处理
+  * 如果知道中断已经被禁，比如中断上下文，可以直接调
+* `__raise_softirq_irqoff()` 是最底层的调用
 * kernel/softirq.c
   ```c
   /*
@@ -430,29 +435,26 @@ void irq_exit(void)
       trace_softirq_raise(nr);
       or_softirq_pending(1UL << nr);  /*置位*/
   }
-  ...__```
   ```
-
-* 如果知道中断已经被禁，可以直接调`raise_softirq_irqoff()`。
-
 
 # tasklet
 
-* 用softirq实现，因此本质上也是softirq
-* 分为`HI_SOFTIRQ`和`TASKLET_SOFTIRQ`两类，`HI_SOFTIRQ`优先于`TASKLET_SOFTIRQ`执行
-* `count`成员是某个tasklet的引用计数，是关于这个tasklet的开关
-* `state`的`TASKLET_STATE_RUN`则是用来检查当前tasklet是否已经在某个处理器上执行
+* 用 softirq 实现，因此本质上也是 softirq
 * `tasklet_struct`结构
   ```c
   struct tasklet_struct
   {
       struct tasklet_struct *next;
       unsigned long state;
-      atomic_t count;  /*不为0，被禁止；为0，激活，被设为挂起状态才能执行*/
+      atomic_t count;
       void (*func)(unsigned long);
       unsigned long data;
   };
   ```
+* `count` 成员是某个 tasklet 的引用计数，是关于这个 tasklet 的开关
+  * 不为 `0`，被禁止；
+  * 为 `0`，激活，被设为挂起状态才能执行
+* `state` 的 `TASKLET_STATE_RUN` 则是用来检查当前 tasklet 是否已经在某个处理器上执行
 * tasklet state
   ```c
   enum
@@ -461,6 +463,7 @@ void irq_exit(void)
       TASKLET_STATE_RUN   /* Tasklet is running (SMP only) */
   };
   ```
+* 分为 `HI_SOFTIRQ` 和 `TASKLET_SOFTIRQ` 两类，`HI_SOFTIRQ` 优先于 `TASKLET_SOFTIRQ` 执行
 * 两个per-CPU链表`tasklet_vec`和`tasklet_hi_vec`
   ```c
   /*
@@ -473,13 +476,13 @@ void irq_exit(void)
 
   static DEFINE_PER_CPU(struct tasklet_head, tasklet_vec);
   static DEFINE_PER_CPU(struct tasklet_head, tasklet_hi_vec);
-
   ```
 
-## 调度tasklet
-* `tasklet_schedule(t)`和`tasklet_hi_schedule(t)`
-  * 把`tasklet_struct`加入per-CPU链表
-  * 触发softirq
+## 调度 tasklet
+* `tasklet_schedule(t)` 和 `tasklet_hi_schedule(t)`
+  * 如果 `t.state` 没置位，置为 `TASKLET_STATE_SCHED`，否则什么也不做
+  * 把 `tasklet_struct` 加入 per-CPU 链表
+  * 触发 `TASKLET_SOFTIRQ` softirq
   * include/linux/interrupt.h
 ```c
 extern void __tasklet_schedule(struct tasklet_struct *t);
@@ -500,18 +503,17 @@ void __tasklet_schedule(struct tasklet_struct *t)
     t->next = NULL;
     *__this_cpu_read(tasklet_vec.tail) = t;  /*加入链表*/
     __this_cpu_write(tasklet_vec.tail, &(t->next));
-    raise_softirq_irqoff(TASKLET_SOFTIRQ);  /*触发softirq*/
+    raise_softirq_irqoff(TASKLET_SOFTIRQ);  /*触发 TASKLET_SOFTIRQ softirq*/
     local_irq_restore(flags);
 }
 EXPORT_SYMBOL(__tasklet_schedule);
-...__```
 ```
 
-## 处理tasklet
+## 处理 tasklet
 * `tasklet_action()`和`tasklet_hi_action()`，tasklet的softirq处理函数，在`softirq_init()`时注册
 * 需要通过测试并设置`TASKLET_STATE_RUN`来保障同一类型的tasklet不能同时在其他CPU上运行
   * include/linux/interrupt.h
-```c
+```cpp
 #ifdef CONFIG_SMP
 static inline int tasklet_trylock(struct tasklet_struct *t)
 {
@@ -533,7 +535,6 @@ static inline void tasklet_unlock_wait(struct tasklet_struct *t)
 #define tasklet_unlock_wait(t) do { } while (0)
 #define tasklet_unlock(t) do { } while (0)
 #endif
-...*```
 ```
   * kernel/softirq.c
 ```c
@@ -551,22 +552,20 @@ static void tasklet_action(struct softirq_action *a)
         struct tasklet_struct *t = list;
 
         list = list->next;
-        /*先看看该类型tasklet是否在其他CPU上执行。
-          如果没有，则置位RUN，开始执行；
-          否则跳过该tasklet
-         */
+        /*先看看该类型 tasklet 是否在其他 CPU 上执行。
+          如果没有，则原子地置位 RUN，开始执行；否则跳过该 tasklet*/
         if (tasklet_trylock(t)) {
-            if (!atomic_read(&t->count)) { /*检查tasklet是否被禁止*/
+            if (!atomic_read(&t->count)) { /*检查 tasklet 是否被禁止，count == 0 表示激活*/
                 if (!test_and_clear_bit(TASKLET_STATE_SCHED,
-                            &t->state))
-                    BUG();
-                t->func(t->data);  /*执行tasklet*/
-                tasklet_unlock(t); /*清除RUN标志*/
+                            &t->state)) //我们置的 RUN，必须由我们来清 SCHED
+                    BUG();              //如果 SCHED 已经被别人清了，必然是 bug
+                t->func(t->data);  /*执行 tasklet*/
+                tasklet_unlock(t); /*清除 RUN 标志*/
                 continue;          /*接着处理下一个tasklet*/
             }
             tasklet_unlock(t);
         }
-        /*跳过的tasklet放回链表，并激活softirq让它下回再处理*/
+        /*跳过的 tasklet 放回链表，并触发 softirq 让它下回再处理*/
         local_irq_disable();
         t->next = NULL;
         *__this_cpu_read(tasklet_vec.tail) = t;
@@ -575,14 +574,13 @@ static void tasklet_action(struct softirq_action *a)
         local_irq_enable();
     }
 }
-...__```
 ```
 
-## 使用tasklet
+## 使用 tasklet
 
-### 声明tasklet
+### 声明 tasklet
 
-* 静态创建tasklet
+* 静态创建 tasklet
 ```c
 #define DECLARE_TASKLET(name, func, data) \
 struct tasklet_struct name = { NULL, 0, ATOMIC_INIT(0), func, data }
@@ -591,7 +589,7 @@ struct tasklet_struct name = { NULL, 0, ATOMIC_INIT(0), func, data }
 struct tasklet_struct name = { NULL, 0, ATOMIC_INIT(1), func, data }
 ```
 
-* 动态创建tasklet
+* 动态创建 tasklet
 ```c
 void tasklet_init(struct tasklet_struct *t,                                                                                
           void (*func)(unsigned long), unsigned long data)
@@ -603,23 +601,21 @@ void tasklet_init(struct tasklet_struct *t,
     t->data = data;
 }
 EXPORT_SYMBOL(tasklet_init);
-...*```
 ```
 
-### tasklet处理函数
-* 因为是靠softirq实现的，所以tasklet处理函数不能睡
+### 实现 tasklet 处理函数的注意事项
+* 因为是靠 softirq 实现的，所以 tasklet 处理函数不能睡眠
   * 不能用信号量或阻塞式函数
 * 注意，此期间允许响应中断
-* 注意保护不同tasklet间的共享数据，或者tasklet与其他softirq共享的数据
+* 注意保护不同 tasklet 间的共享数据，或者 tasklet 与其他 softirq 共享的数据
 
-
-### tasklet函数
+### tasklet 接口函数
 * `tasklet_schedule()`
-* `tasklet_disable()`和`tasklet_disable_nosync()`
-* `tasklet_enable()`
-* `tasklet_kill()`从链表中移出某个tasklet
-  * 会等待正在执行的tasklet执行完毕
-  * 注意，其他地方仍有可能将tasklet再度放回链表
+* `tasklet_disable()`和`tasklet_disable_nosync()`，增加 `tasklet_struct.count`，不为 `0` 表示禁止
+* `tasklet_enable()`，减小 `tasklet_struct.count`，为 `0` 表示激活
+* `tasklet_kill()`从链表中移出某个 tasklet
+  * 会等待正在执行的 tasklet 执行完毕
+  * 注意，其他地方仍有可能将 tasklet 再度放回链表
   * 可能会引起休眠，**禁止在中断上下文使用**
 
 # 工作队列（work queue）
@@ -646,7 +642,7 @@ EXPORT_SYMBOL(tasklet_init);
 * `cpu_workqueue_struct` 结构的成员 `worklist` 为链表头，链表成员是`work_struct` 类型的任务。
 
 # 下半部之间加锁
-* 在使用下半部机制时，即使是在单处理器系统下，避免共享数据被同时访问也是置关重要的。
+* 在使用下半部机制时，即使是在单处理器系统下，避免共享数据被同时访问也是至关重要的。
 * 一个下半部实际上可能在任何时候执行。
 * 同类型tasklet间共享的数据无需考虑同步问题。
 * 两个不同类型的tasklet共享同一数据需要加锁。
@@ -654,8 +650,7 @@ EXPORT_SYMBOL(tasklet_init);
   * 如果**进程上下文**和一个**下半部**共享数据，在访问这些数据之前，需要**禁止下半部**且获得锁的使用权。
   * 如果**中断上下文**和一个**下半部**共享数据，在访问数据之前，需要**禁止中断**且获得锁的使用权。
 * 任何在工作队列中被共享的数据需要使用锁机制。
-* Q：为什么共享数据除了需要锁的保护，还需要禁止中断或禁止下半部？
-  * T：难道是因为加锁时也有可能被中断打断？
+* Q：为什么共享数据除了需要锁的保护，还需要禁止中断或禁止下半部？是因为加锁时也有可能被中断打断吗？
   * A：禁止中断或禁止下半部的原因是，中断会抢占下半部的执行，下半部会打断进程的执行。
     *  假设进程持有锁，而打断它的下半部竞争的是同一把锁，则下半部会因为无法得到进程持有的锁而挂住，造成死锁。
     *  如果进程禁止了下半部再去拿锁，则不会被下半部打断，直到它再次开启下半部。
@@ -663,7 +658,7 @@ EXPORT_SYMBOL(tasklet_init);
 
 # 禁止下半部
 * 禁止下半部主要指禁止**softirq**和**tasklet**。
-* 保护数据的常见的做法是**先拿到锁，再禁下半部**？？
+* 保护数据的常见的做法是**先拿到锁，再禁下半部** 吗？
   * 这个说法有问题，应该是**先禁下半部，再取竞争锁**，原因上面讨论了。
   * 事实上`spin_lock_bh()`最后的实现`__raw_spin_lock_bh()`也是先禁下半部，再取竞争锁。
 * 相关函数为：
