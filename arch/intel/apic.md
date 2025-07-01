@@ -47,7 +47,7 @@
 * 图 11-4 给出了 Local APIC 的功能框图。
 * 软件通过读取和写入 local APIC 的寄存器来与 local APIC 交互。
 * APIC 寄存器内存映射到处理器物理地址空间的 `4 KB` 区域，初始起始地址为 `0xFEE00000`。
-* 为了正确的 APIC 操作，该地址空间必须映射到已指定为强不可缓存（UC）的内存区域。请参阅第 12.3 节 “Methods of Caching Available.”。
+* 为了正确的 APIC 操作，该地址空间必须映射到已指定为强不可缓存（`UC`）的内存区域。请参阅第 12.3 节 “Methods of Caching Available.”。
 * 在 MP 系统配置中，系统总线上 Intel 64 或 IA-32 处理器的 APIC 寄存器最初映射到 **物理地址空间的相同 `4 KB` 区域**。
   * 软件可以选择将所有 local APIC 的初始映射更改为一个其他的 `4 KB` 区域，或者将每个 local APIC 的 APIC 寄存器映射到其自己的 `4 KB` 区域。第 11.4.5 节 “重定位 Local APIC 寄存器” 描述了如何重定位 APIC 寄存器的基地址。
 * 在支持 x2APIC 架构的处理器上（由 `CPUID.01H:ECX[21] = 1` 指示），local APIC 支持 xAPIC 模式和（如果由软件启用）x2APIC 模式下的操作。x2APIC 模式提供扩展的处理器寻址能力（参见第 11.12 节）
@@ -69,6 +69,20 @@
 ### 11.4.5 重定位 Local APIC 寄存器
 * Pentium 4、Intel Xeon 和 P6 系列处理器允许通过修改 `IA32_APIC_BASE` MSR 基地址字段中的值将 APIC 寄存器的起始地址从 `0xFEE00000` 重定位到另一个物理地址。
 * APIC 架构的这种扩展旨在帮助解决与现有系统内存映射的冲突，并允许 MP 系统中的各个处理器将其 APIC 寄存器映射到物理内存中的不同位置。
+
+### 11.4.6 Local APIC ID
+* 启动时，系统硬件会为系统总线（Pentium 4 和 Intel Xeon 处理器）或 APIC 总线（P6 系列和 Pentium 处理器）上的每个 local APIC 分配一个唯一的 APIC ID。
+* 硬件分配的 APIC ID 基于系统拓扑结构，包含插槽（socket）位置和 cluster 信息的编码（参见 Figure 10-2 和第 10.9.1 节“Hierarchical Mapping of Shared Resources”）。
+* 在多处理器系统中，local APIC ID 也被 BIOS 和操作系统用作 **处理器 ID**。
+  * 某些处理器允许软件修改 APIC ID。但是，软件修改 APIC ID 的能力取决于处理器型号。因此，操作系统软件应避免写入 local APIC ID 寄存器。
+* `EBX` 寄存器的第 `31-24` 位返回的值（当执行 `CPUID` 指令且 `EAX` 寄存器中的源操作数值为 `1` 时）始终是 **初始 APIC ID（Initial APIC ID）**（由平台初始化确定）。即使软件更改了 local APIC ID 寄存器中的值，情况也是如此。
+* 处理器通过采样引脚 `A11#` 和 `A12#` 以及引脚 `BR0#` 至 `BR3#`（对于 Pentium 4、Intel Xeon 和 P6 系列处理器）和引脚 `BE0#` 至 `BE3#`（对于 Pentium 处理器）来接收硬件分配的 APIC ID（或初始 APIC ID）。
+  * 从这些引脚锁存（latched）的 APIC ID 存储在 local APIC ID 寄存器的 `APIC ID` 字段中（参见 Figure 12-6），并用作处理器的初始 APIC ID。
+
+![Figure 12-6. Local APIC ID Register](pic/lapic_id_reg.png)
+
+* 对于 P6 系列和 Pentium 处理器，local APIC ID 寄存器中的 `local APIC ID` 字段为 `4` 位。编码 `0x0` 到 `0xE` 可用于唯一标识连接到 APIC 总线的 15 个不同处理器。
+* 对于 Pentium 4 和 Intel Xeon 处理器，xAPIC 规范将 `local APIC ID` 字段扩展至 `8` 位。这些字段可用于标识系统中最多 `255` 个处理器。
 
 ### 11.4.7 Local APIC 状态
 
@@ -141,7 +155,7 @@
 ```cpp
    //init/main.c
 -> start_kernel()
-   //arch/x86/kernel/setup.c
+      //arch/x86/kernel/setup.c
    -> setup_arch()
          //arch/x86/kernel/apic/apic.c
       -> init_apic_mappings()
@@ -149,7 +163,7 @@
                mp_lapic_addr = APIC_DEFAULT_PHYS_BASE; //#define APIC_DEFAULT_PHYS_BASE 0xfee00000
             apic_phys = mp_lapic_addr;
          -> register_lapic_address(apic_phys)
-            -> set_fixmap_nocache(FIX_APIC_BASE, address);
+            -> set_fixmap_nocache(FIX_APIC_BASE, address); //创建从 APIC_BASE（VA）到 0xfee00000（PA）的固定映射（fix mapping）
 ```
 * 用 MMIO 的方式读写 LAPIC 寄存器就是在 `APIC_DEFAULT_PHYS_BASE` 的基础上加上寄存器的偏移
 * arch/x86/include/asm/apicdef.h
@@ -187,17 +201,17 @@ secondary_startup_64
    -> time_init()
           late_time_init = x86_late_time_init;
       if (late_time_init)
-   ->       late_time_init()
-      //arch/x86/kernel/time.c
-   => x86_late_time_init()
-      -> x86_init.irqs.intr_mode_init()
-         //arch/x86/kernel/apic/apic.c
-      => apic_intr_mode_init()
-            switch (apic_intr_mode)
-            case APIC_SYMMETRIC_IO:
-                pr_info("APIC: Switch to symmetric I/O mode setup\n");
-         -> apic_bsp_setup(upmode)
-            -> setup_local_APIC()
+      -> late_time_init()
+         //arch/x86/kernel/time.c
+      => x86_late_time_init()
+         -> x86_init.irqs.intr_mode_init()
+            //arch/x86/kernel/apic/apic.c
+         => apic_intr_mode_init()
+               switch (apic_intr_mode)
+               case APIC_SYMMETRIC_IO:
+                   pr_info("APIC: Switch to symmetric I/O mode setup\n");
+            -> apic_bsp_setup(upmode)
+               -> setup_local_APIC()
 ```
 * arch/x86/kernel/x86_init.c
 ```cpp
@@ -376,7 +390,7 @@ void perf_events_lapic_init(void)
 2. 如果 local APIC 确定它是中断的指定目的地，并且如果中断请求是 NMI、SMI、INIT、ExtINT 或 SIPI，则中断将直接发送到处理器核进行处理。
 3. 如果 local APIC 确定它是中断的指定目的地，但中断请求不是步骤 2 中给出的中断之一，则 local APIC 会在 `IRR` 中设置适当的位。
 4. 当中断在 `IRR` 寄存器中挂起时，local APIC 根据它们的优先级和 `PPR` 中的当前处理器优先级，将它们一次分派一个给处理器（请参阅第 11.8.3.1 节，“Task and Processor Priorities”）。
-5. 当一个 fixed 中断被分派到处理器核进行处理时，处理例程的完成由指令处理程序代码中的一条指令指示，该指令写入 local APIC 中的 end-of-interrupt（`EOI`）寄存器（参见第 11.8.5，“Signaling Interrupt Servicing Completion”）。
+5. 当一个 fixed 中断被分派到处理器核进行处理时，*处理例程的完成* 由指令处理程序代码中的一条指令指示，该指令写入 local APIC 中的 end-of-interrupt（`EOI`）寄存器（参见第 11.8.5，“Signaling Interrupt Servicing Completion”）。
    * 写入 `EOI` 寄存器的行为导致 local APIC 从其 `ISR` 队列中删除中断，并（对于电平触发的中断）在总线上发送一条消息，指示中断处理已完成。
    * 对 `EOI` 寄存器的写入不得包含在 NMI、SMI、INIT、ExtINT 或 SIPI 的处理程序例程中。
 
@@ -393,7 +407,7 @@ void perf_events_lapic_init(void)
    * 如果插槽可用（请参阅第 11.8.4 节，“Interrupt Acceptance for Fixed Interrupts”），则将中断放入插槽中。
    * 如果插槽不可用，它会拒绝中断请求并将其与重试消息一起发送回发送方。
 4. 当中断在 `IRR` 寄存器中挂起时，local APIC 根据它们的优先级和 `PPR` 中的当前处理器优先级，将它们一次分派一个给处理器（参见第 11.8.3.1 节，“Task and Processor Priorities”）
-5. 当 fixed 中断已被分派到处理器核进行处理时，处理程序例程的完成由指令处理程序代码中的一条指令指示，该指令写入 end-of-interrupt（`EOI`）寄存器（参见第 11.8.5，“Signaling Interrupt Servicing Completion”）。
+5. 当 fixed 中断已被分派到处理器核进行处理时，*处理程序例程的完成* 由指令处理程序代码中的一条指令指示，该指令写入 end-of-interrupt（`EOI`）寄存器（参见第 11.8.5，“Signaling Interrupt Servicing Completion”）。
    * 写入 `EOI` 寄存器的行为导致 local APIC 从其队列中删除中断，并（对于电平触发的中断）在总线上发送一条消息，指示中断处理已完成。
    * 对 `EOI` 寄存器的写入不得包含在 NMI、SMI、INIT、ExtINT 或 SIPI 的处理程序例程中。
 * 以下部分更详细地描述了 local APIC 和处理器对中断的接受及其处理。
@@ -484,7 +498,7 @@ void perf_events_lapic_init(void)
   * 如果设置了该位，即使相关的 `TMR` 位指示当前中断是电平触发的，也不会在 EOI cycle 生成广播 EOI。
   * 该位的默认值为 `0`，表示执行 EOI 广播。
 * 如果处理器不支持抑制 EOI 广播，则 Spurious Interrupt 向量寄存器的第 `12` 位保留为 `0`。
-  * 在 local APIC 版本寄存器的第 `24` 位中报告了对 EOI 广播抑制的支持（参见第 11.4.8 节）；如果该位设置为 `1`，则支持该功能。
+  * 在 local APIC *版本寄存器（Version Register）* 的第 `24` 位中报告了对 EOI 广播抑制的支持（参见第 11.4.8 节）；如果该位设置为 `1`，则支持该功能。
   * 支持时，该功能在 xAPIC 模式和 x2APIC 模式下均可用。
 * 希望为 *电平触发中断* 执行定向 EOI 的系统软件应设置 Spurious Interrupt 向量寄存器的第 `12` 位，并跟随每个 EOI 到 local xAPIC 以获取具有定向 EOI 到生成中断的 I/O APIC 的电平触发中断（ 这是通过写入 I/O APIC 的 `EOI` 寄存器来完成的）。
 * 执行定向 EOI 的系统软件必须保留一个映射，将电平触发的中断与系统中的 I/O APIC 相关联。
@@ -502,7 +516,7 @@ void perf_events_lapic_init(void)
 * 使用 `MOV CRn` 指令需要特权级 0。
   * 以 *大于 0* 的特权级运行的程序无法读取或写入 `TPR`。尝试这样做会导致一般保护异常。
 * `TPR` 是从中断控制器 (IC) 中抽象出来的，它优先处理和管理向处理器递交的外部中断。
-  * IC可以是外部设备，例如 APIC 或 8259。通常，IC 提供与 `TPR` 相似或相同的优先级机制。
+  * IC 可以是外部设备，例如 APIC 或 8259。通常，IC 提供与 `TPR` 相似或相同的优先级机制。
   * 然而，IC 被认为依赖于实现，其底层优先级机制可能会发生变化。
   * 相比之下，`CR8` 是 Intel 64 架构的一部分。软件可以依赖这个定义保持不变。
 * `CR8` 当前仅使用低四位。其余 `60` 位保留，必须写入零。不这样做会导致 `#GP`。
@@ -510,7 +524,7 @@ void perf_events_lapic_init(void)
 #### 11.8.6.1 CR8 和 APIC 之间任务优先级的交互
 * Intel 64 位架构的第一个实现包括一个本地高级可编程中断控制器 (APIC)，它类似于以前 IA-32 处理器使用的 APIC。Local APIC 的某些方面会影响架构定义的任务优先级寄存器和使用 `CR8` 的编程接口的操作。
 * 值得注意的 `CR8` 和 APIC 相互作用是：
-  * 处理器启动并启用本地APIC。
+  * 处理器启动并启用 local APIC。
   * APIC 必须启用，`CR8` 才能用作于 `TPR`。写入 `CR8` 会反映到 APIC 任务优先级寄存器中。
   * `APIC.TPR[bits 7:4] = CR8[bits 3:0]`，`APIC.TPR[bits 3:0] = 0`。读取 `CR8` 返回一个 64 位值，即 `TPR[bits 7:4]]` 的值，零扩展到 64 位。
 * `APIC.TPR` 和 `CR8` 的直接更新之间没有排序机制。

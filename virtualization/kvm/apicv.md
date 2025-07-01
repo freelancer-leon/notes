@@ -8,7 +8,7 @@
   * 可以通过修改 `IA32_APIC_BASE` MSR 的 *APIC Base field* 来指定一个其他的物理地址
   * 对于每个核可以修改 `IA32_APIC_BASE` MSR 指定自己的 APIC 寄存器基地址
   * 对于 P6 系列、Pentium 4 和 Intel Xeon 处理器，APIC 在内部处理对 `4 KB` APIC 寄存器空间内的地址的所有内存访问，并且不产生外部总线周期
-* APIC access page 的概念是类似的，只是它是在 host 侧给 VM 准备的，可以只分配一个，由同一个 VM 中的 vCPU 公用
+* APIC access page 的概念是类似的，只是它是在 host 侧给 guest 准备的，可以只分配一个，由同一个 guest 中的 vCPU 公用
 * 可以看到这里创建了一个有专属 slot id `APIC_ACCESS_PAGE_PRIVATE_MEMSLOT` 的 memory region
 * arch/x86/kvm/lapic.c
 ```cpp
@@ -135,6 +135,11 @@ arch/x86/kvm/x86.c|10445| <<kvm_arch_mmu_notifier_invalidate_range>> kvm_make_al
 * 其中 `vmx_set_virtual_apic_mode()` 将 guest APIC mode 变为 `LAPIC_MODE_XAPIC` 是会导致 reload access page 的
 
 ## Virtual APIC Page
+
+* Host 中每个逻辑处理器都有一个 local APIC，而每个 local APIC 都有一个 `4KB` 的页。这个页面在 APIC 虚拟化中也必须提供，并且是 per vCPU 的，因为每个 vCPU 都有各自的 local APIC 寄存器状态需要保存，这个页就是 Virtual APIC Page。
+* 虽然 vCPU 中对 GPA `0xFEE00000` 的访问映射到了 APIC access page，但 VMX 还需要将这些访问分发到 vCPU 对应的 Virtual APIC page 才行。
+* VMM 需要为每个 vCPU 分配一个页作为 Virtual APIC Page 并且把它的 HPA 配置到 VMCS 的 `VIRTUAL_APIC_PAGE_ADDR` 字段中，剩下的交给硬件虚拟化去完成。
+
 ### 分配 Virtual APIC Page
 * arch/x86/kvm/lapic.c
 ```cpp

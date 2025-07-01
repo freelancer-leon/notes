@@ -15,13 +15,15 @@
   * 如果相等，则遵循异常位图中第 `14` 位的规范（例如，如果设置了该位，则会发生 VM exit）
   * 如果不相等，则该位的含义相反（例如，如果该位被清除，则会发生 VM exit）
 * 因此，如果软件希望在所有缺页异常时 VM exit，它可以将异常位图中的第`14`位设置为`1`，并将缺页异常错误码的 *mask* 和 *match* 字段分别设置为 `0x00000000`
-* 如果软件希望在没有缺页异常时 VM exit，它可以将异常位图中的第`14`位设置为`1`，将缺页异常错误码的 *mask* 字段设置为 `0x00000000`，并将缺页异常错误码的 *match* 字段设置为 `0xFFFFFFFF`
+  * 译注：此时 `if PFEC & PFEC_MASK == PFEC_MATCH` 必然相等
+* 如果软件希望在缺页异常时不会 VM exit（VM exits on no page faults），它可以将异常位图中的第`14`位设置为`1`，将缺页异常错误码的 *mask* 字段设置为 `0x00000000`，并将缺页异常错误码的 *match* 字段设置为 `0xFFFFFFFF`
+  * 译注：此时 `if PFEC & PFEC_MASK == PFEC_MATCH` 必然不等
 
 ## 虚拟化异常
 * 异常向量为`20`
 * 异常缩写为`#VE`
 * 仅发生在 VMX non-root operation
-* 当处理器遇到虚拟化异常时，将异常信息保存到虚拟化异常信息区（virtualization-exception information area）
+* 当处理器遇到虚拟化异常时，将异常信息保存到 **虚拟化异常信息区（virtualization-exception information area）**
 * 保存虚拟化异常信息后，处理器会像处理任何其他异常一样提供虚拟化异常
 * 虚拟化异常的传递会将值`0xFFFFFFFF`写入虚拟化异常信息区域中的偏移量`4`的位置
   * 因此，一旦发生虚拟化异常，只有在软件清除该字段时才会发生另一个异常
@@ -45,13 +47,13 @@
 ### 虚拟化异常的递交
 * 保存虚拟化异常信息后，处理器会像处理其他异常一样处理虚拟化异常：
   * 如果 VMCS 的异常位图中的第`20 bit` (`#VE`) 为`1`，则虚拟化异常会导致 VM exit（见下文）。如果该位为`0`，则使用 IDT 中的门描述符`20`传递虚拟化异常
-  * 虚拟化异常不会产生 error code。对于虚拟化异常的交付，CPU 不会将 error code 推送到堆栈上
+  * 虚拟化异常不会产生 error code。对于虚拟化异常的递交，CPU 不会将 error code 推送到堆栈上
   * 对于 double fault，虚拟化异常与 page fault 具有相同的 serverity
-    * 如果虚拟化异常的传递遇到嵌套 fault（contributory faults 或 page fault），则会生成 double fault (`#DF`)
-* 在传递另一个异常时不可能遇到虚拟化异常
+    * 如果虚拟化异常的递交遇到嵌套 fault（contributory faults 或 page fault），则会生成 double fault (`#DF`)
+* 在递交另一个异常时不可能遇到虚拟化异常
 * 如果虚拟化异常直接导致 VM exit（因为异常位图中的`bit 20`为`1`），异常信息正常保存在 VMCS 的 VM-exit *interruption information* 字段中
   * 具体来说，该事件被报告为异常向量`20`且没有 error code 的硬件异常。正常来说，该字段的第`12`位（由于`IRET`导致 NMI 解锁）会被设置
-* 如果虚拟化异常间接导致 VM exit（因为异常位图中的`bit 20`为`0`，并且异常的传递会生成导致 VM exit 的事件），则有关异常的信息通常保存在 VMCS
+* 如果虚拟化异常间接导致 VM exit（因为异常位图中的`bit 20`为`0`，并且异常的递交会生成导致 VM exit 的事件），则有关异常的信息通常保存在 VMCS
   * 具体来说，该事件被报告为异常向量`20`且没有 error code 的硬件异常
 
 ## 关于 Acknowledge Interrupt on VM-Exit
@@ -63,7 +65,7 @@
 > * If such a VM exit occurs and this control is `0`, the interrupt is not acknowledged and the VM-exit interruption-information field is marked invalid.
 
 * 就是说，当 VM exit 发生的时候，如果该控制位设为 `1`，那么逻辑处理器会先应答中断控制器，获取中断向量并把它放在 VM-exit 的中断信息域；如果该控制位设为 `0`，那么 CPU 就不会应答该中断。这怎么就能加速外部中断的响应了呢？
-* Linux kernel 在以下 commit 中默认启用了该特性
+* Linux kernel 在以下 [commit](https://lore.kernel.org/all/1365679516-13125-2-git-send-email-yang.z.zhang@intel.com/) 中默认启用了该特性
   ```git
   commit a547c6db4d2f16ba5ce8e7054bffad6acc248d40
   Author: Yang Zhang <yang.z.zhang@Intel.com>
@@ -110,7 +112,6 @@
   * 当设为 `1` 时，不透传给 Guest 的中断会导致 VM-exit
   * 否则中断直接透传给 Guest，根据 VMCS 中的 Guest IDTR 找到 Guest IDT，然后从 Guest 的中断入口开始处理中断
   * 这里说的，该位为 `1` 时，`RFLAGS.IF` 不影响中断的屏蔽，应该指的是 Guest 的 `RFLAGS.IF` 不影响 Host 侧的中断屏蔽与否
-
 * 仍然没有回答一个问题，或者说，不使用该特性到底慢在哪？问题的症结在于，`external-interrupt exiting` 执行控制位为 `1` 时，CPU 的行为和中断控制器的状态是怎么样的？
 * 在旧版本 SDM 还有这样一段话，新版本已经删掉了，给了我们一些启示：
 
@@ -186,6 +187,7 @@ static void init_vmcs(struct vcpu_vmx *vmx)
 ```
 
 # References
+* Intel SDM Vol3: Chapter 27.2: Other Causes of VM Exits
 * [Linux中断虚拟化之二](https://www.51cto.com/article/693199.html)
 * [Intel SDM Chapter 29: APIC Virtualizaton & Virtual Interrupts](https://tcbbd.moe/ref-and-spec/intel-sdm/sdm-vmx-ch29/)
 * [StackOverflow - "Acknowledge interrupt on exit" control in VT-x causes CPU lockup](https://stackoverflow.com/questions/48030293/acknowledge-interrupt-on-exit-control-in-vt-x-causes-cpu-lockup)

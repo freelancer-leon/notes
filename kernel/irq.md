@@ -1,5 +1,12 @@
 # 中断
 
+## 中断的硬件处理流程
+![IRQ LAPIC and CPU](pic/irq_seq.svg)
+
+* 比较有意思的一点，`IRQ pending? == yes` 后回到继续递交中断的流程，可能会由于 `TPR[7:4]` > `ISRV[7:4]` 导致 `PPR[7:4]` > `ISRV[7:4]` 遇到两种情况：
+1. 还未发出 `INT`，则只递交那些 *中断优先级* 高于 `PPR` 中 *处理器优先级* 的中断
+2. 曾经发出过 `INT`，在 CPU 回 `INTA` 的时候才发现处理器将其 *任务优先级* 提高到大于或等于 *处理器 INTR 信号当前被 asserted 的中断优先级*，则 local APIC 将提供一个 *伪中断向量（Spurious Interrupt Vector）*
+
 ## Interrupt Descriptor Table (IDT)
 
 ![Relationship of the IDTR and IDT](pic/idtr-idt.png)
@@ -21,7 +28,7 @@
     * DPL=3
     * 关联到 4，5，128 号向量，因此`into`，`bound`，`int $0x80`指令可以在用户态使用。
   * 系统中断门（System Interrupt Gate）
-    * Intel 陷阱门
+    * Intel 中断门
     * DPL=3
     * 关联到 3 号向量，因此`int3`指令可以在用户态使用
   * 陷阱门（Trap Gate）
@@ -60,38 +67,55 @@
 
 ## 中断初始化
 ### Call trace
-```cpp
+```c
 start_kernel()
--> trap_init()
-  -> idt_setup_traps()
-     -> idt_setup_from_table(idt_table, def_idts, ARRAY_SIZE(def_idts), true);
-  -> cea_set_pte(CPU_ENTRY_AREA_RO_IDT_VADDR, __pa_symbol(idt_table), PAGE_KERNEL_RO);
-  -> idt_descr.address = CPU_ENTRY_AREA_RO_IDT;
-  -> cpu_init()
-     -> load_current_idt()
-        -> load_idt((const struct desc_ptr *)&idt_descr);
-           -> native_load_idt()
-  -> idt_setup_ist_traps()
-     -> idt_setup_from_table(idt_table, ist_idts, ARRAY_SIZE(ist_idts), true)
-  -> x86_init.irqs.trap_init()
-  -> idt_setup_debugidt_traps()
+-> trap_init(void)
+   -> setup_cpu_entry_areas() /* Init cpu_entry_area before IST entries are set up */
+      -> init_cea_offsets()
+      -> setup_cpu_entry_area_ptes()
+         for_each_possible_cpu(cpu)
+         -> setup_cpu_entry_area(cpu)
+      -> sync_initial_page_table()
+   -> cpu_init_exception_handling(true) /* Initialize TSS before setting up traps so ISTs work */
+      -> load_current_idt()
+         -> load_idt(&idt_descr) //加载 idt_descr 到 IDTR，见后面的实现
+   -> idt_setup_traps() /* Setup traps as cpu_init() might #GP */
+      -> idt_setup_from_table(idt_table, def_idts, ARRAY_SIZE(def_idts), true) //设置异常在 IDT 中的入口（包括使用 IST 的异常）
+   -> cpu_init()
+      -> load_sp0((unsigned long)(cpu_entry_stack(cpu) + 1)) //设置 TSS 的 sp0 为 Trampoline stack 的栈顶（高地址）
 -> init_IRQ()
   -> x86_init.irqs.intr_init()
   => native_init_IRQ()
      -> idt_setup_apic_and_irq_gates()
-        -> idt_setup_from_table(idt_table, apic_idts, ARRAY_SIZE(apic_idts), true);
+        -> idt_setup_from_table(idt_table, apic_idts, ARRAY_SIZE(apic_idts), true); //设置 APIC 中断的 IDT 入口
         -> int i = FIRST_EXTERNAL_VECTOR; // 第一个外部中断向量，0x20
-           for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR) {
+           for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR) { //设置外部中断的 IDT 入口
               entry = irq_entries_start + IDT_ALIGN * (i - FIRST_EXTERNAL_VECTOR);
               set_intr_gate(i, entry);
            }
+           for_each_clear_bit_from(i, system_vectors, NR_VECTORS) { //设置伪中断的 IDT 入口
+               entry = spurious_entries_start + IDT_ALIGN * (i - FIRST_SYSTEM_VECTOR);
+               set_intr_gate(i, entry);
+           }
+        -> idt_map_in_cea(); /* Map IDT into CPU entry area and reload it. */
+           -> cea_set_pte(CPU_ENTRY_AREA_RO_IDT_VADDR, __pa_symbol(idt_table), PAGE_KERNEL_RO) //建立 IDT 在 CPU entry area 映射，并且是只读的
+              idt_descr.address = CPU_ENTRY_AREA_RO_IDT; //0xfffffe0000000000 将来会被加载到 IDTR
+        -> load_idt(&idt_descr) //加载 idt_descr 到 IDTR，见后面的实现
+        -> set_memory_ro((unsigned long)&idt_table, 1); /* Make the IDT table read only */
+           idt_setup_done = true;
 ```
 * `idt_table`为设置好内容的 **IDT 表**
 * `idt_descr`为存储 IDT 表地址的指针，用`lidt`指令将它加载到`idtr`寄存器
 * `def_idts[]`为通用的异常数组，`apic_idts[]`为 x86 APIC 的中断数组
-* x86 通过`native_init_IRQ()`调用`idt_setup_apic_and_irq_gates()`设置好 APIC 和 **中断** 的门
-  * 对于中断来说，`irq_entries_start`就是软件在中断处理的第一段例程
-  * `irq_entries_start`见 arch/x86/include/asm/idtentry.h，里面包含一个很大的汇编宏展开`.rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)`
+  * 原来有为使用 IST 栈的异常建立的单独的 `ist_idts[]` 数组，现在合并到 `def_idts[]` 中一起设置了
+* x86 通过 `native_init_IRQ()` 调用 `idt_setup_apic_and_irq_gates()` 设置好 APIC、**外部中断**、伪中断在 IDT 中的门
+  * `for_each_clear_bit_from((bit, addr, size)` 宏根据 `addr = system_vectors` 位图中从第 `i` 个 bit 开始的 `size` 个 bits，如果 `bit` 为空，执行循环体
+  * APIC 中断的实现见 [IPI](ipi.md)，`for_each_clear_bit_from` 只遍历 clear bit 确保 APIC 中断已占据的向量不会被后面的设置覆盖
+  * 对于外部中断来说，`irq_entries_start` 就是软件在中断处理的第一段例程
+    * `irq_entries_start` 见 arch/x86/include/asm/idtentry.h，里面包含一个很大的汇编宏展开 `.rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)`
+  * 对于伪中断来说，`spurious_entries_start` 就是软件在中断处理的第一段例程
+    * `spurious_entries_start` 同样也是汇编宏展开 `.rept (NR_VECTORS - FIRST_SYSTEM_VECTOR)`
+    * `spurious_entries_start` 的每个条目都会 `jmp asm_spurious_interrupt`，这个汇编函数通过 `DEFINE_IDTENTRY_IRQ(spurious_interrupt)` 实现，它会调用 arch/x86/kernel/apic/apic.c::`handle_spurious_interrupt(vector)`
 
 ### `def_idts[]`数组
 * `struct gate_struct`对应到 Intel IDT 的表项，存储格式见上面图示，注意，中断处理函数的地址不是连续存储的，而是被`offset_low`，`offset_middle`，`offset_high`分成三个部分
@@ -127,35 +151,37 @@ start_kernel()
   ```
 * 0~32 号异常的枚举定义
   * arch/x86/include/asm/traps.h
-  ```cpp
+  ```c
   /* Interrupts/Exceptions */
-  enum {
-          X86_TRAP_DE = 0,        /*  0, Divide-by-zero */
-          X86_TRAP_DB,            /*  1, Debug */
-          X86_TRAP_NMI,           /*  2, Non-maskable Interrupt */
-          X86_TRAP_BP,            /*  3, Breakpoint */
-          X86_TRAP_OF,            /*  4, Overflow */
-          X86_TRAP_BR,            /*  5, Bound Range Exceeded */
-          X86_TRAP_UD,            /*  6, Invalid Opcode */
-          X86_TRAP_NM,            /*  7, Device Not Available */
-          X86_TRAP_DF,            /*  8, Double Fault */
-          X86_TRAP_OLD_MF,        /*  9, Coprocessor Segment Overrun */
-          X86_TRAP_TS,            /* 10, Invalid TSS */
-          X86_TRAP_NP,            /* 11, Segment Not Present */
-          X86_TRAP_SS,            /* 12, Stack Segment Fault */
-          X86_TRAP_GP,            /* 13, General Protection Fault */
-          X86_TRAP_PF,            /* 14, Page Fault */
-          X86_TRAP_SPURIOUS,      /* 15, Spurious Interrupt */
-          X86_TRAP_MF,            /* 16, x87 Floating-Point Exception */
-          X86_TRAP_AC,            /* 17, Alignment Check */
-          X86_TRAP_MC,            /* 18, Machine Check */
-          X86_TRAP_XF,            /* 19, SIMD Floating-Point Exception */
-          X86_TRAP_IRET = 32,     /* 32, IRET Exception */
-  };
+  #define X86_TRAP_DE              0      /* Divide-by-zero */
+  #define X86_TRAP_DB              1      /* Debug */
+  #define X86_TRAP_NMI             2      /* Non-maskable Interrupt */
+  #define X86_TRAP_BP              3      /* Breakpoint */
+  #define X86_TRAP_OF              4      /* Overflow */
+  #define X86_TRAP_BR              5      /* Bound Range Exceeded */
+  #define X86_TRAP_UD              6      /* Invalid Opcode */
+  #define X86_TRAP_NM              7      /* Device Not Available */
+  #define X86_TRAP_DF              8      /* Double Fault */
+  #define X86_TRAP_OLD_MF          9      /* Coprocessor Segment Overrun */
+  #define X86_TRAP_TS             10      /* Invalid TSS */
+  #define X86_TRAP_NP             11      /* Segment Not Present */
+  #define X86_TRAP_SS             12      /* Stack Segment Fault */
+  #define X86_TRAP_GP             13      /* General Protection Fault */
+  #define X86_TRAP_PF             14      /* Page Fault */
+  #define X86_TRAP_SPURIOUS       15      /* Spurious Interrupt */
+  #define X86_TRAP_MF             16      /* x87 Floating-Point Exception */
+  #define X86_TRAP_AC             17      /* Alignment Check */
+  #define X86_TRAP_MC             18      /* Machine Check */
+  #define X86_TRAP_XF             19      /* SIMD Floating-Point Exception */
+  #define X86_TRAP_VE             20      /* Virtualization Exception */
+  #define X86_TRAP_CP             21      /* Control Protection Exception */
+  #define X86_TRAP_VC             29      /* VMM Communication Exception */
+  #define X86_TRAP_IRET           32      /* IRET Exception */
   ```
 * `def_idts[]`数组存储的 Linux 中断向量与中断处理函数的对应关系，这与 Intel IDT 表`idt_table[]`是不同的，尤其是 Intel IDT 表项中存的是 **段选择符** 和 **偏移**，因此需要在`idt_init_desc()`函数中进行格式转换
+* **注意**：现在内核已经不再使用 Intel 陷阱门（包括基于它的陷阱门和系统门）作为异常处理的门类型了，统一改为用中断门（和系统中断门）来处理异常，这也意味着异常处理从入口点开始中断也是关闭的（`RFLAGS.IF == 0`）
 * arch/x86/kernel/idt.c
-  ```cpp
+  ```c
   struct idt_data {
           unsigned int    vector;
           unsigned int    segment;
@@ -178,27 +204,29 @@ start_kernel()
                   .addr           = _addr,                \
                   .segment        = _segment,             \
           }
-
+  //中断门，经过门后中断会关闭，DLP = 0
   /* Interrupt gate */
   #define INTG(_vector, _addr)                            \
           G(_vector, _addr, DEFAULT_STACK, GATE_INTERRUPT, DPL0, __KERNEL_CS)
-
+  //系统中断门，经过门后中断会关闭，DLP = 3，用于实现用户态可以发起的异常
   /* System interrupt gate */
   #define SYSG(_vector, _addr)                            \
           G(_vector, _addr, DEFAULT_STACK, GATE_INTERRUPT, DPL3, __KERNEL_CS)
-
-  /* Interrupt gate with interrupt stack */
+  //使用 IST 栈的中断门，经过门后中断会关闭，DLP = 0，由于使用 IST 栈，所以 IST 栈索引必须从 1 开始
+  #ifdef CONFIG_X86_64
+  /*
+   * Interrupt gate with interrupt stack. The _ist index is the index in
+   * the tss.ist[] array, but for the descriptor it needs to start at 1.
+   */
   #define ISTG(_vector, _addr, _ist)                      \
-          G(_vector, _addr, _ist, GATE_INTERRUPT, DPL0, __KERNEL_CS)
-
-  /* System interrupt gate with interrupt stack */
-  #define SISTG(_vector, _addr, _ist)                     \
-          G(_vector, _addr, _ist, GATE_INTERRUPT, DPL3, __KERNEL_CS)
-
+          G(_vector, _addr, _ist + 1, GATE_INTERRUPT, DPL0, __KERNEL_CS)
+  #else
+  #define ISTG(_vector, _addr, _ist)      INTG(_vector, _addr)
+  #endif
+  //任务门
   /* Task gate */
   #define TSKG(_vector, _gdt)                             \
           G(_vector, NULL, DEFAULT_STACK, GATE_TASK, DPL0, _gdt << 3)
-
   ...
   /*
    * The default IDT entries which are set up in trap_init() before
@@ -207,60 +235,100 @@ start_kernel()
    * set up TSS.
    */
   static const __initconst struct idt_data def_idts[] = {
-          INTG(X86_TRAP_DE,               divide_error),
-          INTG(X86_TRAP_NMI,              nmi),
-          INTG(X86_TRAP_BR,               bounds),
-          INTG(X86_TRAP_UD,               invalid_op),
-          INTG(X86_TRAP_NM,               device_not_available),
-          INTG(X86_TRAP_OLD_MF,           coprocessor_segment_overrun),
-          INTG(X86_TRAP_TS,               invalid_TSS),
-          INTG(X86_TRAP_NP,               segment_not_present),
-          INTG(X86_TRAP_SS,               stack_segment),
-          INTG(X86_TRAP_GP,               general_protection),
-          INTG(X86_TRAP_SPURIOUS,         spurious_interrupt_bug),
-          INTG(X86_TRAP_MF,               coprocessor_error),
-          INTG(X86_TRAP_AC,               alignment_check),
-          INTG(X86_TRAP_XF,               simd_coprocessor_error),
+          INTG(X86_TRAP_DE,               asm_exc_divide_error),
+          ISTG(X86_TRAP_NMI,              asm_exc_nmi, IST_INDEX_NMI), //#NMI 使用 IST 栈的中断门
+          INTG(X86_TRAP_BR,               asm_exc_bounds),
+          INTG(X86_TRAP_UD,               asm_exc_invalid_op),
+          INTG(X86_TRAP_NM,               asm_exc_device_not_available),
+          INTG(X86_TRAP_OLD_MF,           asm_exc_coproc_segment_overrun),
+          INTG(X86_TRAP_TS,               asm_exc_invalid_tss),
+          INTG(X86_TRAP_NP,               asm_exc_segment_not_present),
+          INTG(X86_TRAP_SS,               asm_exc_stack_segment),
+          INTG(X86_TRAP_GP,               asm_exc_general_protection),
+          INTG(X86_TRAP_SPURIOUS,         asm_exc_spurious_interrupt_bug),
+          INTG(X86_TRAP_MF,               asm_exc_coprocessor_error),
+          INTG(X86_TRAP_AC,               asm_exc_alignment_check),
+          INTG(X86_TRAP_XF,               asm_exc_simd_coprocessor_error),
 
   #ifdef CONFIG_X86_32
-          TSKG(X86_TRAP_DF,               GDT_ENTRY_DOUBLEFAULT_TSS),
+          TSKG(X86_TRAP_DF,               GDT_ENTRY_DOUBLEFAULT_TSS), //32 位的 #DF 使用任务门
   #else
-          INTG(X86_TRAP_DF,               double_fault),
+          ISTG(X86_TRAP_DF,               asm_exc_double_fault, IST_INDEX_DF),//#DF 使用 IST 栈的中断门
   #endif
-          INTG(X86_TRAP_DB,               debug),
+          ISTG(X86_TRAP_DB,               asm_exc_debug, IST_INDEX_DB), //#DB 使用 IST 栈的中断门
 
   #ifdef CONFIG_X86_MCE
-          INTG(X86_TRAP_MC,               &machine_check),
+          ISTG(X86_TRAP_MC,               asm_exc_machine_check, IST_INDEX_MCE), //#MC 使用 IST 栈的中断门
   #endif
 
-          SYSG(X86_TRAP_OF,               overflow),
+  #ifdef CONFIG_X86_CET
+          INTG(X86_TRAP_CP,               asm_exc_control_protection),
+  #endif
+
+  #ifdef CONFIG_AMD_MEM_ENCRYPT
+          ISTG(X86_TRAP_VC,               asm_exc_vmm_communication, IST_INDEX_VC),
+  #endif
+          //#OF 用的是系统门
+          SYSG(X86_TRAP_OF,               asm_exc_overflow),
+  };
+  //32 位系统用 int 0x80 发起系统调用，用的是系统中断门
+  static const struct idt_data ia32_idt[] __initconst = {
   #if defined(CONFIG_IA32_EMULATION)
-          SYSG(IA32_SYSCALL_VECTOR,       entry_INT80_compat),
+          SYSG(IA32_SYSCALL_VECTOR,       asm_int80_emulation),
   #elif defined(CONFIG_X86_32)
           SYSG(IA32_SYSCALL_VECTOR,       entry_INT80_32),
   #endif
   };
-  ...*```
   ```
-* 例如，对于`X86_TRAP_NMI`，在IDT 数组`def_idts[]`的第二个元素
+* 例如，对于`X86_TRAP_NMI`，即 IDT 数组`def_idts[]`的第二个元素
   ```cpp
   struct idt_data def_idts[1] =
   {
           .vector         = X86_TRAP_NMI,   //第二号中断向量
-          .bits.ist       = DEFAULT_STACK,  //用于中断栈表的索引
+          .bits.ist       = IST_INDEX_NMI + 1,  //用于中断栈表的索引
           .bits.type      = GATE_INTERRUPT, //门描述符的 40-43 位
           .bits.dpl       = DPL0,           //门描述符的 45~46 位
           .bits.p         = 1,              //门描述符的 47 位
-          .addr           = nmi,
+          .addr           = asm_exc_nmi,
           .segment        = __KERNEL_CS,
   }
   ```
-* 其中，`X86_TRAP_NMI`向量的中断处理函数的入口地址为`nmi`，例如在 x86-64 中的定义见`arch/x86/entry/entry_64.S`中的`ENTRY(nmi)`
+* 其中，`X86_TRAP_NMI`向量的中断处理函数的入口地址为`asm_exc_nmi`，例如在 x86-64 中的定义见`arch/x86/entry/entry_64.S`中的`SYM_CODE_START(asm_exc_nmi)`
   * 该中断处理函数的入口地址会在`idt_init_desc()`函数中被分为`offset_low`（16 bit）、`offset_middle`（16 bit）、`offset_high`（32 bit）三段存储
-* 其他的一些中断向量的入口函数可能会用类似`idtentry invalid_op do_invalid_op has_error_code=0`的汇编宏`.macro idtentry sym do_sym has_error_code:req paranoid=0 shift_ist=-1`来实现
-* x86 填充 Intel IDT 表，加载 IDT 表的实现
+* 还有一些异常向量的入口函数可能会采用其他风格实现，例如用 `DECLARE_IDTENTRY_RAW(X86_TRAP_UD, exc_invalid_op)` 声明一个 IDT 入口条目：
+  * arch/x86/include/asm/idtentry.h
+  ```c
+  #ifndef __ASSEMBLER__
+  ...
+  #else /* !__ASSEMBLER__ */
+  ...
+  #define DECLARE_IDTENTRY(vector, func)                                  \
+          idtentry vector asm_##func func has_error_code=0
+  ...
+  #define DECLARE_IDTENTRY_RAW(vector, func)                              \
+          DECLARE_IDTENTRY(vector, func)
+  ...
+  #endif /* __ASSEMBLER__ */
+  
+  DECLARE_IDTENTRY_RAW(X86_TRAP_UD, exc_invalid_op);
+  ```
+* 宏展开为 `idtentry vector asm_exc_invalid_op func has_error_code=0`，这个宏会被汇编器编译时根据汇编宏 `.macro idtentry` 和展开成为对函数 `asm_exc_invalid_op` 的调用，这个地址也是填入到 IDT entry 的地址
+  * arch/x86/entry/entry_64.S
+  ```c
+  .macro idtentry vector asmsym cfunc has_error_code:req
+  SYM_CODE_START(\asmsym)
+  ...
+          idtentry_body \cfunc \has_error_code
+  ...
+  SYM_CODE_END(\asmsym)
+  .endm
+  ```
+* 而汇编宏 `.macro idtentry_body` 会展开成对 C 函数 `exc_invalid_op()` 的调用，arch/x86/kernel/traps.c::`DEFINE_IDTENTRY_RAW(exc_invalid_op)` 实现了对该函数的定义
+
+### x86 填充 Intel IDT 表的实现
+* 以下是这个过程中涉及的一些最底层的函数
   * arch/x86/include/asm/desc.h
-  ```cpp
+  ```c
   #ifdef CONFIG_PARAVIRT
   #include <asm/paravirt.h>
   #else
@@ -282,8 +350,9 @@ start_kernel()
           memcpy(&idt[entry], gate, sizeof(*gate));
   }
   ```
-* `idt_descr` 初始值为`idt_table[]`的起始地址，在`trap_init()`中会被改写
-* arch/x86/kernel/idt.c
+* `idt_descr` 初始值为 `idt_table[]` 的起始地址，在 `trap_init()` 中会被改写为 CPU Entry Area 的起始地址 `CPU_ENTRY_AREA_RO_IDT = 0xfffffe0000000000`
+  * 关于 CPU Entry Area 更多内容请阅读 [内核中的栈 - x86-64](stack_x86-64.md)
+  * arch/x86/kernel/idt.c
   ```cpp
   /* Must be page-aligned because the real IDT is used in a fixmap. */
   gate_desc idt_table[IDT_ENTRIES] __page_aligned_bss;
@@ -313,7 +382,7 @@ start_kernel()
           gate_desc desc;
 
           for (; size > 0; t++, size--) {
-                  idt_init_desc(&desc, t); // 格式转换，转为 Intel IDT 表项要求的格式
+                  idt_init_desc(&desc, t); //格式转换，转为 Intel IDT 表项要求的格式
                   write_idt_entry(idt, t->vector, &desc);
                   if (sys)
                           set_bit(t->vector, system_vectors);
@@ -329,12 +398,12 @@ start_kernel()
   }
   ```
 * 数组`def_idts[]`中的向量都会在`system_vectors`位图中设置相应的位
-* arch/x86/kernel/traps.c
+  * arch/x86/kernel/traps.c
   ```cpp
   DECLARE_BITMAP(system_vectors, NR_VECTORS);
   ```
-* `__ro_after_init`是编译器属性，定义如下
-* include/linux/cache.h
+* `__ro_after_init` 利用编译器属性将用它声明的变量放入一个名为 `.data..ro_after_init` section，定义如下：
+  * include/linux/cache.h
   ```cpp
   /*
    * __ro_after_init is used to mark things that are read-only after init (i.e.
@@ -345,9 +414,12 @@ start_kernel()
   #define __ro_after_init __attribute__((__section__(".data..ro_after_init")))
   #endif
   ```
-### 加载IDT
-* arch/x86/include/asm/pgtable_64_types.h
-  ```cpp
+* 这个 section 中的变量在 kernel init 期间可以写，但 init 完成后会被 `mark_rodata_ro()` 函数将存储这些变量的页面的映射方式改为“read-only”，阻止 init 后对这些变量的修改。
+
+### 加载 IDT
+* 加载到 `IDTR` 寄存器中的 IDT 的虚拟地址其实是 CPU Entry Area 的起始地址 `CPU_ENTRY_AREA_RO_IDT = 0xfffffe0000000000` 而不是 `idt_table[]` 的虚拟地址
+  * arch/x86/include/asm/pgtable_64_types.h
+  ```c
   /*
    * 4th level page in 5-level paging case
    */
@@ -356,18 +428,18 @@ start_kernel()
   #define CPU_ENTRY_AREA_PGD      _AC(-4, UL) //0xfffffffffffffffc
   #define CPU_ENTRY_AREA_BASE     (CPU_ENTRY_AREA_PGD << P4D_SHIFT) //0xfffffe0000000000
   ```
-* arch/x86/include/asm/cpu_entry_area.h
-  ```cpp
-  #define CPU_ENTRY_AREA_RO_IDT           CPU_ENTRY_AREA_BASE //0xfffffe0000000000
-  ...
-  #define CPU_ENTRY_AREA_RO_IDT_VADDR     ((void *)CPU_ENTRY_AREA_RO_IDT)  //0xfffffe0000000000
-  ...*
+  * arch/x86/include/asm/cpu_entry_area.h
+  ```c
+  #define CPU_ENTRY_AREA_RO_IDT       CPU_ENTRY_AREA_BASE //0xfffffe0000000000
+  #define CPU_ENTRY_AREA_PER_CPU      (CPU_ENTRY_AREA_RO_IDT + PAGE_SIZE) //0xfffffe0000001000
+
+  #define CPU_ENTRY_AREA_RO_IDT_VADDR ((void *)CPU_ENTRY_AREA_RO_IDT) //0xfffffe0000000000
   ```
 * `cea_set_pte()`用于给某个虚拟地址填充页表项
   * `pa >> PAGE_SHIFT` 得到物理地址所在的 Page Frame Number
   * `pfn_pte(unsigned long page_nr, pgprot_t pgprot)` 根据输入的 Page Frame Number 和 Page Flags 转为 `pte_t` 类型的值（`.val`当然是物理地址）
   * `set_pte_vaddr(unsigned long vaddr, pte_t pteval)` 会根据输入的虚拟地址层层往下直至找到 PTE，把值设为传入的`pte_t pteval`
-* arch/x86/mm/cpu_entry_area.c
+  * arch/x86/mm/cpu_entry_area.c
   ```cpp
   void cea_set_pte(void *cea_vaddr, phys_addr_t pa, pgprot_t flags)
   {
@@ -378,7 +450,7 @@ start_kernel()
   ```
 * `load_idt()`在非半虚拟化分支就是`native_load_idt()`，定义见之前的代码
 * `native_load_idt()`用`lidt`指令将`&idt_descr`加载到`idtr`寄存器
-* arch/x86/include/asm/desc.h
+  * arch/x86/include/asm/desc.h
   ```cpp
   static inline void native_load_idt(const struct desc_ptr *dtr)
   {
@@ -404,34 +476,24 @@ start_kernel()
   ```cpp
   void __init trap_init(void)
   {
-          /* Init cpu_entry_area before IST entries are set up */
-          setup_cpu_entry_areas();
+        /* Init cpu_entry_area before IST entries are set up */
+        setup_cpu_entry_areas();
 
-          idt_setup_traps();
+        /* Init GHCB memory pages when running as an SEV-ES guest */
+        sev_es_init_vc_handling();
 
-          /*
-           * Set the IDT descriptor to a fixed read-only location, so that the
-           * "sidt" instruction will not leak the location of the kernel, and
-           * to defend the IDT against arbitrary memory write vulnerabilities.
-           * It will be reloaded in cpu_init() */
-          cea_set_pte(CPU_ENTRY_AREA_RO_IDT_VADDR, __pa_symbol(idt_table),
-                      PAGE_KERNEL_RO);
-          idt_descr.address = CPU_ENTRY_AREA_RO_IDT;
+        /* Initialize TSS before setting up traps so ISTs work */
+        cpu_init_exception_handling(true);
 
-          /*
-           * Should be a barrier for any external CPU state:
-           */
-          cpu_init();
+        /* Setup traps as cpu_init() might #GP */
+        if (!cpu_feature_enabled(X86_FEATURE_FRED))
+                idt_setup_traps();
 
-          idt_setup_ist_traps();
-
-          x86_init.irqs.trap_init();
-
-          idt_setup_debugidt_traps();
+        cpu_init();
   }
   ```
 
-## x86的`do_IRQ()`
+## x86 的中断入口的实现
 ### 几个相关的数组
 #### irq_desc数组/radix tree
 * 中断请求描述符`struct irq_desc`用于记录各个中断事件的处理方法和未处理事件
@@ -465,7 +527,7 @@ start_kernel()
   };
   ```
 
-### 到中断通用入口 `common_interrupt`
+### 旧的到中断通用入口 `common_interrupt` 的实现
 #### Call Trace
 ```cpp
 irq_entries_start
@@ -670,7 +732,7 @@ irq_entries_start
           TRACE_IRQS_IRETQ
   ```
 
-#### 较新内核的实现
+### 新的到中断通用入口 `common_interrupt` 的实现
 * `irq_entries_start` 的实现有所不同，跳转到通用中断入口 `asm_common_interrupt`
 * arch/x86/include/asm/idtentry.h
 ```cpp
@@ -691,16 +753,16 @@ irq_entries_start
     .align IDT_ALIGN
 SYM_CODE_START(irq_entries_start)
     vector=FIRST_EXTERNAL_VECTOR
-    .rept NR_EXTERNAL_VECTORS
+    .rept NR_EXTERNAL_VECTORS //重复以下汇编代码 NR_EXTERNAL_VECTORS 次
     UNWIND_HINT_IRET_REGS
 0 :
-    ENDBR
-    .byte   0x6a, vector
+    ENDBR                     //插入 CET/IBT 防护相关的 endbr 指令
+    .byte   0x6a, vector      //pushq 立即数 vector 指令，占据了原本 error code 的位置
     jmp asm_common_interrupt
     /* Ensure that the above is IDT_ALIGN bytes max */
-    .fill 0b + IDT_ALIGN - ., 1, 0xcc
+    .fill 0b + IDT_ALIGN - ., 1, 0xcc //填充一堆 int3 指令
     vector = vector+1
-    .endr
+    .endr                     //结束重复
 SYM_CODE_END(irq_entries_start)
 ...
 #define DECLARE_IDTENTRY_ERRORCODE(vector, func)            \
@@ -724,7 +786,10 @@ SYM_CODE_END(irq_entries_start)
 /* Device interrupts common/spurious */
 DECLARE_IDTENTRY_IRQ(X86_TRAP_OTHER,    common_interrupt);
 ```
-* `asm_common_interrupt` 由 `idtentry` 汇编宏生成，最终会调用 `common_interrupt()`
+* `X86_TRAP_OTHER` 是一个值为 `0xFFFF` 的 dummy 异常向量，因此低级 ASM 宏向量号检查不匹配，从而导致发出没有花哨功能的普通 `IDTENTRY` stub。这里声明了通用的中断处理函数 `common_interrupt()`
+* `asm_common_interrupt` 由 arch/x86/entry/entry_64.S::`idtentry -> idtentry_body` 汇编宏生成，最终会调用 `common_interrupt()`
+* 发生外部中断时，CPU 并没有把中断向量保存在任何寄存器，作为外部中断的通用实现的 `common_interrupt()` 是怎么得到中断向量 `vector` 的？
+  * **注意**：外部中断产生时 CPU 不会压入 error code，而是借助编译时期 `pushq vector` 指令压入的汇编宏产生的硬编码的向量值（这个值对于每段 interrupt stub 是不同的）占据了原本 error code 的位置，这个值在 `.macro idtentry_body` 宏会被传入到 `%rsi`，作为第二个参数，即 `vector` 传给 `common_interrupt()`
 * arch/x86/kernel/irq.c
 ```cpp
 /*
@@ -858,7 +923,19 @@ SYM_CODE_START_LOCAL(error_return)
     jmp swapgs_restore_regs_and_return_to_usermode
 SYM_CODE_END(error_return)
 ```
-* 进入硬件中断处理函数时，修改硬中断 `preempt_count()` 的抢占计数的地方比较隐蔽，在 `run_irq_on_irqstack_cond()` 的第三个参数中构造的内联汇编中调用 `call irq_enter_rcu/call irq_exit_rcu` 来实现
+* 进入硬件中断处理函数时，修改硬中断 `preempt_count()` 的抢占计数的地方比较隐蔽，在 `run_irq_on_irqstack_cond()` 的第三个参数中构造的内联汇编 `ASM_CALL_IRQ` 中调用 `call irq_enter_rcu/call irq_exit_rcu` 来实现
+* `ASM_CALL_CONSTRAINT` 输出约束适用于任何包含“`call`”指令的内联汇编代码。否则，汇编代码可能会在包含函数设置帧指针之前插入。如果忘记执行此操作，objtool 可能会打印“call without frame pointer save/setup”警告。
+  * arch/x86/include/asm/asm.h
+```c
+/*
+ * This output constraint should be used for any inline asm which has a "call"
+ * instruction.  Otherwise the asm may be inserted before the frame pointer
+ * gets set up by the containing function.  If you forget to do this, objtool
+ * may print a "call without frame pointer save/setup" warning.
+ */
+register unsigned long current_stack_pointer asm(_ASM_SP);
+#define ASM_CALL_CONSTRAINT "+r" (current_stack_pointer)
+```
   * arch/x86/include/asm/irq_stack.h
 ```c
 #define call_on_stack(stack, func, asm_call, argconstr...)      \
@@ -868,12 +945,12 @@ SYM_CODE_END(error_return)
     tos = ((void *)(stack));                    \
                                     \
     asm_inline volatile(                        \
-    "movq   %%rsp, (%[tos])             \n"     \
-    "movq   %[tos], %%rsp               \n"     \
+    "movq   %%rsp, (%[tos])             \n"     \ //保存当前栈指针的值到将要切换到的新栈的栈顶
+    "movq   %[tos], %%rsp               \n"     \ //切换到新的栈
                                     \
     asm_call                            \
                                     \
-    "popq   %%rsp                   \n"     \
+    "popq   %%rsp                   \n"     \     //弹出之前保存在栈上的旧的栈指针值到 %rsp，切换回旧的栈
                                     \
     : "+r" (tos), ASM_CALL_CONSTRAINT               \
     : [__func] "i" (func), [tos] "r" (tos) argconstr        \
@@ -882,24 +959,24 @@ SYM_CODE_END(error_return)
     );                              \
 }
 
-#define ASM_CALL_ARG0                           \
+#define ASM_CALL_ARG0                           \ //零参数调用函数
     "1: call %c[__func]             \n"     \
     ANNOTATE_REACHABLE(1b)
 
-#define ASM_CALL_ARG1                           \
+#define ASM_CALL_ARG1                           \ //传一个参数调用函数
     "movq   %[arg1], %%rdi              \n"     \
     ASM_CALL_ARG0
 
-#define ASM_CALL_ARG2                           \
+#define ASM_CALL_ARG2                           \ //传两个参数调用函数
     "movq   %[arg2], %%rsi              \n"     \
     ASM_CALL_ARG1
 
-#define ASM_CALL_ARG3                           \
+#define ASM_CALL_ARG3                           \ //传三个参数调用函数
     "movq   %[arg3], %%rdx              \n"     \
     ASM_CALL_ARG2
 
 #define call_on_irqstack(func, asm_call, argconstr...)          \
-    call_on_stack(__this_cpu_read(pcpu_hot.hardirq_stack_ptr),  \
+    call_on_stack(__this_cpu_read(pcpu_hot.hardirq_stack_ptr),  \ //在 per-CPU 的中断栈上调用 asm_call
               func, asm_call, argconstr)
 ...
 /*
@@ -910,10 +987,10 @@ SYM_CODE_END(error_return)
     /*                              \
      * User mode entry and interrupt on the irq stack do not    \
      * switch stacks. If from user mode the task stack is empty.    \
-     */                             \
+     */                             \ //用户程序被中断或者已经有中断正在 per-CPU 的中断栈上被处理
     if (user_mode(regs) || __this_cpu_read(pcpu_hot.hardirq_stack_inuse)) { \
         irq_enter_rcu();                    \
-        func(c_args);                       \
+        func(c_args);                       \ //直接调用 func => __common_interrupt()，不切换栈 
         irq_exit_rcu();                     \
     } else {                            \
         /*                          \
@@ -922,9 +999,9 @@ SYM_CODE_END(error_return)
          * places. Invoke the stack switch macro with the call  \
          * sequence which matches the above direct invocation.  \
          */                         \
-        __this_cpu_write(pcpu_hot.hardirq_stack_inuse, true);   \
-        call_on_irqstack(func, asm_call, constr);       \
-        __this_cpu_write(pcpu_hot.hardirq_stack_inuse, false);  \
+        __this_cpu_write(pcpu_hot.hardirq_stack_inuse, true);   \ //设置已经有中断正在 per-CPU 的中断栈上被处理
+        call_on_irqstack(func, asm_call, constr);       \         //在 per-CPU 的中断栈上调用中断处理函数
+        __this_cpu_write(pcpu_hot.hardirq_stack_inuse, false);  \ //清除已经有中断正在 per-CPU 的中断栈上被处理
     }                               \
 }
 ...
@@ -934,7 +1011,7 @@ SYM_CODE_END(error_return)
  */
 #define ASM_CALL_IRQ                            \
     "call irq_enter_rcu             \n"     \ //增加 HARDIRQ_OFFSET 的抢占计数
-    ASM_CALL_ARG2                           \ //调用 __common_interrupt()
+    ASM_CALL_ARG2                           \ //按两参数的方式调用 __common_interrupt(regs, vector)
     "call irq_exit_rcu              \n"       //减小 HARDIRQ_OFFSET 的抢占计数
 
 #define IRQ_CONSTRAINTS , [arg1] "r" (regs), [arg2] "r" ((unsigned long)vector)
