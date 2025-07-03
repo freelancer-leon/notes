@@ -1,5 +1,7 @@
 # TDX Host Kernel Support (v15)
 
+![TDX host overview](pic/tdx_host.svg)
+
 ## [PATCH 01/23] x86/virt/tdx: Detect TDX during kernel boot
 
 * TDX 可保护 guest 虚拟机免受恶意主机和某些物理攻击。一个经过 CPU 认证的软件模块（称为“TDX module”）在新的隔离内存范围内运行，作为受信任的 hypervisor 来管理和运行受保护的虚拟机。

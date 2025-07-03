@@ -1,4 +1,7 @@
 # Guest-first Memory
+
+![Guest-first memory overview](pic/gmem.svg)
+
 * 引入几个新的 KVM uAPI，最终在 KVM 中创建 guest 优先的内存子系统，即 guest_memfd。
   * guest 优先内存允许 KVM 提供在通用内存子系统中难以实现或完全不可能实现的功能、增强功能和优化。
 * guest_memfd 的核心 KVM `ioctl()` 是 `KVM_CREATE_GUEST_MEMFD`，它与通用 `memfd_create()` 类似，创建一个匿名文件并返回引用它的文件描述符。

@@ -1,5 +1,9 @@
 # 内核中的栈 - x86-64
 
+![IRQ and Exception Stacks](pic/irq_exp_stacks.svg)
+
+* 上图总结了一下四种内核栈的使用场景
+
 ![64-Bit TSS Format](pic/x86_regs_paging.png)
 
 * 在 64 位模式下，中断和异常处理类似于非 64 位模式。以下是例外情况：

@@ -185,6 +185,8 @@ config STACKPROTECTOR_STRONG
 
 > In addition to the protections offered by `-fstack-protector`, the new option will guard any function that declares any type or length of local array, even those in structs or unions. It will also protect functions that use a local variable's address in a function argument or on the right-hand side of an assignment. In addition, any function that uses local register variables will be protected.
 
+![Stack Protector - Canary](pic/stack_protector.svg)
+
 ### 代码实现的支持
 * arch/x86/include/asm/stackprotector.h
   ```c
