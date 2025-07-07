@@ -1,5 +1,7 @@
 # Intel® 64 Architecture Processor Topology Enumeration
 
+![ Figure 10-5. Generalized Seven-Domain Interpretation of the APIC ID](pic/sdm-f10-5-7-domain.png)
+
 # 1 介绍
 
 ## 1.1 术语表

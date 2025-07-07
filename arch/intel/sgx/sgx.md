@@ -1,5 +1,5 @@
 # Overview
-* Intel® **Software Guard Extensions** (Intel® **SGX**) is a set of instructions and mechanisms for memory accesses added to Intel® Architecture processors. 
+* Intel® **Software Guard Extensions** (Intel® **SGX**) is a set of instructions and mechanisms for memory accesses added to Intel® Architecture processors.
 * Intel SGX can encompass two collections of instruction extensions,
   * The **SGX1 extensions** allow an application to instantiate a protected container, referred to as an enclave.
     * The **enclave** is a trusted area of memory, where critical aspects of the application functionality have hardware-enhanced confidentiality and integrity protections.
@@ -106,7 +106,7 @@
   * ENCLS (ring 0)
   * ENCLU (ring 3)
   * ENCLV (VT root mode)
-* Each leaf function uses `EAX` to specify the *leaf function index*, and may require additional implicit input registers as parameters. 
+* Each leaf function uses `EAX` to specify the *leaf function index*, and may require additional implicit input registers as parameters.
   * The use of `EAX` is implied implicitly by the `ENCLS`, `ENCLU`, and `ENCLV` instructions;
   * `ModR/M` byte encoding is not used with `ENCLS`, `ENCLU`, and `ENCLV`.
   * The use of additional registers does not use `ModR/M` encoding and is implied implicitly by the respective leaf function index.
@@ -343,3 +343,11 @@ sgx_status_t ecall_malloc_free(sgx_enclave_id_t eid)
 ```
   * 该文件会被编译和链接进运行在 EPC 之外的 app 中
   * 对于非调试版的 enclave，调试器看到的是这个函数
+
+## References
+* [SGX技术的分析和研究](http://jos.org.cn/html/2018/9/5594.htm)
+* [Intel SGX Explained](http://css.csail.mit.edu/6.858/2020/readings/costan-sgx.pdf)
+* [给Intel SGX初学者的几句话](https://blog.csdn.net/clh14281055/article/details/109169469)
+* [小谈Intel SGX](https://blog.csdn.net/clh14281055/article/details/109091363)
+* [Overview of Intel SGX - Part 1, SGX Internals](https://blog.quarkslab.com/overview-of-intel-sgx-part-1-sgx-internals.html)
+* [Overview of Intel SGX - Part 2, SGX Externals](https://blog.quarkslab.com/overview-of-intel-sgx-part-2-sgx-externals.html)

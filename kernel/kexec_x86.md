@@ -2,6 +2,7 @@
 
 ## kexec 加载 crash 内核镜像
 
+### 内核分配保留 crashkernel 内存
 ```c
 start_kernel()
 -> setup_arch()
@@ -177,7 +178,7 @@ if (!do_kexec_file_syscall) //-c, --kexec-syscall
   * 有关于当前 pid 和 CPU 寄存器的信息
 * `kexec`的 x86 arch 特定参数`--pass-memmap-cmdline`可用于把 E820 建立的内存映射传给 panic kernel（Pass memory map via command line in kexec on panic case）
   * 其实是追加了`memmap=exactmap`和一系列附属参数，引入该参数见 [Introducing the memmap= kernel command line option](https://lwn.net/Articles/132338/)
-* `elf_rel_load()`由`elf_rel_build_load(info, &info->rhdr, purgatory, purgatory_size, ...)`调用，它负责把 purgatory segment 加入 segment[] 数组并重定位`info->rhdr`中的 section headers，最重要的是修正重定位后的`info->entry` 和`info->rhdr.e_entry`
+* `elf_rel_load()`由`elf_rel_build_load(info, &info->rhdr, purgatory, purgatory_size, ...)`调用，它负责把 purgatory segment 加入 `segment[]` 数组并重定位`info->rhdr`中的 section headers，最重要的是修正重定位后的`info->entry` 和`info->rhdr.e_entry`
   1. 根据`ehdr->e_entry`在 section header `ehdr->e_shdr`数组中找到 entry 所在的 section header，用`entry_shdr`记录，本地变量`entry`改为记录 entry 相对所在 section 起始地址的偏移
   2. 找到可重定位的对象，统计内存占用，记录在`bufsz`里；对于`.bss` section 的记录在`bsssz`里
   3. 为可重定位对象分配内存，并调用`buf_addr = add_buffer(info, buf, bufsz, bufsz + bss_pad + bsssz,...)`添加到 segment 数组里，并用`data_addr`和`bss_addr`记录重定位后的基地址
@@ -636,7 +637,7 @@ machine_kexec()
   ```
 ### 内核加载 crash 内核镜像
 ```c
-kernel/kexec.c
+//kernel/kexec.c
 SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ...)
 -> do_kexec_load(entry, nr_segments, segments, flags)
    -> kimage_free(xchg(dest_image, NULL)) //如果有需要，释放旧的 kernel image
@@ -695,6 +696,7 @@ SYSCALL_DEFINE4(kexec_load, unsigned long, entry, unsigned long, nr_segments, ..
 * 在`kimage_alloc_crash_control_pages()`函数中，会在 "Crash kernel" region 中找一个大于 2<sup>order</sup> 的空洞，并返回对应的`struct page`的指针，作用和 buddy system 的`alloc_pages()`类似
 * `image->control_code_page = kimage_alloc_control_pages(image, get_order(KEXEC_CONTROL_PAGE_SIZE))` 这里`KEXEC_CONTROL_PAGE_SIZE (4096UL + 4096UL)`会申请两个相连的页面，一个用作恒等映射 PGD，另一个用来放`relocate_kernel`例程的代码
 * `init_pgtable()`会给 crash kernel 用到的内存建立恒等映射，里面有`level4p = (pgd_t *)__va(start_pgtable)`（`start_pgtable`是 control page 的物理地址）说明这个页面就是准备用来做 PGD 的！
+* [commit 4b5bc2ec9a239bce261ffeafdd63571134102323 ("x86/kexec: Allocate PGD for x86_64 transition page tables separately")](http://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=4b5bc2ec9a239bce261ffeafdd63571134102323) v6.14 之后情况发生了变化，用作恒等映射 PGD 不再从 "Crash kernel" region 里分，而是从 buddy 里分配，因为这个页面在 panic 切换时还是可以使用的，没有人知道为什么最开始要从 "Crash kernel" region 里分。此后 `image->control_code_page` 起始的第一个页面开始用来放 `relocate_kernel` 例程了。
 
 #### 建立恒等映射（identity mapping）
 * 建立恒等映射的内存分配函数 `alloc_pgt_page()` 用的 `kimage_alloc_control_pages()` 从 control pages 里分配内存
@@ -935,7 +937,7 @@ kernel_kexec()
       => native_stop_other_cpus()
          -> apic_send_IPI_allbutself(REBOOT_VECTOR) //第一次尝试发 IPI(REBOOT_VECTOR) 的方式，如果尝试失败或超时
          -> register_stop_handler() //第二次尝试用 NMI DM 的 IPI 尝试让让其他 CPU 停下，回调为 smp_stop_nmi_callback()
-             -> register_nmi_handler(NMI_LOCAL, smp_stop_nmi_callback, NMI_FLAG_FIRST, "smp_stop")
+            -> register_nmi_handler(NMI_LOCAL, smp_stop_nmi_callback, NMI_FLAG_FIRST, "smp_stop")
             for_each_cpu(cpu, &cpus_stop_mask)
             -> __apic_send_IPI(cpu, NMI_VECTOR)
 -> machine_kexec(kexec_image)

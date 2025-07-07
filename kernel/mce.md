@@ -805,10 +805,10 @@ mce_gen_pool_init()
 do_machine_check()
 -> __mc_scan_banks()
    -> mce_log()
-         if (!mce_gen_pool_add(m))
+         if (mce_gen_pool_add(m))
          -> irq_work_queue(&mce_irq_work);
 ```
-* 这一系列调用，就是为了调用 `mce_gen_pool_process()`。但 `#MC` NMI 上下文，不能调 `mce_schedule_work()`，只能通过 `mce_irq_work_cb()` 去调用它，再由它去调度 `mce_gen_pool_process()` 所在的 `mce_work`
+* 这一系列调用，就是为了调用 `mce_gen_pool_process()`。但 `#MC` NMI 上下文，不能调 `mce_schedule_work()`，因为它不是 NMI 安全的函数（见 commit b77e70bf3535e0bd5472e0681f41cce4ae0598bb x86, mce: Replace MCE_SELF_VECTOR by irq_work），只能通过排入一个 irq_work  `mce_irq_work_cb()` 去调用它，再由它去调度 `mce_gen_pool_process()` 所在的工作队列 `mce_work`
 ```c
 static void mce_schedule_work(void)
 {

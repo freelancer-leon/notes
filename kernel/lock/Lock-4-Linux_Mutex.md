@@ -177,6 +177,17 @@ static __always_inline bool __mutex_trylock_fast(struct mutex *lock)
     * 比较`mem`原来的值与`old`的值，如果一样，更新成功；如果不一样，说明`mem`的值被其他 CPU 修改了，更新失败。
   * 加了个`try`表示，如果更新成功，返回`true`；如果更新失败，返回`false`。
   * **注意关键的一点**，即便`cmpxchg`失败，该函数也会把`old`的指更新为`cmpxchg`的返回值，即`mem`在原子操作时的值。
+    ```c
+    static __always_inline bool
+    raw_atomic64_try_cmpxchg_acquire(atomic64_t *v, s64 *old, s64 new)
+    {
+    ...
+        r = raw_atomic64_cmpxchg_acquire(v, o, new);
+        if (unlikely(r != o))
+            *old = r;
+        return likely(r == o);
+    }
+    ```
 * `owner`域为 **空** 表示没人持有锁，所以这里把`owner`域和`0`比较，如果成功拿到锁，`owner`更新为当前任务的`struct taske_struct`指针
 
 ### 加锁的慢速路径
