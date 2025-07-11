@@ -3,8 +3,8 @@
 ## 命令行开关
 * `maxcpus=n` 限制启动时的 CPU 为 `n` 个。例如，如果你有四个CPU，使用 `maxcpus=2` 将只能启动两个。你可以选择稍后让其他 CPU 上线。
 * `nr_cpus=n` 限制内核将支持的 CPU 总量。如果这里提供的数量低于实际可用的 CPU 数量，那么其他 CPU 以后就不能上线了。
-* `possible_cpus=n` 这个选项设置 `cpu_possible_mask` 中的 `possible_cpus` 位。这个选项只限于 X86 和 S390 架构。
-* `cpu0_hotplug` 允许关闭 CPU0。这个选项只限于 X86 架构。
+* `possible_cpus=n` 这个选项设置 `cpu_possible_mask` 中的 `possible_cpus` 位。这个选项只限于 x86 和 S390 架构。
+* `cpu0_hotplug` 允许关闭 CPU0。这个选项只限于 x86 架构。
 
 ## CPU 位图
 
@@ -13,20 +13,39 @@
 * 宏 `for_each_cpu()` 可以用来迭代一个自定义的 CPU 掩码。
 * 不要使用 `cpumask_t` 以外的任何东西来表示 CPU 的位图。
 
+```c
+cpu_possible_mask (最大支持范围)
+       │
+       ▼
+cpu_present_mask (物理存在的 CPU)
+       │
+       ▼
+cpu_online_mask  (正在运行的 CPU)
+       │
+       ▼
+cpu_active_mask  (活跃处理任务的 CPU)
+```
+
 #### `cpu_possible_mask`
-* 系统中可能可用 CPU 的位图。
-* 这是用来为 per_cpu 变量分配一些启动时的内存，这些变量不会随着 CPU 的可用或移除而增加/减少。
+* 系统中可能可用 CPU 的位图，在系统启动时确定，通常由固件（如 ACPI 表）决定。
+* **固定不变**：这是用来为 per_cpu 变量分配一些启动时的内存，这些变量不会随着 CPU 的可用或移除而增加/减少。
 * 一旦在启动时的发现阶段被设置，该映射就是静态的，也就是说，任何时候都不会增加或删除任何位。根据你的系统需求提前准确地调整它可以节省一些启动时的内存。
 
 #### `cpu_online_mask`
 * 当前在线的所有 CPU 的位图。
 * 在一个 CPU 可用于内核调度并准备接收设备的中断后，它在 `__cpu_up()` 中被设置。
 * 当使用 `__cpu_disable()` 关闭一个 CPU 时，它被清空，在此之前，所有的操作系统服务包括中断都被迁移到另一个目标 CPU。
+* 是 `cpu_present_mask` 的子集（例如，物理存在的 CPU 可能被管理员手动下线）
 
 #### `cpu_present_mask`
-* 系统中当前存在的 CPU 的位图。它们并非全部在线。
-* 当物理热插拔被相关的子系统 （如ACPI）处理时，可以改变和添加新的位或从位图中删除，这取决于事件是 `hot-add/hot-remove`。目前还没有定死规定。
+* 系统中当前存在的 CPU 的位图。它们并非全部在线。在启动时由内核通过硬件探测（如 ACPI）确定。
+* **可能动态变化**：当 **物理热插拔** 被相关的子系统 （如ACPI）处理时，可以改变和添加新的位或从位图中删除，这取决于事件是 `hot-add/hot-remove`。目前还没有定死规定。
 * 典型的用法是在启动时启动拓扑结构，这时热插拔被禁用。
+* 始终是 `cpu_possible_mask` 的子集（物理 CPU 数量 ≤ 最大可能 CPU 数量）
+
+#### `cpu_active_mask`
+* 表示当前活跃的 CPU 集合。主要用于 RCU 等机制，通常与 `cpu_online_mask` 相同，但在某些特殊情况下（如 CPU 进入休眠状态）可能会不同。
+
 
 ## 使用 CPU 热插拔
 * 内核选项 `CONFIG_HOTPLUG_CPU` 需要被启用。它目前可用于多种架构，包括ARM、MIPS、 PowerPC和X86。配置是通过 `sysfs` 接口完成的：

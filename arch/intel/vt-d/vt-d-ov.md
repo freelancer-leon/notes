@@ -242,6 +242,7 @@ Data Bits | 字段      | 描述
 * Posted Interrupt Descriptor 包含以下字段：
   * `Posted Interrupt Request（PIR）` 字段为 posting（记录）中断提供存储（每个向量一位，最多可容纳 `256` 个向量）。
   * `Outstanding Notification（ON）` 字段指示该 Posted Interrupt Descriptor 是否有 outstanding 的通知事件（尚未被处理器或软件处理）。当该字段为 `0` 时，硬件在生成通知事件时将其从 `0` 修改为 `1`，并且接收通知事件的实体（处理器或软件）将其重置，作为 posted interrupt 处理的一部分。
+    * 译注：这是从硬件注入中断的角度来说的，软件也可以通过类似的步骤注入中断，不是吗？
   * `Suppress Notification（SN）` 字段指示对于非紧急中断请求（通过 `URG=0` 的 IRTE 处理的中断）是否要抑制（不生成）通知事件。
   * `Notification Vector（NV）` 字段指定通知事件（中断）所用的向量。
   * `Notification Destination（NDST）` 字段指定通知事件的目标逻辑处理器的物理 APIC-ID。
@@ -288,9 +289,9 @@ Data Bits | 字段      | 描述
   * 这个简化的使用示例假设 VMM 软件通常在中断 masked 的情况下运行，除非将逻辑 CPU 置于低功耗状态。此处所示的示例可以扩展以涵盖其他使用场景。
 * VMM 软件可以为虚拟机启用 interrupt-posting，如下所示：
 * 对于虚拟机中的每个虚拟处理器，VMM 软件可以分配一个 Posted Interrupt Descriptor。每个这样的描述符用于 posting 要传递给相应虚拟处理器的所有中断。
-  * 软件必须阻止设备访问 Posted Interrupt Descriptors 所在的内存。实现此目的的一种方法是设置重映射表，以便重映射硬件阻止从设备到 Posted Interrupt Descriptors 的访问。
+  * **软件必须阻止设备访问 Posted Interrupt Descriptors 所在的内存**。实现此目的的一种方法是设置重映射表，以便重映射硬件阻止从设备到 Posted Interrupt Descriptors 的访问。
   * 如果设备能够写入 Posted Interrupt Descriptor，则无法保证发布中断操作的原子性。
-* VMM 软件为通知事件分配两个物理中断向量（跨平台中的所有逻辑 CPU）。
+* **VMM 软件** 为通知事件分配两个物理中断向量（跨平台中的所有逻辑 CPU）。
   * 该物理向量之一可以用作 **“活动通知向量”（Active Notification Vector，ANV）**，当往处于活动状态（正在执行）的任何虚拟处理器 posting 一个中断时，用于向其 posted 中断通知。
   * 分配的其他物理向量可用作 **“唤醒通知向量”（Wake-up Notification Vector，WNV）**，当往处于被阻塞（halted）的任何虚拟处理器 posting 一个中断时，用于向其 posted 中断通知。
 * 对于从任何分配（透传）给该虚拟机的设备的每个中断源，VMM 软件可以拦截并虚拟化相应中断资源（IOxAPIC 条目和/或 MSI/MSI-X 寄存器）的 guest 软件编程。通过这种虚拟化，VMM 软件探测到了 guest 软件分配的 **目标虚拟处理器** 和 **虚拟向量**。
@@ -300,19 +301,19 @@ Data Bits | 字段      | 描述
   * 如果相应的中断源被指定为需要立即（非延迟）处理，则 IRTE 中的 `urgent（URG）` 字段由 VMM 软件设置。
 * VMM 软件配置处理器硬件以启用虚拟处理器的 APIC 虚拟化（包括“virtual-interrupt delivery”和“process posted interrupts”功能）。
   * 虚拟处理器的 “posted-interrupt notification vector” 使用本节前面所述的 “Active Notification Vector”（`ANV`）值进行配置。
-  * 虚拟处理器的 “posted-interrupt descriptor” 是用为各个虚拟处理器分配的 Posted Interrupt Descriptor 的地址来配置的。
+  * 虚拟处理器的 “posted-interrupt descriptor” 是用 *为各个虚拟处理器分配的 Posted Interrupt Descriptor 的地址* 来配置的。
 * VMM 软件调度器可以按如下方式管理虚拟处理器的调度状态：
-  - 当选择虚拟处理器执行时，虚拟处理器状态在进入/恢复之前被指定为“active”。
+  - 当一个虚拟处理器被选择执行时，虚拟处理器状态在进入/恢复之前被指定为“**active**”。
     * 通过使用 `ANV` 向量值对其 `Notification Vector（NV）` 字段进行编程，可以在其 Posted Interrupt Descriptor 指定此状态。
       * VMM 软件可以采用不同的方法来管理通知向量。例如，替代方法可以是让 VMM 软件为每个虚拟处理器分配唯一的 `Activation Notification Vectors（ANV）`（而不是为所有虚拟处理器共享相同的 `ANV`）。
-      * 该方法可以使得这样的 VMM 软件能够避免在虚拟处理器调度状态改变时在 Posted Interrupt Descriptor 中的 active 向量值和 wake-up 向量值之间进行切换，而是仅在跨逻辑处理器的虚拟处理器迁移时更新它们。
+      * 该方法可以使得这样的 VMM 软件能够避免在虚拟处理器调度状态改变时在 Posted Interrupt Descriptor 中的 **active 向量值** 和 **wake-up 向量值** 之间进行切换，而是仅在跨逻辑处理器的虚拟处理器迁移时更新它们。
     * 这允许该虚拟处理器在其活动（运行）时接收到的所有中断均由处理器硬件处理，而无需将控制权转移给 VMM 软件。
-    * 处理器硬件通过将 Posted Interrupt Descriptor 中的任何 posted 中断传输到虚拟处理器的 Virtual-APIC page 并将其直接传送（无需 VMM 软件干预）到虚拟处理器（以 `ANV` 向量值）来处理这些通知事件。
-  - 当虚拟处理器被抢占时（例如，在 quantum expiry 时），虚拟处理器状态被指定为 “ready-to-run”。
+    * 处理器硬件通过将 Posted Interrupt Descriptor 中的任何 posted 中断传输到虚拟处理器的 Virtual-APIC page 并将其直接递交（无需 VMM 软件干预）到虚拟处理器（以 `ANV` 向量值）来处理这些通知事件。
+  - 当虚拟处理器被抢占时（例如，在 quantum expiry 时），虚拟处理器状态被指定为 **“ready-to-run**”。
     * 通过将 `Suppress Notification（SN）` 字段编程为 `1`，在其 Posted Interrupt Descriptor 中指定该状态。
     * 这允许该虚拟处理器在处于被抢占状态时接收到的所有非紧急中断被 posted 到其 Posted Interrupts Descriptor，而不生成通知中断（从而避免当前运行的虚拟处理器被打断）。
     * 如果存在被认定为针对该虚拟处理器的紧急中断源，则 VMM 软件还可以将 Posted Interrupt Descriptor 中的 `NV` 字段修改为 `WNV` 向量值。这使得 VMM 软件能够在虚拟处理器未运行时发出紧急中断时接收通知（用 `WNV` 向量值），从而允许适当的软件操作（例如，抢占当前正在运行的虚拟处理器并立即调度该虚拟处理器）。
-  - 当虚拟处理器 halt 时（例如，在执行 `HLT` 指令时），VMM 软件可以获得控制权，阻止虚拟处理器的进一步执行，并将虚拟处理器状态指定为 “halted”。
+  - 当虚拟处理器 halt 时（例如，在执行 `HLT` 指令时），VMM 软件可以获得控制权，阻止虚拟处理器的进一步执行，并将虚拟处理器状态指定为 “**halted**”。
     * 通过使用 `WNV` 向量值对其 `Notification Vector（NV）` 字段进行编程，可以在其 Posted Interrupt Descriptor 中指定此状态。
     * 这使得 VMM 软件能够在为此虚拟处理器 posted 任何中断（紧急或非紧急）时（以 `WNV` 向量值）接收通知，从而允许适当的软件操作（例如安排虚拟处理器以供将来或立即激活）。
 * 当进入/恢复虚拟处理器时，VMM 软件可以处理其 posted descriptor 中的任何挂起的 posted 中断，如下所示：
