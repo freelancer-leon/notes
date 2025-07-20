@@ -896,13 +896,21 @@ static void ve_raise_fault(struct pt_regs *regs, long error_code)
 void select_idle_routine(const struct cpuinfo_x86 *c)
 {
 ...
-      else if (cpu_feature_enabled(X86_FEATURE_TDX_GUEST)) {
+    if (prefer_mwait_c1_over_halt()) {
+        pr_info("using mwait in idle threads\n");
+        static_call_update(x86_idle, mwait_idle);
+    } else if (cpu_feature_enabled(X86_FEATURE_TDX_GUEST)) {
         pr_info("using TDX aware idle routine\n");
-        static_call_update(x86_idle, tdx_safe_halt);
-    } else
+        static_call_update(x86_idle, tdx_halt);
+    } else {
+        static_call_update(x86_idle, default_idle);
+    }
 ...
 }
 ```
+* `safe_halt` 语义指的是 halt 前需要开启中断，然后再 `hlt`，再关闭，例如：
+  * `mwait_idle()` 会调 `__sti_mwait() -> "sti; mwait"`，随后再关闭中断
+  * `default_idle()` 会调 `arch_safe_halt() -> native_safe_halt() -> "sti; hlt"`，随后关闭中断
 * Commit e78a7614f3876ac649b3df608789cb6ef74d0480 将 `arch_cpu_idle()` 置于 IRQ disabled 的环境下：
 ```c
 commit e78a7614f3876ac649b3df608789cb6ef74d0480
@@ -911,7 +919,7 @@ Date:   Wed Jun 5 07:46:43 2019 -0700
 
     idle: Prevent late-arriving interrupts from disrupting offline
 ```
-* 于是 commit e80a48bade619ec5a92230b3d4ae84bfc2746822 将 `TDX_HCALL_ISSUE_STI` 相关的内容都移除了
+* 于是 commit e80a48bade619ec5a92230b3d4ae84bfc2746822 将 `TDX_HCALL_ISSUE_STI` 相关的内容都移除了，因为 `__halt(irq_disabled)` 的参数 `irq_disabled` 才是告知 VMM 的中断开启状态的关键，至于 TD guest tdcall 时真实的中断状态是什么并不重要。
 ```c
 commit e80a48bade619ec5a92230b3d4ae84bfc2746822
 Author: Peter Zijlstra <peterz@infradead.org>
@@ -924,7 +932,7 @@ Date:   Thu Jan 12 20:43:36 2023 +0100
 void __cpuidle tdx_safe_halt(void)
 {   //idle 函数调用到此时，中断必然已被关闭
     const bool irq_disabled = false;
-
+    //第一个参数是传递给 VMM 的，按照 safe_halt 语义要求 hlt 前中断是开启的，所以告诉 VMM 的中断处于开启状态
     /*
      * Use WARN_ONCE() to report the failure.
      */

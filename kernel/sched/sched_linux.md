@@ -1,4 +1,4 @@
-# Linux进程调度（Linux Process Scheduling)
+# Linux进程调度（Linux Process Scheduling）
 ***
 
 # 目录

@@ -104,6 +104,25 @@ struct desc_struct {
     }
 ```
 
+### 加载 GDT
+* 内核初始化时加载 GDT 的路径如下：
+```c
+//init/main.c
+start_kernel()
+   //arch/x86/kernel/setup_percpu.c
+-> setup_per_cpu_areas()
+   //arch/x86/kernel/cpu/common.c
+   -> switch_gdt_and_percpu_base(cpu)
+      -> load_direct_gdt(cpu)
+            gdt_descr.address = (long)get_cpu_gdt_rw(cpu);
+            gdt_descr.size = GDT_SIZE - 1;
+         -> load_gdt(&gdt_descr)
+            //arch/x86/include/asm/desc.h
+         => native_load_gdt(dtr)
+            -> asm volatile("lgdt %0"::"m" (*dtr))
+      -> wrmsrq(MSR_GS_BASE, cpu_kernelmode_gs_base(cpu)) //初始化 GS 寄存器（kernel space 用）
+```
+
 # References
 * [Global Descriptor Table - wikipedia](https://en.wikipedia.org/wiki/Global_Descriptor_Table)
 * [LDT- OSDev Wiki](https://wiki.osdev.org/LDT)

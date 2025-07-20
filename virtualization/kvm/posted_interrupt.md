@@ -186,7 +186,7 @@ static void vmx_deliver_interrupt(struct kvm_lapic *apic, int delivery_mode,
 ```
 
 ## Posted Interrupt 唤醒向量
-* 以上是虚拟设备通过 posted interrupt 方式向 vcpu 发送中断的处理。对于物理外设产生的中断：
+* 上面是虚拟设备通过 posted interrupt 方式向 vcpu 发送中断的处理。对于物理外设产生的中断：
   * 如果该设备未分配给 guest，且 `external-interrupt exiting` 执行控制位为 `1` 时，会造成 VM-exit，由 host 侧来处理该中断
     * `process posted interrupts` 执行控制位为 `1` 时，`external-interrupt exiting` 会强制为 `1`
     * `external-interrupt exiting` 执行控制位为 `0` 时，该中断会直接投递给 guest，并跳到 guest IDT 给定的中断向量入口。但实践中几乎不会这么配
@@ -195,7 +195,11 @@ static void vmx_deliver_interrupt(struct kvm_lapic *apic, int delivery_mode,
     * 如果没有中断重映射的硬件支持，该中断会先投递到 host，从 host IDT 的中断向量入口开始执行，host 侧的中断处理逻辑发现该中断的所属设备分配给了 guest VM，则需要给 guest 注入中断
 
 * Posted Interrupt 唤醒向量也就是 SDM 中所说的 `WNV`，用于 IPI 虚拟化和 VT-d posted interrupt 的场景。
-* 对于外设中断重映射的 posted interrupt（即 VT-d posted-interrupts），也存在几种场景：
+* 对于外设中断重映射的 posted interrupt（即 VT-d posted-interrupts），外设是不知道 vCPU 的状态的，vCPU 有可能正在运行，也有可能被抢占或因空闲进入休眠状态了，还有可能被调度到其他 pCPU 上了，此时就需要 VMM 协同来完成 posted interrupt，并在 `PID` 中增加了 `SN`、`NDST` 以及 `NV` 几个域来支持
+* **注意**：`PID` 中的 `NV` 与 VMCS 中的 `POSTED_INTR_NV` 受众是不一样的
+  * `PID` 中的 `NV` 是告诉中断重映射硬件，如有有中断来了，该发哪个向量去通知 CPU，配合 `NDST` 指明目的 pCPU（填入 APIC ID）
+  * VMCS 中的 `POSTED_INTR_NV` 是告诉 CPU，当收到哪个中断向量可以直接开启中断评估且无需 VM-exit
+* 外设中断重映射的 posted interrupt 需要分别处理以下几种场景：
 1. **vCPU 在运行（Running）**。中断重映射硬件根据 poseted interrupt IRTE 的信息，找到 `PID`，设置 `PIR`，发送 `ANV`，完成整个中断注入过程
    * `ANV` 与 VMCS 中的 `NV` 是一致的，因此整个过程无需软件参与
 2. **vCPU 被抢占（Preempted）**。vCPU 所在线程仍在运行队列上。
@@ -205,7 +209,7 @@ static void vmx_deliver_interrupt(struct kvm_lapic *apic, int delivery_mode,
      * 对于 vCPU 被调度到其他 CPU 的情况，需要更新 `PID` 中的 `NDST` 域，设置 `NV` 为 `ANV`
      * 把 `PIR` 同步到 `vIRR`，完成中断的注入（这是已有的逻辑）
 3. **vCPU 在睡眠（Blocked）**。
-   * 睡眠之前 KVM 需要将 `PID` 中的 `NV` 的值换成 `WNV`（与 VMCS 中的 `NV` 仍然是 `ANV` 的值，保持不变），这样当中断重映射硬件找到 `PID`，设置 `PIR`，发送的通知向量则是 `WNV`
+   * 睡眠之前 KVM 需要将 `PID` 中的 `NV` 的值换成 `WNV`（而 VMCS 中的 `NV` 仍然是 `ANV` 的值，保持不变），这样当中断重映射硬件找到 `PID`，设置 `PIR`，发送的通知向量则是 `WNV`
    * 根据 `vcpu->cpu`，vCPU 线程需要放到 per CPU 的唤醒队列上（`DEFINE_PER_CPU(struct list_head, wakeup_vcpus_on_cpu)`）
    * 当外设中断被重定向后，由于 `WNV` 与 VMCS 中的 `NV` 的值（`ANV`）不一致，硬件不会继续 posted interrupt processing，而是当作 host 侧的一个中断来处理，也就是跳到 Posted Interrupt 唤醒向量的处理函数 `wakeup_handler()`。
    * Posted Interrupt 唤醒向量的处理函数要做的事情非常简单，就是将唤醒队列上 vCPU 的 `PID` 的 `Outstanding（ON）` 域被设置的 vCPU 线程唤醒
@@ -265,8 +269,8 @@ void pi_wakeup_handler(void)
 
     raw_spin_lock(spinlock);
     list_for_each_entry(vmx, wakeup_list, pi_wakeup_list) { //遍历唤醒链表上的 vCPU
-
-        if (pi_test_on(&vmx->pi_desc))   //如果 PID 的 Outstanding bit 设置上了，表明有 pending 的 posted interrupts
+        //如果 PID 的 Outstanding bit 设置上了，表明有 pending 的 posted interrupts
+        if (pi_test_on(&vmx->pi_desc))
             kvm_vcpu_wake_up(&vmx->vcpu);//此时需要唤醒该 vCPU，也就是 wake_up_process() vCPU thread
     }
     raw_spin_unlock(spinlock);
@@ -336,7 +340,7 @@ void preempt_notifier_register(struct preempt_notifier *notifier)
 }
 ```
 * 当 vCPU 被调度前后都会通知被抢占事件的监听者，逐个调用监听者的换出回调 `.sched_out()` 和换入回调 `.sched_in()`，在 KVM 这个场景就是 `kvm_sched_out()` 和 `kvm_sched_in()` 了
-  * 这两个函数最终调用到下面要讲的 `vmx_vcpu_pi_put()` 和 `vmx_vcpu_pi_loadd()`
+  * 这两个函数最终调用到下面要讲的 `vmx_vcpu_pi_put()` 和 `vmx_vcpu_pi_load()`
 ```c
 //kernel/sched/core.c
 context_switch()
@@ -465,7 +469,7 @@ static bool vmx_can_use_vtd_pi(struct kvm *kvm)
   * 因为 *IPI 虚拟化* 和 *VT-d Posted Interrupt* 都是硬件自动完成 `PID` 的更新，硬件不知道 vCPU 是运行还是睡眠
   * 如果是睡眠，需要软件在调度出去前将 `NV` 从 `ANV` 修改为 `WNV` 并将目标 CPU 设置为 `NDST`，硬件只需要还按原来的逻辑照做就好了
   * 当然，vCPU 调度回来前还得恢复以上两个域
-* 在 guest 模式之外调用时，默认 posted interrupt 向量（`ANV`）不执行任何操作。如果是使用 IPI 虚拟化或 VT-d PI 时的情况，返回阻塞的 vCPU 是否可以成为 posted interrupts 的目标，以便通知向量 `ANV` 切换到回调 `pi_wakeup_handler()` 函数的向量 `WNV`。
+* 在 guest 模式之外调用时，默认 posted interrupt 向量（`ANV`）不执行任何操作。如果是使用 IPI 虚拟化或 VT-d PI 时的情况，返回被阻塞的 vCPU 是否可以成为 posted interrupts 的目标，以便通知向量从 `ANV` 切换到回调函数是 `pi_wakeup_handler()` 的向量 `WNV`。
 ```cpp
 static bool vmx_needs_pi_wakeup(struct kvm_vcpu *vcpu)
 {
@@ -831,7 +835,7 @@ case KVM_RUN:
          }
 ```
 
-* 路径 1：把 vCPU run 起来的是否发现 vCPU 状态还未初始化 `if (unlikely(vcpu->arch.mp_state == KVM_MP_STATE_UNINITIALIZED))`
+* 路径 1：把 vCPU run 起来的时候发现 vCPU 状态还未初始化 `if (unlikely(vcpu->arch.mp_state == KVM_MP_STATE_UNINITIALIZED))`
 * 路径 2：`vcpu_run()` 时发现 vCPU 状态还不是可运行状态，如果状态也不是 `KVM_MP_STATE_HALTED`，直接进入 `kvm_vcpu_block()`
 * 路径 3：应该就是 halt polling 状态吧，看看注释的解释
   * 模拟 vCPU halt 条件，例如 x86 上的 `HLT`、arm 上的 WFI（wait-for-init？）等...

@@ -364,6 +364,36 @@ config STACKPROTECTOR_STRONG
        ae6:   66 2e 0f 1f 84 00 00    nopw   %cs:0x0(%rax,%rax,1)
        aed:   00 00 00
   ```
+### 后续的改进
+* [[PATCH v6 00/15] x86-64: Stack protector and percpu improvements](https://lore.kernel.org/r/20250123190747.745588-9-brgerst@gmail.com)
+* `__stack_chk_guard` 变为普通 per-CPU 变量了，`struct fixed_percpu_data` 结构被删除
+```c
+DECLARE_PER_CPU_CACHE_HOT(unsigned long, __stack_chk_guard);
+
+/*
+ * Initialize the stackprotector canary value.
+ *
+ * NOTE: this must only be called from functions that never return
+ * and it must always be inlined.
+ *
+ * In addition, it should be called from a compilation unit for which
+ * stack protector is disabled. Alternatively, the caller should not end
+ * with a function call which gets tail-call optimized as that would
+ * lead to checking a modified canary value.
+ */
+static __always_inline void boot_init_stack_canary(void)
+{
+    unsigned long canary = get_random_canary();
+
+    current->stack_canary = canary;
+    this_cpu_write(__stack_chk_guard, canary);
+}
+
+static inline void cpu_init_stack_canary(int cpu, struct task_struct *idle)
+{
+    per_cpu(__stack_chk_guard, cpu) = idle->stack_canary;
+}
+```
 
 ### References
 * ["Strong" stack protection for GCC - LWN.net](https://lwn.net/Articles/584225/)

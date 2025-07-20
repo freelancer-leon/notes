@@ -3,6 +3,8 @@
 ![IRQ and Exception Stacks](pic/irq_exp_stacks.svg)
 
 * 上图总结了一下四种内核栈的使用场景
+  * 绿色的线只针对用户态，红色的线只针对内核态，黑色的则是通用的
+  * 空心线代表由 CPU 硬件做出的选择
 
 ![64-Bit TSS Format](pic/x86_regs_paging.png)
 
@@ -789,6 +791,9 @@ struct cea_exception_stacks {
 * `idtentry_mce_db` 会判断，如果是发生在用户态，用的是汇编宏 `idtentry_body`，之前已经展示过了它是怎么切换栈的了
 
 ## CPU Entry Area
+
+![CPU Entry Area Overview](pic/cpu_entry_area.svg)
+
 * `cpu_entry_area` 是一个 per-cpu 区域，包含 CPU 和早期进入/退出代码需要的东西。
 * 并非所有字段都使用真实类型以避免头文件的循环依赖。
 * 每个字段都是其他分配的后备存储的虚拟别名。

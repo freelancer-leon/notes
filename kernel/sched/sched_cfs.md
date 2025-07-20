@@ -3,20 +3,36 @@
 
 # 目录
 
+- [完全公平调度(Completely Fair Scheduler)](#完全公平调度completely-fair-scheduler)
+- [目录](#目录)
 - [CFS数据结构](#cfs数据结构)
-	- [CFS调度实体 sched_entity](#cfs调度实体-schedentity)
-	- [CFS调度运行队列 cfs_rq](#cfs调度运行队列-cfsrq)
-	- [CFS调度器类fair_sched_class](#cfs调度器类-fairschedclass)
+  - [CFS调度实体 sched\_entity](#cfs调度实体-sched_entity)
+  - [CFS调度运行队列 cfs\_rq](#cfs调度运行队列-cfs_rq)
+  - [CFS调度器类 fair\_sched\_class](#cfs调度器类-fair_sched_class)
 - [创建进程](#创建进程)
-	- [关联新进程与调度器](#关联新进程与调度器)
-	- [新进程进入队列](#新进程进入队列)
-	- [新进程能否抢占当前进程](#新进程能否抢占当前进程)
+  - [关联新进程与调度器](#关联新进程与调度器)
+    - [更新当前进程的时间](#更新当前进程的时间)
+      - [计算虚拟运行时间增量 calc\_delta\_fair](#计算虚拟运行时间增量-calc_delta_fair)
+      - [更新 CFS 运行队列的 min\_vruntime](#更新-cfs-运行队列的-min_vruntime)
+    - [创建新进程时的 place\_entity()](#创建新进程时的-place_entity)
+  - [新进程进入队列](#新进程进入队列)
+    - [创建新进程时的enqueue\_entity](#创建新进程时的enqueue_entity)
+  - [新进程能否抢占当前进程](#新进程能否抢占当前进程)
+    - [wakeup\_preempt\_entity](#wakeup_preempt_entity)
+    - [唤醒时粒度的计算wakeup\_gran](#唤醒时粒度的计算wakeup_gran)
 - [周期性调度](#周期性调度)
-	- [周期性调度检查check_preempt_tick](#周期性调度检查check_preempt_tick)
+  - [周期性调度检查check\_preempt\_tick](#周期性调度检查check_preempt_tick)
+    - [调度实体在调度周期内分配的实际时间的计算sched\_slice](#调度实体在调度周期内分配的实际时间的计算sched_slice)
+      - [避而不谈的 `__calc_delta()`](#避而不谈的-__calc_delta)
+      - [结论](#结论)
 - [进程唤醒](#进程唤醒)
+    - [进程唤醒时的place\_entity](#进程唤醒时的place_entity)
 - [选择下一个进程](#选择下一个进程)
-	- [CFS的pick_next_task实现](#CFS的pick_next_task实现)
-- [CFS调试接口](#CFS调试接口)
+  - [CFS的pick\_next\_task实现](#cfs的pick_next_task实现)
+    - [CFS 的 put\_prev\_task - put\_prev\_task\_fair](#cfs-的-put_prev_task---put_prev_task_fair)
+    - [选择下一个进程的关键pick\_next\_entity](#选择下一个进程的关键pick_next_entity)
+    - [标记选出的进程set\_next\_entity](#标记选出的进程set_next_entity)
+- [CFS调试接口](#cfs调试接口)
 - [参考资料](#参考资料)
 
 
@@ -533,7 +549,7 @@ wakeup_preempt_entity(struct sched_entity *curr, struct sched_entity *se)
 }
 ```
 * 当`wakeup_preempt_entity()`返回 **1** 时，`check_preempt_wakeup()`会设置`TIF_NEED_RESCHED`标志允许新进程抢占当前进程。
-* 注释中的 s1，s2，s3 是新进程/调度实体的三种情况，横座标轴为`vruntime`。仅当 s3 情况，`se-vruntime`比`curr->vruntime`的值小且超过`gran`，可以抢占。
+* 注释中的 s1，s2，s3 是新进程/调度实体的三种情况，横座标轴为`vruntime`。仅当 s3 情况，`se->vruntime`比`curr->vruntime`的值小且超过`gran`，可以抢占。
 * 为了让进程切换不会过于频繁，这里不会因为新进程的`vruntime`较小就立即切换，而是“缓冲”一下，与`wakeup_gran()`计算结果进行比较后再决定。
 * 注意参数的顺序，该函数判断`se`能否抢占`curr`
 
