@@ -10,8 +10,12 @@
 - [APIC 虚拟化和虚拟中断](arch/intel/apicv_vintr.md)
 - [Buslock](arch/intel/buslock.md)
 - [Memory Cache Control](arch/intel/cache_control.md)
+- [CPU 拓扑枚举](arch/intel/cpu_topo.md)
 - [Multi-Processors Management](arch/intel/MP_management.md)
-- [Linear Address Masking (LAM)](arch/intel/lam.md)
+- [Linear Address Masking (LAM)](arch/intel/lam)
+- [TDX](arch/intel/tdx)
+- [SGX](arch/intel/sgx)
+- [RDT](arch/intel/rdt)
 
 ### VT-d
 - [Vt-d Overview](arch/intel/vt-d/vt-d-ov.md)
@@ -24,6 +28,7 @@
 
 # Kernel
 - [Bottom Half 下半部](kernel/Bottom_Half.md)
+- [cmwq](kernel/cmwq.md)
 - [时间和定时器](kernel/time.md)
 - [虚拟文件系统（VFS）](kernel/vfs.md)
 - [页缓存和页回写](kernel/page_cache.md)
@@ -32,6 +37,7 @@
 - [Linux 图形](kernel/graphic/Linux-Graphic.md)
 - [中断](kernel/irq.md)
 - [x86 内核栈](kernel/stack_x86-64.md)
+- [系统调用](kernel/syscall.md)
 - [NMI](kernel/nmi/nmi.md)
 - [IPI - x86](kernel/ipi.md)
 - [Kexec](kernel/kexec.md)
@@ -40,6 +46,10 @@
 - [MCE](kernel/mce.md)
 - [内核线程及 Stop Machine](kernel/stop_machine.md)
 - [CPU 热插拔](kernel/cpu_hotplug.md)
+- [段寻址](kernel/segmentation.md)
+- [基于作用域的资源管理](kernel/cleanup.md)
+- [cpumask](kernel/cpumask.md)
+- [一些内核配置](kernel/config.md)
 
 ## 锁
 - [锁的基本知识](kernel/lock/Lock-1.md)
@@ -57,6 +67,8 @@
 - [CFS - 1](kernel/sched/sched_cfs-1.md)
 - [实时调度](kernel/sched/sched_rt.md)
 - [实时调度负载均衡](kernel/sched/sched_rt_load_balance.md)
+- [EEVDF](kernel/sched/sched_eevdf.md)
+- [Deadline](kernel/sched/sched_dl.md)
 - [内核抢占](kernel/sched/sched_kernel_preempt.md)
 
 ## 内存管理
@@ -70,6 +82,8 @@
 - [缺页处理](kernel/mm/fault.md)
 - [Folio](kernel/mm/folio.md)
 - [Vmalloc](kernel/mm/vmalloc.md)
+- [Per-CPU](kernel/mm/percpu.md)
+- [异常修正表](kernel/mm/fixup.md)
 
 ## 网络
 - [Monitoring and Tuning the Linux Networking Stack: Receiving Data](kernel/networking/monitoring-tuning-linux-networking-stack-receiving-data.md)
@@ -106,3 +120,4 @@
 - [虚拟化异常](virtualization/kvm/exception.md)
 - [Posted Interrupt](virtualization/kvm/posted_interrupt.md)
 - [TDP MMU 缺页](virtualization/kvm/tdp_page_fault.md)
+- [Guest First Memory](virtualization/kvm/gmem.md)

@@ -4,7 +4,7 @@
 * Figure 12-1. Cache Structure of the Pentium 4 and Intel Xeon Processors
 ![Figure 12-1. Cache Structure of the Pentium 4 and Intel Xeon Processors](pic/f12-1-cache-p4-xeon.png)
 * Figure 12-2. Cache Structure of the Intel Core i7 Processors
-![Figure 12-2. Cache Structure of the Intel Core i7 Processors](pic/f12-1-cache-p4-xeon.png)
+![Figure 12-2. Cache Structure of the Intel Core i7 Processors](pic/f12-2-cache-i7.png)
 
 ## 12.3 Methods of Caching Available
 * 处理器允许系统内存的任何区域缓存在 L1、L2 和 L3 cache 中。
@@ -758,10 +758,10 @@ END
 `01`H | Write Combining (`WC`)
 `02`H | Reserved*
 `03`H | Reserved*
-`04`H | Write Through (WT)
-`05`H | Write Protected (WP)
-`06`H | Write Back (WB)
-`07`H | Uncached (UC-)
+`04`H | Write Through (`WT`)
+`05`H | Write Protected (`WP`)
+`06`H | Write Back (`WB`)
+`07`H | Uncached (`UC-`)
 `08`H - `FF`H | Reserved*
 
 * 注意：\* 使用这些编码将导致 general-protection 异常（`#GP`）。
@@ -805,7 +805,7 @@ PAT7    | UC
   * 对于在 `CPL` 为 `0` 时运行的软件，`IA32_PAT` MSR 是可读写的（分别使用 `RDMSR` 和 `WRMSR` 指令）。
 * Table 12-10 显示了 PAT 中允许的条目编码。尝试将未定义的内存类型编码写入 PAT 会导致生成 general-protection 异常（`#GP`）。
 * 操作系统负责确保 PAT 条目的更改以保持处理器 caches 和 translation lookaside buffers（TLB）一致性的方式发生。
-  * 这是通过遵循第 12.11.8 节“MTRR Considerations in MP Systems”中指定的过程来完成的，用于更改多处理器系统中的 MTRR 值。它需要特定的操作序列，其中包括刷新处理器 caches和 TLB。
+  * 这是通过遵循第 12.11.8 节“MTRR Considerations in MP Systems”中指定的过程来完成的，用于更改多处理器系统中的 MTRR 值。它需要特定的操作序列，其中包括刷新处理器 caches 和 TLB。
 * PAT 允许在页表中指定任何内存类型，因此可以将单个物理页映射到两个或多个不同的线性地址，每个线性地址具有不同的内存类型。
   * Intel 不支持这种做法，因为它可能会导致未定义的操作，从而导致系统故障（failure）。
   * 特别是，`WC` 页绝不能别名为 cacheable 页，因为 `WC` 写入可能不会检查处理器 caches。

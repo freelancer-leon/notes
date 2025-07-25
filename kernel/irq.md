@@ -26,7 +26,7 @@
   * 系统门（System Gate）：
     * Intel 陷阱门
     * DPL=3
-    * 关联到 4，5，128 号向量，因此`into`，`bound`，`int $0x80`指令可以在用户态使用。
+    * 关联到 4，5，128 号向量，因此`into`，`bound`，`int $0x80`指令可以在用户态使用。较新的内核这几个向量也改用系统中断门来实现了
   * 系统中断门（System Interrupt Gate）
     * Intel 中断门
     * DPL=3
