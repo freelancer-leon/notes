@@ -6,6 +6,13 @@
   * 它需要 BIOS 侧启用。如果缺少它，我们将回退到使用单 CPU 启动第二个内核。
 * [1] https://lore.kernel.org/all/13356251.uLZWGnKmhe@kreacher
 * 译注：关于 Multiprocessor Wakeup Structure 可以阅读 [TDX Guest 解析](tdx_guest.md) 中的 “多处理器启动” 章节。
+  * 私有内存转换成共享内存时增加一个页面计数，当发生 kexec 时，需要把共享内存转回为私有的，避免在新系统中当作私有内存来访问
+  * 确保存放未接受内存的 ACPI Nv 内存在 crash kernel 启动期间不被 zap 掉
+  * CPU offline 的时候 AP 进入假死状态用的不是 `hlt` 指令而是构造切换环节
+    * 给 E820 分配的内存、假死例程、`ResetVector` 在恒等映射页表中建立映射
+    * 设置页表和中断 `RFLAGS` 等
+    * 被 offline 的 CPU 跳转到 mailbox wakeup 结构里固件提供的 `ResetVector` 进入 TDVF，等待唤醒
+    * 发起 offline 的 CPU 发送 `TEST` mailbox 命令测试被 offline 的 CPU 是否 offlined，TDVF 将 mailbox 的 `Command` 域改为 `Noop(0)` 表示已接管
 
 ## [RFC] ACPI Code First ECR: Support for resetting the Multiprocessor Wakeup Mailbox
 
@@ -796,7 +803,7 @@ index 26fa47db5782..979891e97d83 100644
 * 在 kexec 的场景中，第二个内核不知道哪个内存已以这种方式转换。它只看到 `E820_TYPE_RAM`。以私有方式访问共享内存是致命的。
 * **批注**：个人推断，以不带 shared bit 的 *私有方式* 来访问 *共享页面*，理论上这样的 GPA 在 TDX module 维护的 SEPT 中没有映射，这会导致一次 VM Exit 到 host kernel。
   * KVM 如果用的是 guest memory 的实现，会发现缺页请求的是一个私有页面，与其所维护的内存属性还是“共享的”不一致，导致 EPT violation 并退出到 Qemu 去处理：
-  1. 如果页面对应的 memory slot 不允许私有，比如对应的是 PCI 的 BAR（通常由 Qemu 创建，默认是共享的），结果是 VM Exit，这很致命；
+  1. 如果页面对应的 memory slot 不允许私有，比如对应的是 PCI 的 BAR（通常由 Qemu 创建，默认是共享的），结果是 VM Exit，这很致命；可问题是，MMIO 的地址范围也不在旧内核的 E820 表里，也不会被 dump 啊
   2. 如果页面对应的 memory slot 允许私有，这会将该内存页转为私有 `kvm_vm_ioctl(..., KVM_SET_MEMORY_ATTRIBUTES, &attr)`，好像还好。
      * 可问题是，通常这些内存是打算用作 direct/stream DMA 的（通过 `MapGPA -> PUNCH_HOLE` 转为共享的），比如 SWIOTLB buffer。
      * 如果是快速切换场景，重启前以上共享页面会被转换回私有；
@@ -2097,7 +2104,7 @@ typedef union {
 } IA32_GDT;
 #pragma pack()
 ```
-* 新增 mailbox GDT 的描述机构 `MAILBOX_GDT`
+* 新增 mailbox GDT 的描述结构 `MAILBOX_GDT`
 * `MAILBOX_GDT_SIZE` 定义了 mailbox GDT 条目有 `5` 个
 ```cpp
 #define MAILBOX_GDT_SIZE (sizeof(IA32_GDT) * 5)
