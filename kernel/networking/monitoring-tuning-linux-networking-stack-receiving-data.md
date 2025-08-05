@@ -144,9 +144,10 @@ dev_proc_net_init()
 	 -> seq_open_net(inode, file, &dev_seq_ops, sizeof(struct seq_net_private))
 	  -> dev_seq_ops.show = dev_seq_show
 		 -> dev_seq_printf_stats()
-		  -> net/core/dev.c::dev_get_stats()
-			 -> drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
-			   ::ixgbe_netdev_ops.ndo_get_stats64 = ixgbe_get_stats64
+         //net/core/dev.c
+		  -> dev_get_stats()
+			      //drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
+			      ixgbe_netdev_ops.ndo_get_stats64 = ixgbe_get_stats64
 				 -> ixgbe_get_stats64()
 ```
 
@@ -180,7 +181,6 @@ struct rtnl_link_stats64 *dev_get_stats(struct net_device *dev,
         return storage;
 }
 EXPORT_SYMBOL(dev_get_stats);
-/**/```
 ```
 
 ### 调节网络设备
@@ -222,8 +222,8 @@ subsys_initcall(net_dev_init);
 ### 数据到达
 
 #### 中断处理函数
-
-* drivers/net/ethernet/intel/igb/igb_main.c
+* 例如 IGB 网卡的 MSI-X 中断处理函数 `igb_msix_ring()`
+  * drivers/net/ethernet/intel/igb/igb_main.c
 ```c
 static irqreturn_t igb_msix_ring(int irq, void *data)
 {
@@ -237,10 +237,61 @@ static irqreturn_t igb_msix_ring(int irq, void *data)
   return IRQ_HANDLED;
 }
 ```
-* 如果NAPI处理循环没有激活，`napi_schedule`负责唤醒它。
-* NAPI处理循环在softirq中执行，而不是由中断处理函数执行。
+* 将动态计算好的中断节流值（ITR）写入硬件寄存器，从而控制中断产生的频率
+* 如果 NAPI 处理循环没有激活，`napi_schedule`负责唤醒它。
+* NAPI 处理循环在 softirq 中执行，而不是由中断处理函数执行。
 
-#### NAPI和`napi_schedule`
+##### ITR（Interrupt Throttling Register）机制
+
+```mermaid
+sequenceDiagram
+    硬件->>+驱动: 数据包到达触发中断
+    驱动->>+ITR控制: igb_msix_ring()
+    ITR控制->>寄存器: igb_write_itr()写入新值
+    寄存器-->>硬件: 更新中断间隔
+    驱动->>NAPI: napi_schedule()
+    驱动-->>硬件: 中断完成处理
+    NAPI-->>驱动: 处理数据包
+    loop 每个数据包
+        NAPI->>统计: 记录包数和字节数
+    end
+    NAPI->>算法: igb_update_itr()计算新ITR
+    算法->>ITR控制: 存储新值(q_vector->itr_val)
+```
+
+* `igb_write_itr()` 的主要功能是将动态计算的中断节流值（ITR）写入硬件寄存器，从而控制中断产生的频率。这是一种优化手段，旨在平衡网络处理中的 CPU 利用率和数据包处理延迟。
+* 在 igb 网卡驱动中，`igb_write_itr()` 函数的作用是更新中断节流寄存器（ITR）的值，以调整中断频率。
+  * ITR 是 Intel 网卡中用于控制中断触发速率的寄存器。
+  * 通过动态调整 ITR 的值，可以在高负载时降低中断频率以减少 CPU 开销，在低负载时提高中断频率以降低延迟。
+* 具体来说，`igb_write_itr()` 函数将计算好的 ITR 值写入到硬件寄存器中。这个计算是在每次中断处理时根据中断间隔时间动态进行的。
+
+```c
+igb_poll()
+-> igb_clean_rx_irq(q_vector, budget)
+   if (likely(napi_complete_done(napi, work_done)))
+   -> igb_ring_irq_enable(q_vector)
+      -> igb_set_itr(q_vector)
+         -> igb_update_itr(q_vector, &q_vector->tx);
+         -> igb_update_itr(q_vector, &q_vector->rx);
+```
+
+* ITR 值的计算通常是在中断处理的下半部分（即在 NAPI 轮询函数中）进行的。
+  * 计算基于两次中断之间的时间间隔。如果间隔时间短，说明中断频繁，则增加 ITR 值（降低中断频率）；
+  * 如果间隔时间长，说明中断较少，则减小 ITR 值（提高中断频率，降低延迟）。
+* **ITR 寄存器**：每个中断向量（`q_vector`）都有自己独立的 ITR 寄存器，因此可以为不同的队列设置不同的中断频率。
+* **动态调整**：ITR 值不是固定的，而是根据网络负载动态调整，以达到性能与延迟的平衡。
+* **写入时机**：在中断处理函数开始时写入，确保下一次中断使用新的节流设置。
+
+##### 为什么在中断处理函数开头写 ITR？
+* 因为 ITR 的值是在上一个中断处理后的 NAPI 轮询期间计算好的，所以在当前中断处理开始时，需要将计算好的 ITR 值写入硬件寄存器，以便影响下一个中断的触发时间。
+* 硬件级中断节流：Intel 网卡特有的中断频率控制器
+  * 计算单位：以 `256ns` 为基本单位（`ITR=1 ≈ 256ns`）
+  * 公式：`实际间隔 = ITR_value × 256 ns`
+  * 典型范围：
+    * 最低延迟：ITR=1 (256ns, ~3.9M interrupts/sec)
+    * 最高节流：ITR=0xFFFF (~16ms)
+
+#### NAPI 和 `napi_schedule`
 * NAPI特地为了收取网络数据，但无需由NIC产生的中断来通知数据已经准备好了，而存在。
 * NAPI是关闭的，直到第一个包到达，NIC发起一个中断的那一个点，然后NAPI被使能并且开始。
 * NAPI可以被关闭，在它再次启动之前需要一个硬件中断唤醒。
@@ -315,6 +366,8 @@ EXPORT_SYMBOL(__napi_schedule);
   2. 检查逝去的时间
 * net/core/dev.c
 ```c
+int budget = READ_ONCE(net_hotdata.netdev_budget); //默认 net.core.netdev_budget=300
+...
 while (!list_empty(&sd->poll_list)) {
     struct napi_struct *n;
     int work, weight;
@@ -325,15 +378,43 @@ while (!list_empty(&sd->poll_list)) {
      */
     if (unlikely(budget <= 0 || time_after_eq(jiffies, time_limit)))
       goto softnet_break;
-/*...__`*/
+/*...*/
 ```
-* `budget`是在每个注册到这个CPU的可用的NAPI结构所消耗的所有可用budget。
-* 如果你没有足够的CPU去分布处理你网卡中断，你可以考虑增加`net_rx_action`里的`budget`，让每个CPU处理更多的包。
-* 增加budget会增加CPU的使用量（特别是`top`程序的`sitime`或`si`，或其他程序），但应该会减小延迟，因为数据会被更迅速地处理。
+* `budget`是在每个注册到这个 CPU 的可用的 NAPI 结构所消耗的所有可用 budget。
+* 如果你没有足够的 CPU 去分布处理你网卡中断，你可以考虑增加`net_rx_action`里的`budget`，让每个 CPU 处理更多的包。
+* 增加 budget 会增加 CPU 的使用量（特别是`top`程序的`sitime`或`si`，或其他程序），但应该会减小延迟，因为数据会被更迅速地处理。
 
 > **Note**: the CPU will still be bounded by a time limit of 2 jiffies, regardless of the assigned budget.
 
-#### NAPI`poll`函数和weight
+#### NAPI `poll` 函数和 `weight`
+* 如果驱动用 `netif_napi_add()` 接口去添加 NAPI 结构的话，默认用的 `weight` 是 `NAPI_POLL_WEIGHT(64)`
+```c
+static int ixgbe_alloc_q_vector(struct ixgbe_adapter *adapter,
+                int v_count, int v_idx,
+                int txr_count, int txr_idx,
+                int xdp_count, int xdp_idx,
+                int rxr_count, int rxr_idx)
+{
+...
+    /* initialize NAPI */
+    netif_napi_add(adapter->netdev, &q_vector->napi, ixgbe_poll);
+...
+}
+```
+* include/linux/netdevice.h
+```c
+/* Default NAPI poll() weight
+ * Device drivers are strongly advised to not use bigger value
+ */
+#define NAPI_POLL_WEIGHT 64
+
+static inline void
+netif_napi_add(struct net_device *dev, struct napi_struct *napi,
+           int (*poll)(struct napi_struct *, int))
+{
+    netif_napi_add_weight(dev, napi, poll, NAPI_POLL_WEIGHT);
+}
+```
 
 #### NAPI/网络设备驱动契约
 * NAPI子系统与设备驱动之间一个重要的约定——关于关闭NAPI的需求。

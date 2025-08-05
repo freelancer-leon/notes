@@ -22,6 +22,9 @@
   * 所有从本机离开的 IP 包（包括`FORWARD`的包）都会到达这个 hook
 
 ## 注册和调用Hooks
+
+![Hooks](pic/iptables_ov.webp)
+
 * net/ipv4/ip_input.c
 ```c
 int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
@@ -201,6 +204,10 @@ NF_HOOK(uint8_t pf, unsigned int hook, struct net *net, struct sock *sk, struct 
 * **QUEUE** 把包通过`nf_queue`功能传给用户空间。因此一个用户空间的程序将会为我们处理该包。
 * **STOLEN** 为了临时不让一个包继续通过协议栈，悄悄的持有一个包直到某事发生。这通常用于收集 IP 包分片。
 * **REPEAT** 强制该包重新进入 hook
+
+## Rules
+
+![Rules](pic/iptable_rules.webp)
 
 ## References
 - [Linux netfilter Hacking HOWTO](http://www.netfilter.org/documentation/HOWTO//netfilter-hacking-HOWTO.txt)

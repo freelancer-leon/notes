@@ -8,10 +8,10 @@
 * 译注：关于 Multiprocessor Wakeup Structure 可以阅读 [TDX Guest 解析](tdx_guest.md) 中的 “多处理器启动” 章节。
   * 私有内存转换成共享内存时增加一个页面计数，当发生 kexec 时，需要把共享内存转回为私有的，避免在新系统中当作私有内存来访问
   * 确保存放未接受内存的 ACPI Nv 内存在 crash kernel 启动期间不被 zap 掉
-  * CPU offline 的时候 AP 进入假死状态用的不是 `hlt` 指令而是构造切换环节
+  * CPU offline 的时候 AP 进入假死状态用的不是 `hlt` 指令而是构造切换环境
     * 给 E820 分配的内存、假死例程、`ResetVector` 在恒等映射页表中建立映射
     * 设置页表和中断 `RFLAGS` 等
-    * 被 offline 的 CPU 跳转到 mailbox wakeup 结构里固件提供的 `ResetVector` 进入 TDVF，等待唤醒
+    * 被 offline 的 CPU 跳转到 mailbox wakeup 结构里 **固件提供的 `ResetVector`** 进入 TDVF，等待唤醒
     * 发起 offline 的 CPU 发送 `TEST` mailbox 命令测试被 offline 的 CPU 是否 offlined，TDVF 将 mailbox 的 `Command` 域改为 `Noop(0)` 表示已接管
 
 ## [RFC] ACPI Code First ECR: Support for resetting the Multiprocessor Wakeup Mailbox

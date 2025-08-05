@@ -7,11 +7,13 @@
 ## Listen
 * 当连接的一端收到`SYN`，回复`SYN/ACK`后，状态由`LISTEN`变为`SYN RECEIVED`
 * 当收到连接的另一端回的`ACK`后，状态才变为`ESTABLISHED`，此时应用程序调用`accept()`才会返回这个连接。
-* [`listen()`](https://linux.die.net/man/2/listen)系统调用的`backlog`参数所指的队列长度指的是什么？
-	* 监听 socket 其实是有两个队列：
-		* 完全建立连接，等待被`accept`的socket的队列，长度由`listen()`的`backlog`参数指定，应用程序来设定；
-		* 未完成的连接请求队列，长度由`/proc/sys/net/ipv4/tcp_max_syn_backlog`指定，系统级的设定。
-	* `backlog`能支持的最大队列长度受`/proc/sys/net/core/somaxconn`的限制，超过限制会被悄然截断。
+
+### [`listen()`](https://linux.die.net/man/2/listen)系统调用的`backlog`参数所指的队列长度指的是什么？
+* 监听 socket 其实是有两个队列：
+  * 完全建立连接，等待被`accept`的socket的队列，长度由`listen()`的`backlog`参数指定，应用程序来设定；
+    * `backlog`能支持的最大队列长度受`/proc/sys/net/core/somaxconn`的限制，超过限制会被悄然截断。
+  * 未完成的连接请求队列，长度由`/proc/sys/net/ipv4/tcp_max_syn_backlog`指定，系统级的设定。
+    * 具体到某个 socket 则是由 `min(backlog, somaxconn, tcp_max_syn_backlog) + 1` 再上取整到 2 的幂次，但最小不能小于 `16`。
 
 ### 当 *接受队列* 满了，还有连接收到对端的 `ACK` 而需从 *未完成队列* 移入时的行为
 * 比如说，服务器端没有及时调用`accept()`消耗掉 *接收队列* 里的连接，又有新的连接连入并回复`ACK`时。
@@ -258,3 +260,4 @@
 * [Linux之TCPIP内核参数优化](http://www.cnblogs.com/fczjuever/archive/2013/04/17/3026694.html)
 * [TCP/IP重传超时--RTO](http://www.orczhou.com/index.php/2011/10/tcpip-protocol-start-rto/)
 * [TCP的超时与重传](http://blog.csdn.net/sjin_1314/article/details/10254779)
+* [为什么服务端程序都需要先 listen 一下？](https://mp.weixin.qq.com/s/hv2tmtVpxhVxr6X-RNWBsQ)
