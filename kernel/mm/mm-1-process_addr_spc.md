@@ -221,23 +221,23 @@ context_switch(struct rq *rq, struct task_struct *prev,
 {
     struct mm_struct *mm, *oldmm;
 ...
-    mm = next->mm;           /*mm指向将被调度的进程的内存描述符*/
-    oldmm = prev->active_mm; /*oldmm指向前一进程（即当前进程）的active_mm*/
+    mm = next->mm;           //mm 指向将被调度的进程的内存描述符
+    oldmm = prev->active_mm; //oldmm 指向前一进程（即当前进程）的 active_mm
 ...
-    if (!mm) {  /*如果被调度进程是内核线程*/
+    if (!mm) {  //如果被调度进程是内核线程，user/kernel -> kernel
       /*保留前一进程的地址空间，这样在需要时内核线程可以使用前一进程的页表。
         内核线程不访问用户空间的内存，仅仅使用地址空间中和内核内存相关的信息，
         这些信息的含义和普通进程完全相同。*/
-        next->active_mm = oldmm;
+        next->active_mm = oldmm; //即便是 kernel -> kernel 也会转移 active_mm
         atomic_inc(&oldmm->mm_count);
         enter_lazy_tlb(oldmm, next);
-    } else
-        switch_mm(oldmm, mm, next);  /*体系架构相关的实现*/
+    } else //user/kernel/ -> user
+        switch_mm(oldmm, mm, next);  //体系架构相关的实现
 
-    if (!prev->mm) {  /*如果前一进程（即当前进程）是内核线程*/
-      /*这里为什么active_mm置为空？ active_mm != mm 是类似flush TLB或mmdrop()判断条件。
+    if (!prev->mm) {  //如果前一进程（即当前进程）是内核线程，kernel -> user/kernel
+      /*这里为什么active_mm置为空？active_mm != mm 是类似flush TLB或mmdrop()判断条件。
         下次该线程被调度回来时，该空值会被上面的赋值语句被直接覆盖掉。*/
-        prev->active_mm = NULL;
+        prev->active_mm = NULL; //上面 kernel -> kernel 已经将 active_mm 转移走了，这里置空没问题的
         rq->prev_mm = oldmm;
     }    
 ...

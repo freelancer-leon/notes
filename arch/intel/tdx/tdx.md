@@ -195,8 +195,8 @@
 * 使用 VMX-APIC 虚拟化和虚拟中断架构将有效地将中断传递到 TD，并避免修改 TD 中的操作系统以模拟 APIC。
 * CPU 的目标是使用虚拟 APIC 页面和该 TD 的 VMCS 中的相关状态来跟踪虚拟 APIC 的状态。
 * 虚拟 APIC 页面和 VMCS 将由 TDX module 在 TD 创建时使用 TD 私钥初始化。
-* VMX 后置中断处理架构允许 VMM 或设备通过 *CPU 硬件响应通知中断处理的后置中断描述符* 将虚拟中断直接传递给 TD。
-* 后置中断描述符中的虚拟中断通过 APIC 传给 TD。
+* VMX-posted-interrupts-processing 架构允许 VMM 或设备通过 *CPU 硬件响应通知中断处理的 posted-interrupt descriptor* 将虚拟中断直接传递给 TD。
+* Posted-interrupt descriptor 中的虚拟中断通过 APIC 传给 TD。
 * VMX 体系结构得到了增强，以阻止将异常向量作为虚拟中断传递给 TD 的任何尝试。
 * TD 中断虚拟化架构可以在不违反 TD 假设（如中断优先级和屏蔽）的情况下将中断传递到 TD。
 * 按 VMX 架构的设计，禁止将异常注入到 TD。

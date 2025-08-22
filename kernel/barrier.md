@@ -21,7 +21,7 @@
 * 即便是用`volatile`声明来防止编译器对变量操作的重新排序，仍然有可能会因为处理器优化 pipeline 的原因对指令重新排序，因此内存屏障仍然是很重要的。
 * 对于 SMP，`smp_rmb()` , `smp_wmb()` , `smp_mb()` 和 `smp_read_barrier_depends()`是常用的 *内存屏障*（如 x86 的`mfence`指令）；对于 UP，则被定义为 *编译器屏障*，如 gcc 的`#define barrier() __asm__ __volatile__("": : :"memory")`。
 * *内存屏障* 可以完成 *编译器屏障* 的功能，但编译器屏障要比处理器屏障 **轻量**（它实际上是轻快的）得多。
-* 实际上，编译器屏障几乎是空闲的，因为它只防止编译器可能的重排指令。
+* 实际上，编译器屏障几乎是空的，因为它只防止编译器可能的重排指令。
 * 不同体系架构，屏障的实际效果差别很大。如 x86 不会打乱存储，`wmb()`就什么也不做。
 * 为最坏的情况（即排序能力最弱的处理器）使用恰当的内存屏障，代码才能在编译时执行针对体系结构的优化。
 
@@ -31,7 +31,7 @@ Barrier   | Description
 ----------|-------------
 rmb()     | Prevents loads from being reordered across the barrier
 read_barrier_depends() | Prevents data-dependent loads from being reordered across the barrier
-wmb()     | Prevents stores from being reordered across thebarrier
+wmb()     | Prevents stores from being reordered across the barrier
 mb()      | Prevents load or stores from being reordered across the barrier
 smp_rmb() | Provides an rmb() on SMP, and on UP provides a barrier()
 smp_read_barrier_depends() | Provides a read_barrier_depends() on SMP, and provides a barrier() on UP

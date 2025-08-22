@@ -345,13 +345,13 @@
 * 如果每个问题的答案都是肯定的，则 TD 可以将 TDI 接受到其 TCB 中。
 
 ### DMA 子系统
-* 目前，由于第 2 章中描述的限制，DMA buffers 是从 TD 中的共享内存分配的，而 TDI 的 DMA buffers 需要从私有内存分配。
-* 此外，TD 需要使用 Intel TDX module 提供的功能明确接受或删除 VMM 完成的映射。
+* 目前，由于第 2 章中描述的限制，DMA buffers 是从 TD 中的共享内存分配的，而 TDI 的 DMA buffers 需要从 **私有内存分配**。
+* 此外，TD 需要使用 Intel TDX module 提供的功能 **明确接受或删除** VMM 完成的映射。
   * 将 TDI 分配给 TD 需要 VMM 在 IOMMU 中为 DMA 重新映射设置可信的翻译。
   * 一旦 TD 接受映射，映射就会生效。
 
 ### MMIO 子系统
-* 同样，TD 需要接受来自 TDISP 消息 - `GET_DEVICE_INTERFACE_REPORT` 的报告中的所有 `MMIO_RANGE` 中描述的所有设备 MMIO 页面。
+* 同样，TD 需要 **接受** 来自 TDISP 消息 - `GET_DEVICE_INTERFACE_REPORT` 的报告中的所有 `MMIO_RANGE` 中描述的所有设备 MMIO 页面。
 
 ## Attestation
 * 认证实施不在本白皮书的讨论范围内。

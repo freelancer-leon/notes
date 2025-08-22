@@ -220,10 +220,10 @@ Bit 位置 | 寄存器描述 | 属性
   * 设备和 host 转换代理（translation agent，TA）使用 `T` bit 来提供对 TVM 分配的内存和内存映射 I/O 寄存器的访问控制。
 * `T` bit 必须仅按照 TDISP 的定义使用。
 * DSM 提供以下功能：
-1. 设备身份认证和度量报告。
-2. 配置设备中的 IDE 加密密钥。
-3. 设备接口管理，用于锁定 TDI 配置、报告 TDI 配置、连接和从 TVM 分离 TDI。
-4. 实施访问控制和安全机制，将 TVM 提供的数据与 TVM 的 TCB 中不存在的实体隔离。
+1. 设备 **身份认证** 和 **度量报告**。
+2. **配置** 设备中的 IDE 加密 **密钥**。
+3. 设备接口 **管理**，用于锁定 TDI 配置、报告 TDI 配置、连接和从 TVM 分离 TDI。
+4. 实施访问控制和安全机制，将 TVM 提供的数据与 TVM 的 TCB 中不存在的实体 **隔离**。
 * TSM 提供以下功能：
 1. 提供 VMM 接口，以便将内存、CPU 和 TDI 资源分配给 TVM。
 2. 实现安全机制和访问控制（例如 IOMMU 翻译表等），以保护 TVM 数据和 host 中的执行状态的机密性和完整性，防止 TVM 的 TCB 之外的实体访问。
@@ -966,7 +966,7 @@ INVALID_DEVICE_CONFIGURATION | `0104` | 设备配置无效/不受支持 | 保留
   * 设备必须支持 Root Complex 和设备之间的 selective IDE Stream。
   * RCiEP 可能不需要使用 IDE 来保护事务。
 * 必须保护设备之间的 Peer-to-peer links，以避免机密性和完整性的损失。
-  * Peer-to-peer 必须使用 IDE 来保护通信。
+  * ==Peer-to-peer 必须使用 IDE 来保护通信==。
   * 必须使用互连特定扩展来保护其他类型的互连，以便它们提供等效安全性来解决 IDE 中概述的威胁模型。
 * 每个 IDE Sub-Stream 的对称的 stream 加密密钥和 IV 都是秘密的，泄露这些密钥会破坏解决方案的安全性。
   * 设备必须实施足够的安全措施，以防止泄漏静态和使用中的加密密钥。
@@ -1016,7 +1016,7 @@ INVALID_DEVICE_CONFIGURATION | `0104` | 设备配置无效/不受支持 | 保留
 * 在 `RUN` 中的接口上收到一个 poisoned 的 TLP 表示发生了无法纠正的数据完整性错误。
   * 收到此类 TLP 必须将接口从 `RUN` 转换为 `ERROR`，以防止不良数据的消费和传播。
   * 设备应在其内部数据 buffers 和 caches 上实施适当的保护方案（如奇偶校验或 ECC），以检测数据完整性错误。
-  * 如果检测到无法纠正的数据完整性错误，则受影响的接口必须从 `CONFIG_LOCKED/RUN` 转换为 `ERROR`，并根据需要向请求者发出 poison signale。
+  * 如果检测到无法纠正的数据完整性错误，则受影响的接口必须从 `CONFIG_LOCKED/RUN` 转换为 `ERROR`，并根据需要向请求者发出 poison signal。
   * 设备可以提供一种机制来报告和记录此类错误的发生情况。
   * 设备必须清理（scrub）和清除此类日志和报告寄存器（例如 syndrome）中可能泄露机密数据的信息。
 
@@ -1109,7 +1109,7 @@ INVALID_DEVICE_CONFIGURATION | `0104` | 设备配置无效/不受支持 | 保留
 
 ### 11.5.4 设备绑定
 * TVM 使用 [SPDM] 指定的身份验证和度量报告协议来确定托管 TDI 的设备报告的身份和度量是否可接受，然后再将设备纳入其 TCB。
-* TVM 需要进一步确定经过身份验证的设备当前是否使用 IDE stream（如果适用）和 TSM 建立的 SPDM 会话绑定到主机。
+* TVM 需要进一步确定经过身份验证的设备当前是否使用 IDE stream（如果适用）和 TSM 建立的 SPDM 会话绑定到 host。
 * TSM 必须提供可信机制来确定：
 1. TVM 经过身份验证的设备中的 TSM 和 DSM 之间的 SPDM 会话是否处于活动状态。
 2. TSM 已为该 TDI 使用的 IDE stream 建立了 IDE 密钥。
