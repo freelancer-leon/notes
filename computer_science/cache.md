@@ -147,7 +147,7 @@
   * 每个页表条目包含 3 bit 的索引，指向一个 PAT 条目，所以系统软件通过控制页表可以用一个非常细的粒度来指定 cache 的行为
 
 ## 查询 Cache 的信息
-### x86 平台
+### `cpuid` 命令查询
 * 在 x86 平台上可以用 `CPUID - 0x4` 来查询 cache 的信息
 * 当 `CPUID` 执行时，`EAX` 设置为 `0x04`，`ECX` 包含索引值，处理器将返回编码数据，该数据描述一组确定性 cache 参数（针对与 `ECX` 中的输入关联的 cache 级别）。有效索引值从 `0` 开始。
 * 软件可以从索引值 `0` 开始枚举 cache 层次结构中每个级别的确定性 cache 参数，直到参数报告与缓存类型字段关联的值为 `0`。
@@ -308,6 +308,42 @@ CPU:
 CPU:
       --- cache 4 ---
       cache type                         = no more caches (0)
+```
+
+### sysfs 文件中的 cache 信息
+* 本质上也是根据的 `cpuid` 指令的输出收集 cache 的信息
+* `/sys/devices/system/cpu/cpuX/cache/indexY` 下有以下文件
+  * `X` 对应到不同的 CPU
+  * `Y` 对应到不同的 cache，如 L1i、L1d、L2、L3 
+```c
+coherency_line_size  level           physical_line_partition  shared_cpu_map  type    ways_of_associativity
+id                   number_of_sets  shared_cpu_list          size            uevent
+```
+* 这些文件是由 drivers/base/cacheinfo.c 实现的
+```c
+//drivers/base/cacheinfo.c
+device_initcall(cacheinfo_sysfs_init)
+-> cpuhp_setup_state(CPUHP_AP_BASE_CACHEINFO_ONLINE, "base/cacheinfo:online", cacheinfo_cpu_online, cacheinfo_cpu_pre_down)
+//drivers/base/cacheinfo.c
+cacheinfo_cpu_online()
+-> detect_cache_attributes()
+      //arch/x86/kernel/cpu/cacheinfo.c
+   -> populate_cache_leaves(cpu)
+         for (idx = 0; idx < this_cpu_ci->num_leaves; idx++)
+         -> fill_cpuid4_info(idx, &id4)
+```
+* `fill_cpuid4_info()` 根据不同的 CPU 的用不同的 cpuid leaves 去获取 cache 的信息
+  * Intel 的是之前列举的 `0x4`；AMD 在支持拓展拓扑的平台或 Hygon 用 `0x8000001d`，否则用 `0x80000005` 和 `0x80000006`
+  * arch/x86/kernel/cpu/cacheinfo.c
+```c
+static int fill_cpuid4_info(int index, struct _cpuid4_info *id4)
+{
+    u8 cpu_vendor = boot_cpu_data.x86_vendor;
+
+    return (cpu_vendor == X86_VENDOR_AMD || cpu_vendor == X86_VENDOR_HYGON) ?
+        amd_fill_cpuid4_info(index, id4) :
+        intel_fill_cpuid4_info(index, id4);
+}
 ```
 
 ## References
