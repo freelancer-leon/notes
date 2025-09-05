@@ -72,7 +72,8 @@ TDVPX | Trust Domain Virtual Processor Extension | 作为一个 TDVPS 的 non-ro
   * Secure EPT 无法被除 TDX module 外的任何其他软件直接访问，也不能被任何设备访问
   * Secure EPT 可以由 host VMM 用 TDX 功能间接管理
   * TDX module 帮助确保 Secure EPT 安全属性被保持
-  * 在翻译的最后，CPU 设置 HPA 中的 HKID bit 为指派给该 TD 的 HKID
+  * **在翻译的最后，CPU 设置 HPA 中的 HKID bit 为指派给该 TD 的 HKID**
+    * **译注**：TDX module 的代码里是没有把 HKID 嵌入 SEPT 页表项里的操作的，这个动作是由硬件完成的
 
 ![Secure EPT Concept](pic/tdx_sept.png)
 

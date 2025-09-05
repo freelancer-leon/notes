@@ -149,7 +149,17 @@
   * 在需要时，硬件会自动执行 TLB 失效操作，确保系统中所有处理器都能获取到更新后的 RMP 表项信息，避免因 cache 不一致导致访问控制失效。
 
 **译注**：
-* RMP 表类似 TDX 中的 PAMT 表，但 TDX 并不是在页表遍历后去检查 PAMT 表，而是在 add page/augment page 的时候通过 PAMT 表检查新增页面的合法性，不合法的页面就没机会加入 PAMT 表，从而避免了 SEV-SNP 在页表遍历后的查 RMP 表的过程。由于非法页面始终无法加入 SEPT，对该 GPA 的访问总是会触发 EPT Violation。
+* RMP 表类似 TDX 中的 PAMT 表，但 TDX 并不是在页表遍历后去检查 PAMT 表，而是在 add page/augment page 的时候通过 PAMT 表检查新增页面的合法性，不合法的页面就没机会加入 PAMT 表，从而避免了 SEV-SNP 在页表遍历后的查 RMP 表的过程。由于非法页面始终无法加入 SEPT，TD VM 对该 GPA 的访问总是会触发 EPT Violation。
+
+私有内存          | SEV-SNP | 结果               | TDX    | 结果
+-----------------|---------|--------------------|--------|-----------------
+VMM 读            | 不阻止   | 返回密文           | 不阻止 | 返回零数据（abort page 语义）
+VMM 写            | 阻止     | 触发 `#PF`        | 不阻止 | 污染数据，TD VM 消费时引发 `#MC`
+TVM 读写其他 TVM  | 阻止     | 触发 VMEXIT(`NPF`) | 不可能 | PAMT 和 SEPT 都由 TDX module 管理
+
+* TDX 对于 TD VM 读取其他 TD VM 的私有内存，即便能绕过 PAMT 和 SEPT 被 TDX module 管理这一层，Ci 逻辑也能确保返回零数据，并且 poison 页面，造成 TD VM 下次消费时引发 `#MC`
+* TDX 的设计最大化利用了原有的内存 ECC 检查和生成 `#MC` 的硬件逻辑，然而系统软件上需要增加对这种新增的 `#MC` 的复杂处理
+* SEV-NP 的 RMP 检查增加了硬件/微码在 PMH 遍历页表后的处理逻辑，然而系统软件上的改动较小
 
 ## 页面验证
 
@@ -331,7 +341,7 @@ CONTEXT       | 页面不可变且用于上下文信息 | 上下文页面（Cont
   * 只有与预期启动摘要匹配的虚拟机，才能与该 IDB 关联；且 IDB 会作为证明报告的一部分被纳入其中。
 * SEV 和 SEV-ES 仅支持在 guest 启动阶段进行证明，而 SEV-SNP 则支持更灵活的证明机制。
   * Guest 虚拟机可在任何时候通过一条受保护的路径，向 AMD-SP 请求生成证明报告。
-  * 在 SEV-SNP 虚拟机启动过程中，AMD-SP 会创建一组私有通信密钥，guest 可通过这些密钥与 AMD-SP 直接通信。
+  * 在 SEV-SNP 虚拟机启动过程中，AMD-SP 会创建一组私有通信密钥，guest 可通过这些密钥与 AMD-SP 直接通信（**译注**：VMPCK）。
   * 借助这条通信路径，guest 不仅能请求证明报告，还能申请加密密钥等其他资源。
 
 ![SEV-SNP Attestation](pic/sev-snp_attest.png)
