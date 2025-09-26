@@ -256,6 +256,9 @@ CONTEXT       | 页面不可变且用于上下文信息 | 上下文页面（Cont
   * guest 管理的页表（与活跃的 vCPU 对应）
   * 嵌套页表（由 hypervisor 管理）
   * RMP 表（由特权级别更高的 VMPL 管理）。
+* **译注**
+  * VMPL 在 VMSA 中设置
+  * 只有 VMPL0 可以设置 VMSA 属性，用于运行 vCPU
 
 ![VMPLs](pic/vmpls.png)
 
@@ -327,6 +330,9 @@ CONTEXT       | 页面不可变且用于上下文信息 | 上下文页面（Cont
 * 而在 SEV-SNP 中，这一校验机制得到增强，具备了强密码学安全性。具体而言，SEV-SNP 会将所有 TCB 组件的版本号与一个名为 “**芯片背书密钥（Chip Endorsement Key）**” 的熔丝秘密（fused secret）相结合，生成 “**版本化芯片背书密钥（Versioned Chip Endorsement Key，VCEK）**”。
   * VCEK 是一种椭圆曲线数字签名算法（ECDSA）私钥，对每一块运行特定 TCB 版本的 AMD 芯片而言，其 VCEK 都是唯一的。
   * VCEK 的生成过程采用了密码学哈希函数，因此某个特定的 TCB 版本无法伪装成更新的 TCB 版本。
+
+![lss-snp-attestation.pdf](pic/vcek.png)
+
 * VCEK 具有多种用途，其中包括为 *证明报告（attestation reports）* 进行签名。
 
 ## 虚拟机启动与证明（VM Launch & Attestation）
@@ -418,3 +424,12 @@ CONTEXT       | 页面不可变且用于上下文信息 | 上下文页面（Cont
   * 与早期的 SEV 和 SEV-ES 特性类似，这些功能设计为在 guest OS 层面启用，这意味着无需对虚拟机内部的应用程序进行任何修改。
 * 在现代云计算环境中，虚拟机隔离是一项具有挑战性的任务。SEV-SNP 是首个支持为隔离虚拟机同时提供机密性与完整性保护的 x86 架构，能够为各类工作负载实现更安全的云计算。
 * AMD 认为，安全云计算是未来数据中心的关键工作负载，而 SEV-SNP 正是迈向这一目标的重要一步。
+
+## 译注：信息总结
+### RMP 表中的信息
+* **SPA**：系统物理地址，即 GPA，每个在 RMP 中对应一个表项（索引）
+* **Validated bit**：已验证位
+* **Page States**：页面状态，Hv/guest(?)/FW/Swap/Metadata/Context，见表 3
+* **GPA & ASID**：映射到当前 SPA 的 GPA 和 ASID
+* **VMLnRWsXuX**：页面在不同 VML 上的可读、可写、超级用户模式可执行和用户模式可执行
+* **Page Size**：页面大小
