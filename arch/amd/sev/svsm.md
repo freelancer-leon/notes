@@ -182,7 +182,7 @@
 
 调用 ID | 第一版本支持 | 名字            | 功能
 --------|------------|-----------------|-----------------
-0       | 1 | SVSM_CORE_REMAP_CA       | 重映射 SVSM Calling Area 到一个新的 gPA.
+0       | 1 | SVSM_CORE_REMAP_CA       | 重映射 SVSM Calling Area 到一个新的 gPA
 1       | 1 | SVSM_CORE_PVALIDATE      | 执行 `PVALIDATE`
 2       | 1 | SVSM_CORE_CREATE_VCPU    | 创建一个新 vCPU
 3       | 1 | SVSM_CORE_DELETE_VCPU    | 删除一个 vCPU
@@ -347,3 +347,88 @@
 0x000   | 2         | 列表中的条目数
 0x002   | 6         | 未使用
 0x008   | 8 x 条目数 | 不再使用的 `4 KB` 页面的 gPA 值列表
+
+* 返回的条目最大数量受到限制，以确保返回的列表不会跨越 `4KB` 边界。
+  * 如果参数页的对齐方式导致没有空间容纳任何条目（即参数页的 gPA 对齐到 `4KB` 边界加 `0xFF8` 字节的位置），调用将返回 `SVSM_ERR_INVALID_PARAMETER`。
+  * 如果没有可收回的内存，条目数量将为 `0`。列表末尾之外的未使用条目不会被清零。
+* SVSM 必须对所有待收回的内存执行 `RMPADJUST` 指令，以授予发起请求的 vCPU 所属 VMPL 以及所有权限更高的 VMPL（数值小于或等于请求方 VMPL）完全访问权限。
+* 调用完成后，SVSM 将不再访问这些页面，guest 可将其重新用于任何用途。
+* 启动 vCPU 的调用区域（Calling Area）中的 `SVSM_MEM_AVAILABLE` 标志可能会被更新，以指示是否还有额外内存可收回。
+* 此调用绝不会返回 `SVSM_ERR_INCOMPLETE`（处理未完成错误）。
+  * 如果 SVSM 无法收回所有可用内存，调用必须以 `SVSM_SUCCESS`（成功）状态完成，且启动 vCPU 的调用区域中的 `SVSM_MEM_AVAILABLE` 标志将指示仍有额外内存可收回。
+
+## 6.7 SVSM_CORE_QUERY_PROTOCOL 调用
+* 此调用用于确定特定协议的可用性。
+  * 寄存器 `RCX` 的 bits `[63:32]` 包含请求的协议编号。
+  * 寄存器 `RCX` 的 bits `[31:0]` 包含请求协议的期望版本。
+* 调用完成后，寄存器 `RCX` 会被设置以指示所请求协议的可用性：
+  * 如果所请求版本的协议不可用，寄存器 `RCX` 将包含值 `0`。
+  * 如果所请求版本的协议可用，寄存器 `RCX` 的 bits `[63:32]` 将表示支持的最高协议版本号，bits `[31:0]` 将表示支持的最低协议版本号。
+* 此调用始终返回 `SVSM_SUCCESS`，因为协议的可用性通过 `RCX` 寄存器来告知。
+* 查询协议是否存在时，不允许请求额外的 SVSM 内存（该协议的调用可能会请求存入内存）。
+
+## 6.8 SVSM_CORE_CONFIGURE_VTOM 调用
+* 此调用用于查询或重新配置调用处理器上 vTOM 的使用。
+  * 为了支持 *基于 vTOM 的机密性* 与 *完全依赖页表项 `C-bit` 的机密性判定* 之间的转换，此调用还会更改 guest 的 `CR3`、`RIP` 和 `RSP` 的值，以实现从一种环境到另一种环境的平滑过渡。
+* `SVSM_CORE_CONFIGURE_VTOM` 调用有两种形式：查询和配置，由 `RCX` 的第 `0` 位指示（`RCX[0]=1` 表示查询，`RCX[0]=0` 表示配置）。
+* 调用的寄存器约定如下表所述。
+* Table 9: vTOM Configuration Operation
+
+寄存器         | 内容 | .
+--------------|------|--------------------
+条目上的 `RCX` | Query | Bit 0：必须是 `1`
+.             | .     | Bit 63:1：必须是 `0`
+.             | Configure | Bit 0：必须是 `0`
+.             | .         | Bit 1：设为 `0` 禁用 vTOM，或设为 `1` 启用 vTOM
+.             | .         | Bit 2：若设为 `1`，则在调用成功完成后，将把 `VMSA.CR3` 设置为 `RDX` 中的值
+.             | .         | Bit 3：若设为 `1`，则在调用成功完成后，将把 `VMSA.RIP` 设置为 `R8` 中的值
+.             | .         | Bit 4：若设为 `1`，则在调用成功完成后，将把 `VMSA.RSP` 设置为 `R9` 中的值
+.             | .         | Bit 11:5：必须是 `0`
+---           | ---       | Bit 63:12：所需 vTOM 值的 bits `63:12`。若要禁用 vTOM，此部分必须设为 `0`
+`RCX` 的结果  | .   | Bit 0：会是 `0`
+.            | .   | Bit 1：如果 vTOM 配置是支持的，会是 `1`；否则为 `0`
+.            | .   | Bit 11:2：会是 `0`
+.            | .   | Bit 19:12：vTOM 对齐要求，以 2 的幂表示（值为 `20` 表示 vTOM 必须对齐到 `1 MB` 边界）
+---          | --- | Bit 63:20：`0`
+`RCX` 的结果  | .   | 若支持 vTOM 配置，则为最小有效 vTOM 值；否则（若不支持 vTOM 配置），该值未定义
+`R8` 的结果   | .   | 若支持 vTOM 配置，则为最大有效 vTOM 值；否则（若不支持 vTOM 配置），该值未定义
+
+* 如果调用成功，vTOM 将按请求被报告或重新配置。
+  * 如果正在重新配置 vTOM，则 `CR3` 和 `RSP` 寄存器将按请求更新，执行将在指定的 `RIP` 处继续，且 `RAX` 将包含 `SVSM_SUCCESS` 的值。
+* 如果调用失败，VMSA 不会发生任何更改，执行将在 `VMGEXIT` 指令之后的下一条指令处继续，且 `RAX` 将包含相应的错误代码。
+  * 如果 `RCX` 中的任何保留位被不当设置，调用可能会失败；这将导致调用返回 `SVSM_ERR_INVALID_PARAMETER`。
+* 如果 SVSM 无法支持该请求，可能会拒绝此调用。
+  * 例如，如果已配置多个 vCPU，或者请求的配置与其他 vCPU 上的配置不一致，SVSM 可能无法重新配置 vTOM。
+    * 这种情况下，调用将返回 `SVSM_ERR_INVALID_REQUEST`。
+* 如果 vTOM 的值是宿主环境无法支持的，则调用将返回 `SVSM_ERR_INVALID_ADDRESS`。
+
+# 7 Attestation 协议
+* 证明协议（attestation protocol）的协议 ID 值为 `1`。
+* 该证明协议支持版本控制，以便后续对其进行扩展；证明协议的初始版本为版本 1。
+* 证明协议的版本控制采用严格的 “增量式” 规则，即：版本 1 中包含的所有调用，在未来所有版本的实现中都必须得到支持。
+* 下表列出了该证明协议所支持的调用集合：
+* Table 10: Attestation Protocol Services
+
+调用 ID | 第一版本支持 | 名字            | 功能
+--------|------------|-----------------|-----------------
+0       | 1 | SVSM_ATTEST_SERVICES       | 获取所有 SVSM 服务（例如 vTPM 等）的证明报告
+1       | 1 | SVSM_ATTEST_SINGLE_SERVICE | 获取一个单个 SVSM 服务的证明报告
+
+## 7.1 SVSM_ATTEST_SERVICES 调用
+## 7.2 SVSM_ATTEST_SINGLE_SERVICE 调用
+
+# 8 vTPM Protocol
+* vTPM 协议的协议 ID 值为 `2`。该 vTPM 协议支持版本控制，以便后续对其进行扩展；vTPM 协议的初始版本为版本 1。
+* vTPM 协议的版本控制采用严格的 “增量式” 规则，即：版本 1 中包含的所有调用，在未来所有版本的实现中都必须得到支持。
+* vTPM 协议遵循 [Official TPM 2.0 Reference Implementation (by Microsoft)](https://github.com/microsoft/ms-tpm-20-ref) 类似的协议
+* 下表列出了该 vTPM 协议所支持的调用集合：
+* Table 14: Attestation Protocol Services
+
+调用 ID | 第一版本支持 | 名字            | 功能
+--------|------------|-----------------|-----------------
+0       | 1 | SVSM_VTPM_QUERY | 查询 vTPM 的命令及功能支持情况
+1       | 1 | SVSM_VTPM_CMD   | 执行一条 TPM 命令
+
+## 8.1 SVSM_VTPM_QUERY 调用
+## 8.2 SVSM_VTPM_CMD 调用
+## 8.3 Service Attestation 数据
