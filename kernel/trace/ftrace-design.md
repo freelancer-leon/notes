@@ -1383,6 +1383,150 @@ cpuhp_invoke_callback()
 * Instances 功能的 ring buffer 也是通过`allocate_trace_buffers()`来分配的（见`create_trace_instances()`、`instance_mkdir()`等函数），所以 instance 的 ring buffer 是独立的
 * 因为`cpuhp_setup_state_multi(CPUHP_TRACE_RB_PREPARE, "trace/RB:preapre", trace_rb_cpu_prepare, NULL)`这里将`CPUHP_TRACE_RB_PREPARE`类型的回调函数设定为`trace_rb_cpu_prepare()`，所以当`instance_mkdir()`调用`allocate_trace_buffers()`去分配 ring buffers 的时候，最终也会通过`trace_rb_cpu_prepare()`这个接口来分配其他 CPU 的 instances ring buffer，只需要传递不同的`node`就可以了
 
+## Latency 格式打印
+* 采用 latency 格式时打印如下：
+```sh
+#                    _------=> CPU#            
+#                   / _-----=> irqs-off/BH-disabled
+#                  | / _----=> need-resched    
+#                  || / _---=> hardirq/softirq 
+#                  ||| / _--=> preempt-depth   
+#                  |||| / _-=> migrate-disable 
+#                  ||||| /     delay           
+#  cmd     pid     |||||| time  |   caller     
+#     \   /        ||||||  \    |    /       
+   <...>-3598      7...1.    0us : rt_mutex_schedule <-rt_mutex_schedule
+   <...>-3598      7d..1.    0us : rcu_note_context_switch() <-__schedule
+```
+* 调用路径为
+```c
+//kernel/trace/trace.c
+print_trace_line()
+-> print_trace_fmt()
+   -> trace_print_context()
+         //kernel/trace/trace_output.c
+      -> trace_print_lat_fmt()
+```
+* 其中上下文相关的字母代表的含义来自如下函数：
+```c
+/**
+ * trace_print_lat_fmt - print the irq, preempt and lockdep fields
+ * @s: trace seq struct to write to
+ * @entry: The trace entry field from the ring buffer
+ *
+ * Prints the generic fields of irqs off, in hard or softirq, preempt
+ * count.
+ */
+int trace_print_lat_fmt(struct trace_seq *s, struct trace_entry *entry)
+{
+	char hardsoft_irq;
+	char need_resched;
+	char irqs_off;
+	int hardirq;
+	int softirq;
+	int bh_off;
+	int nmi;
+
+	nmi = entry->flags & TRACE_FLAG_NMI;
+	hardirq = entry->flags & TRACE_FLAG_HARDIRQ;
+	softirq = entry->flags & TRACE_FLAG_SOFTIRQ;
+	bh_off = entry->flags & TRACE_FLAG_BH_OFF;
+
+	irqs_off =
+		(entry->flags & TRACE_FLAG_IRQS_OFF && bh_off) ? 'D' :
+		(entry->flags & TRACE_FLAG_IRQS_OFF) ? 'd' :
+		bh_off ? 'b' :
+		'.';
+
+	switch (entry->flags & (TRACE_FLAG_NEED_RESCHED | TRACE_FLAG_NEED_RESCHED_LAZY |
+				TRACE_FLAG_PREEMPT_RESCHED)) {
+	case TRACE_FLAG_NEED_RESCHED | TRACE_FLAG_NEED_RESCHED_LAZY | TRACE_FLAG_PREEMPT_RESCHED:
+		need_resched = 'B';
+		break;
+	case TRACE_FLAG_NEED_RESCHED | TRACE_FLAG_PREEMPT_RESCHED:
+		need_resched = 'N';
+		break;
+	case TRACE_FLAG_NEED_RESCHED_LAZY | TRACE_FLAG_PREEMPT_RESCHED:
+		need_resched = 'L';
+		break;
+	case TRACE_FLAG_NEED_RESCHED | TRACE_FLAG_NEED_RESCHED_LAZY:
+		need_resched = 'b';
+		break;
+	case TRACE_FLAG_NEED_RESCHED:
+		need_resched = 'n';
+		break;
+	case TRACE_FLAG_PREEMPT_RESCHED:
+		need_resched = 'p';
+		break;
+	case TRACE_FLAG_NEED_RESCHED_LAZY:
+		need_resched = 'l';
+		break;
+	default:
+		need_resched = '.';
+		break;
+	}
+
+	hardsoft_irq =
+		(nmi && hardirq)     ? 'Z' :
+		nmi                  ? 'z' :
+		(hardirq && softirq) ? 'H' :
+		hardirq              ? 'h' :
+		softirq              ? 's' :
+		                       '.' ;
+
+	trace_seq_printf(s, "%c%c%c",
+			 irqs_off, need_resched, hardsoft_irq);
+
+	if (entry->preempt_count & 0xf)
+		trace_seq_printf(s, "%x", entry->preempt_count & 0xf);
+	else
+		trace_seq_putc(s, '.');
+
+	if (entry->preempt_count & 0xf0)
+		trace_seq_printf(s, "%x", entry->preempt_count >> 4);
+	else
+		trace_seq_putc(s, '.');
+
+	return !trace_seq_has_overflowed(s);
+}
+```
+* 而这些信息的来源来自 `preempt_count()` 和 `RFLAGS`，给 `trace_flags` 赋值的函数为 `tracing_gen_ctx_irq_test()`
+```c
+//kernel/trace/trace.c
+unsigned int tracing_gen_ctx_irq_test(unsigned int irqs_status)
+{
+	unsigned int trace_flags = irqs_status;
+	unsigned int pc;
+
+	pc = preempt_count();
+
+	if (pc & NMI_MASK)
+		trace_flags |= TRACE_FLAG_NMI;
+	if (pc & HARDIRQ_MASK)
+		trace_flags |= TRACE_FLAG_HARDIRQ;
+	if (in_serving_softirq())
+		trace_flags |= TRACE_FLAG_SOFTIRQ;
+	if (softirq_count() >> (SOFTIRQ_SHIFT + 1))
+		trace_flags |= TRACE_FLAG_BH_OFF;
+
+	if (tif_need_resched())
+		trace_flags |= TRACE_FLAG_NEED_RESCHED;
+	if (test_preempt_need_resched())
+		trace_flags |= TRACE_FLAG_PREEMPT_RESCHED;
+	if (IS_ENABLED(CONFIG_ARCH_HAS_PREEMPT_LAZY) && tif_test_bit(TIF_NEED_RESCHED_LAZY))
+		trace_flags |= TRACE_FLAG_NEED_RESCHED_LAZY;
+	return (trace_flags << 16) | (min_t(unsigned int, pc & 0xff, 0xf)) |
+		(min_t(unsigned int, migration_disable_value(), 0xf)) << 4;
+}
+//include/linux/trace_events.h
+static inline unsigned int tracing_gen_ctx_flags(unsigned long irqflags)
+{
+    unsigned int irq_status = irqs_disabled_flags(irqflags) ?
+        TRACE_FLAG_IRQS_OFF : 0;
+    return tracing_gen_ctx_irq_test(irq_status);
+}
+```
+
 # 一些赋值调试的代码修改
 ## 调整时间戳打印精度
 * 默认的时间戳打印精度为“微秒”，如果需要更高的精度需要修改代码。在 `/sys/kernel/debug/tracing/trace_clock` 选中的时钟源支持纳米级精度的情况下，可以通过如下修改打印“纳秒级”的时间戳
