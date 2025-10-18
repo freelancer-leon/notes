@@ -85,9 +85,9 @@ SYM_INNER_LABEL(entry_SYSCALL_64_after_hwframe, SYM_L_GLOBAL)
     movslq  %eax, %rsi //第二个参数是系统调用号
 
     /* clobbers %rax, make sure it is after saving the syscall nr */
-    IBRS_ENTER
-    UNTRAIN_RET
-    CLEAR_BRANCH_HISTORY
+    IBRS_ENTER  //开启受限的分支预测，防止用户空间对 Indirect Branch Predictor 的训练，对内核内部的间接分支预测产生任何影响
+    UNTRAIN_RET //清除 branch predictor 的 Return Stack Buffer 缓解针对返回时投机执行的攻击，可通过 retbleed=off 关闭
+    CLEAR_BRANCH_HISTORY //清除 branch predictor 的 Branch History Buffer 缓解针对投机执行历史的攻击，可通过 spectre_bhi=off 关闭
 
     call    do_syscall_64       /* returns with IRQs disabled */
 
@@ -143,3 +143,4 @@ SYM_CODE_END(entry_SYSCALL_64)
 
 ## References
 - [X86_64处理器系统调用机制在linux上的实现](https://codeantenna.com/a/zVXomEIQ1H)
+- [What Makes System Calls Expensive_ A Linux Internals Deep Dive](https://blog.codingconfessions.com/p/what-makes-system-calls-expensive)

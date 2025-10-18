@@ -889,8 +889,8 @@ static void ve_raise_fault(struct pt_regs *regs, long error_code)
   * 请参阅 *Intel Trust Domain Extensions (Intel TDX) Guest-Host-Communication Interface (GHCI) 规范* 的 *TDVMCALL [Instruction.HLT]* 部分
 * 在 TDX guests 中，执行 `HLT` 指令会生成一个 `#VE`，用于模拟 `HLT` 指令
  * 但是基于 `#VE` 的仿真不适用于 `safe_halt()` 风格，因为它需要在 `TDCALL` 之前执行 `STI` 指令
- * 由于空闲循环是 `safe_halt()` 变体的唯一用户，因此将其作为特殊情况处理
-* 为避免在空闲函数中调用 `safe_halt()`，定义 `tdx_guest_idle()` 并使用它覆盖有效 TDX guest 的 `x86_idle` 函数指针
+ * 由于 idle loop 是 `safe_halt()` 变体的唯一用户，因此将其作为特殊情况处理
+* 为避免在 idle 函数中调用 `safe_halt()`，定义 `tdx_guest_idle()` 并使用它覆盖有效 TDX guest 的 `x86_idle` 函数指针
 * 已考虑添加 `safe_halt()` 支持的替代选择，如 PV ops。但被拒绝了，因为 HLT paravirt 调用仅存在于 PARAVIRT_XXL 下，并且在 TDX guest 中仅针对 `safe_halt()` 用例场景是不值得的
 ```c
 void select_idle_routine(const struct cpuinfo_x86 *c)
@@ -908,9 +908,9 @@ void select_idle_routine(const struct cpuinfo_x86 *c)
 ...
 }
 ```
-* `safe_halt` 语义指的是 halt 前需要开启中断，然后再 `hlt`，再关闭，例如：
-  * `mwait_idle()` 会调 `__sti_mwait() -> "sti; mwait"`，随后再关闭中断
-  * `default_idle()` 会调 `arch_safe_halt() -> native_safe_halt() -> "sti; hlt"`，随后关闭中断
+* `safe_halt` 语义指的是 halt 前需要开启中断，然后再 `hlt`，恢复后再关闭中断，例如：
+  * `mwait_idle()` 会调 `__sti_mwait() -> "sti; mwait"`，待到恢复后再关闭中断
+  * `default_idle()` 会调 `arch_safe_halt() -> native_safe_halt() -> "sti; hlt"`，待到后再关闭中断
 * Commit e78a7614f3876ac649b3df608789cb6ef74d0480 将 `arch_cpu_idle()` 置于 IRQ disabled 的环境下：
 ```c
 commit e78a7614f3876ac649b3df608789cb6ef74d0480
@@ -919,7 +919,9 @@ Date:   Wed Jun 5 07:46:43 2019 -0700
 
     idle: Prevent late-arriving interrupts from disrupting offline
 ```
-* 于是 commit e80a48bade619ec5a92230b3d4ae84bfc2746822 将 `TDX_HCALL_ISSUE_STI` 相关的内容都移除了，因为 `__halt(irq_disabled)` 的参数 `irq_disabled` 才是告知 VMM 的中断开启状态的关键，至于 TD guest tdcall 时真实的中断状态是什么并不重要。
+* 于是 commit e80a48bade619ec5a92230b3d4ae84bfc2746822 将 `TDX_HCALL_ISSUE_STI` 相关的内容都移除了，因为 `__halt(irq_disabled)` 的参数 `irq_disabled` 才是告知 VMM 的中断开启状态的关键，而 TD guest 发出 tdcall 时中断的真实状态是关闭的
+  * TD guest 中关闭中断的原因是 `safe_halt()` 函数是在 STI-shadow 状态下执行 `HLT` 指令，因此在执行 `TDCALL` 指令之前，必须保持中断请求（IRQ）禁用状态，以确保挂起的中断请求能被正确识别为唤醒事件。
+  * VMM 对于 idle halt 会按 IRQ 开启的状态来处理，即虚拟中断来时会调度 vCPU
 ```c
 commit e80a48bade619ec5a92230b3d4ae84bfc2746822
 Author: Peter Zijlstra <peterz@infradead.org>
@@ -940,11 +942,20 @@ void __cpuidle tdx_safe_halt(void)
         WARN_ONCE(1, "HLT instruction emulation failed\n");
 }
 ```
-* `hlt` 触发 `#VE` 弹射回来后通过 `handle_halt()` 请求模拟 TD guest halt
+* 而他处执行 `hlt` 指令触发 `#VE` 弹射回来后通过 `handle_halt()` 请求模拟 TD guest halt
+  * 发出警告的原因是，在 IRQ 启用的情况下 `HLT` 是不安全的。如果在处理 `HLT` 指令触发的 `#VE` 异常期间开启了中断请求（IRQ），恰好一个意图是唤醒事件的 IRQ 可能会在请求 `HLT` 模拟前被消费掉，让 vCPU 不确定地阻塞（被调度出去），导致 `HLT` 指令无限期执行
 ```c
 static int handle_halt(struct ve_info *ve)
-{   //不是 idle 函数调用过来的，需要取一下中断的开关状态
+{   //不是 idle 函数调用过来的，需要获取一下中断的开关状态
     const bool irq_disabled = irqs_disabled();
+
+    /*
+     * HLT with IRQs enabled is unsafe, as an IRQ that is intended to be a
+     * wake event may be consumed before requesting HLT emulation, leaving
+     * the vCPU blocking indefinitely.
+     */
+    if (WARN_ONCE(!irq_disabled, "HLT emulation with IRQs enabled"))
+        return -EIO;
 
     if (__halt(irq_disabled))
         return -EIO;
@@ -953,9 +964,9 @@ static int handle_halt(struct ve_info *ve)
 }
 ```
 * `%r12` 用于传递调用 `TDG.VP.VMCALL<Instruction.HLT>` 时 TD guest 的中断状态
-* 请求到达 VMM 后，它使用“IRQ 禁用”参数来了解 TD guest 的 IRQ 启用状态（`RFLAGS.IF`），并确定有 IRQ 变为挂起时，它是否应该调度暂停的 vCPU
-  * 例如，如果 IRQ 被禁用，VMM 可以将 vCPU 保持在虚拟 HLT 中，即使 IRQ 挂起，也不会挂起/打断 guest
-  * 是因为无法通过读取加密的 TD VMCS 吗？
+* 请求到达 VMM 后，它使用“IRQ disabled”参数来了解 TD guest 的 IRQ 启用状态（`RFLAGS.IF`），并确定有 IRQ 挂起（pending）时，它是否应该调度暂停的 vCPU
+  * 例如，如果 IRQ 被禁用，VMM 可以将 vCPU 保持在虚拟 HLT 中，即使有 IRQ 挂起（pending），也不会挂起/打断 guest
+  * 这么做是因为 KVM 无法通过读取加密的 TD VMCS，host 怎么知道 TD Exit 的 guest 是否有虚拟中断 pending，见后面的分析 
 ```c
 static u64 __cpuidle __halt(const bool irq_disabled)
 {
@@ -997,6 +1008,281 @@ do_idle()
       -> cpuidle_enter()
          -> cpuidle_enter_state()
             -> default_idle_call()
+```
+
+### KVM 对 TDX 的 `hlt` 的模拟
+* KVM 对 `hlt` 的模拟调用路径如下：
+```c
+//arch/x86/kvm/x86.c
+vcpu_run()
+-> vcpu_enter_guest(vcpu)
+   -> kvm_x86_call(vcpu_run)(vcpu, run_flags)
+      //arch/x86/kvm/vmx/tdx.c
+   => tdx_vcpu_run()
+   -> kvm_x86_call(handle_exit)(vcpu, exit_fastpath)
+      //arch/x86/kvm/vmx/main.c
+   => vt_handle_exit()
+      -> tdx_handle_exit()
+            case EXIT_REASON_HLT:
+            //arch/x86/kvm/x86.c
+         -> kvm_emulate_halt_noskip(vcpu)
+            -> kvm_vcpu_has_events(vcpu)
+               -> kvm_cpu_has_interrupt(vcpu)
+                  -> kvm_x86_call(protected_apic_has_interrupt)(v)
+                     //arch/x86/kvm/vmx/tdx.c
+                  => tdx_protected_apic_has_interrupt()
+            -> kvm_set_mp_state(vcpu, state) //把 vCPU 状态置为 KVM_MP_STATE_RUNNABLE，让外层循环去 halt vCPU
+```
+* `TDG.VP.VMCALL<Instruction.HLT>` 发出后，在 TDX module 运行期间中断是关闭的，此间进来的中断会造成 `RVI` 置位。只在 HALTED 且 IRQ 开启的场景检查 `RVI`
+* 对于 non-HTL 的场景，KVM 则不在乎 `STI`/`SS` shadows。
+* 如果中断在 TD exit 之前挂起的，那么 vCPU **必须** 被阻塞（调度走）
+* 否则（中断在 TD exit 之后进来的），中断被当作在（模拟的 `hlt`）指令边界进来的来对待
+```c
+static bool tdx_protected_apic_has_interrupt(struct kvm_vcpu *vcpu)
+{
+    u64 vcpu_state_details;
+    //如果有 pending 的 posted interrupt，返回有中断
+    if (pi_has_pending_interrupt(vcpu))
+        return true;
+
+    /*
+     * Only check RVI pending for HALTED case with IRQ enabled.
+     * For non-HLT cases, KVM doesn't care about STI/SS shadows.  And if the
+     * interrupt was pending before TD exit, then it _must_ be blocked,
+     * otherwise the interrupt would have been serviced at the instruction
+     * boundary.
+     */
+    if (vmx_get_exit_reason(vcpu).basic != EXIT_REASON_HLT ||
+        to_tdx(vcpu)->vp_enter_args.r12)
+        return false;
+
+    vcpu_state_details =
+        td_state_non_arch_read64(to_tdx(vcpu), TD_VCPU_STATE_DETAILS_NON_ARCH);
+
+    return tdx_vcpu_state_details_intr_pending(vcpu_state_details);
+}
+```
+* `td_state_non_arch_read64(to_tdx(vcpu), TD_VCPU_STATE_DETAILS_NON_ARCH)` 其实是用的 seamcall<`TDH.VP.RD`> 读取 TD 的 VCPU-scope metadata 中的 `TD_VCPU_STATE_DETAILS_NON_ARCH` 域
+  * arch/x86/kvm/vmx/tdx.h
+```c
+#define TDX_BUILD_TDVPS_ACCESSORS(bits, uclass, lclass)             \
+static __always_inline u##bits td_##lclass##_read##bits(struct vcpu_tdx *tdx,   \
+                            u32 field)      \
+{                                       \
+    u64 err, data;                              \
+                                        \
+    tdvps_##lclass##_check(field, bits);                    \
+    err = tdh_vp_rd(&tdx->vp, TDVPS_##uclass(field), &data);        \
+    if (unlikely(err)) {                            \
+        tdh_vp_rd_failed(tdx, #uclass, field, err);         \
+        return 0;                           \
+    }                                   \
+    return (u##bits)data;                           \
+}
+...
+TDX_BUILD_TDVPS_ACCESSORS(64, STATE_NON_ARCH, state_non_arch);
+```
+* `TD_VCPU_STATE_DETAILS_NON_ARCH` 域的定义见 vcpu_scope_metadata.json，其中 Bit 0 表示有一个虚拟中断 pending 等着递交
+```json
+{
+  "Header": {
+    "Copyright": "Copyright (c) 2022 - 2023 Intel Corporation. All rights reserved.",
+    "Info": "TDX VCPU-Scope Metadata",
+    "Version": "2.0"
+  },
+...
+  "Fields": [
+...
+    {
+      "Class": "Guest State",
+      "Field Name": "VCPU_STATE_DETAILS",
+      "Description": [
+        "Bit 0:     INTR_PENDING:  Indicates",
+        "           that a virtual interrupt",
+        "           is pending delivery, i.e.",
+        "           VMCS.RVI[7:4] >",
+        "           TDVPS.VAPIC.VPPR[7:4]",
+        "Bits 63:2: Reserved, set to 0"
+      ],
+      "Type": null,
+      "Attributes": null,
+      "VM Applicability": null,
+      "Mutability": "Mutable",
+      "Initial Value": [
+        "N/A"
+      ],
+      "Field Size (Bytes)": "8",
+      "Num Fields": "1",
+      "Num Elements": "1",
+      "Element Size (Bytes)": "8",
+      "Overall Size (Bytes)": "8",
+      "Base FIELD_ID (Hex)": "0x9120000300000100",
+      "Host VMM Access for a Production TD": "ROS",
+      "Host VMM Access for a Debug TD": "ROS",
+      "Guest Access": "None",
+      "Host VMM Rd Mask for a Production TD ": "-1",
+      "Host VMM Wr Mask for a Production TD ": "0",
+      "Host VMM Rd Mask for a Debug TD ": "-1",
+      "Host VMM Wr Mask for a Debug TD ": "0",
+      "Guest Rd Mask": "0",
+      "Guest Wr Mask": "0"
+    },
+...
+  ]
+}
+```
+* 更详细的解释见 11.13.5. Pending Virtual Interrupt Delivery Indication, TDX Module Spec
+* `TDVPS_STATE_NON_ARCH` 宏展开会用到如下定义：
+  * arch/x86/kvm/vmx/tdx_arch.h
+```c
+/* TDX control structure (TDR/TDCS/TDVPS) field access codes */
+#define TDX_NON_ARCH            BIT_ULL(63)
+#define TDX_CLASS_SHIFT         56
+#define TDX_FIELD_MASK          GENMASK_ULL(31, 0)
+
+#define __BUILD_TDX_FIELD(non_arch, class, field)   \
+    (((non_arch) ? TDX_NON_ARCH : 0) |      \
+     ((u64)(class) << TDX_CLASS_SHIFT) |        \
+     ((u64)(field) & TDX_FIELD_MASK))
+
+#define BUILD_TDX_FIELD(class, field)           \
+    __BUILD_TDX_FIELD(false, (class), (field))
+
+#define BUILD_TDX_FIELD_NON_ARCH(class, field)      \
+    __BUILD_TDX_FIELD(true, (class), (field))
+...
+#define TDVPS_CLASS_OTHER_GUEST     17ULL
+...
+#define TDVPS_STATE_NON_ARCH(field) BUILD_TDX_FIELD_NON_ARCH(TDVPS_CLASS_OTHER_GUEST, (field))
+...
+enum tdx_vcpu_guest_other_state {
+    TD_VCPU_STATE_DETAILS_NON_ARCH = 0x100,
+};
+// Bit 0 表示是否有 pending 的虚拟中断
+#define TDX_VCPU_STATE_DETAILS_INTR_PENDING BIT_ULL(0)
+
+static inline bool tdx_vcpu_state_details_intr_pending(u64 vcpu_state_details)
+{
+    return !!(vcpu_state_details & TDX_VCPU_STATE_DETAILS_INTR_PENDING);
+}
+```
+### TDX Module 怎知其执行期间有中断进来？
+* 当用 seamcall<`TDH.VP.RD`> 读取 TD 的 VCPU-scope metadata 中的 `TD_VCPU_STATE_DETAILS_NON_ARCH` 域会调用如下路径：
+```c
+//src/vmm_dispatcher/tdx_vmm_dispatcher.c
+tdx_vmm_dispatcher()
+   case TDH_VP_RD_LEAF:
+   //src/vmm_dispatcher/api_calls/tdh_vp_rd_wr.c
+-> tdh_vp_rd(local_data->vmm_regs.rcx, field_code, leaf_opcode.version)
+   -> tdh_vp_rd_wr(tdvpr_pa, field_code, local_data_ptr, false, 0, 0, version)
+         //src/common/metadata_handlers/metadata_generic.c
+      -> md_read_element(MD_CTX_VP, requested_field_id, access_type, access_qual, md_ctx, &rd_data)
+            case MD_CTX_VP:
+            //src/common/metadata_handlers/metadata_vp.c
+         -> md_vp_read_element()
+            -> md_vp_get_element()
+               -> md_vp_get_element_special_rd_handle()
+```
+* 最后由 `md_vp_get_element_special_rd_handle()` 去查询 VMCS 中的 Guest 状态域中的中断状态
+  * GIS 的 `RVI` 域是请求服务的最高优先级虚拟中断的向量，这个值是有虚拟中断评估过后写入的，可以认为是微码/硬件做的
+  * `PPR` 是 `TPR` 和 `ISRV`（ISR 中设置的最高优先级位的向量号）中的较大者
+  * `RVI > vCPU PPR` 认为 pending 的虚拟中断有效，写 `TDX_VCPU_STATE_DETAILS_INTR_PENDING` 位
+  * src/common/metadata_handlers/metadata_vp.c
+```c
+//根据 vcpu_scope_metadata.json 自动生成的头文件 include/auto_gen_1_5/tdvps_fields_lookup.h
+//里面定义了 TDVPS 域的 Guest State 类的编码
+#define MD_TDVPS_GUEST_STATE_CLASS_CODE 17ULL
+
+//VMCS 中 Guest 状态域中的 GGuest Interrupt Status 域的编码
+//src/common/x86_defs/vmcs_defs.h
+#define VMX_GUEST_INTERRUPT_STATUS_ENCODE  0x0810
+
+//VCPU state details 的域 .vmxip 就是 VCPU-scope metadata 中的
+//TD_VCPU_STATE_DETAILS_NON_ARCH 域的 TDX_VCPU_STATE_DETAILS_INTR_PENDING 位
+//src/common/data_structures/tdx_tdvps.h
+/**
+ * @struct vcpu_state__t
+ *
+ * @brief vcpu state details is a virtual TDVPS field. It is calculated on read
+ */
+typedef union vcpu_state_s
+{
+    struct
+    {
+        uint64_t vmxip    : 1;  
+        uint64_t reserved : 63;
+    };
+    uint64_t raw;
+}vcpu_state_t;
+
+//VCPU-scope metadata 的 Guest State 类对应的结构如下
+//src/common/data_structures/tdx_tdvps.h
+typedef struct tdvps_guest_state_s
+{
+    gprs_state_t gpr_state;
+    uint64_t dr0;
+    uint64_t dr1;
+    uint64_t dr2;
+    uint64_t dr3;
+    uint64_t dr6;
+    uint64_t xcr0;
+    uint64_t cr2;
+    uint8_t  reserved[8]; /**< Reserved for aligning the next field */
+    uint128_t  iwk_enckey[2]; /**< Last KeyLocker IWK loader.  Cache line aligned */
+    uint128_t  iwk_intkey;
+    loadiwkey_ctl_t iwk_flags;
+    uint8_t  reserved_2[4]; /**< Reserved for aligning the next field */
+    vcpu_state_t vcpu_state_details;
+} tdvps_guest_state_t;
+
+//GSI 的结构定义如下
+//src/common/x86_defs/vmcs_defs.h
+typedef union guest_interrupt_status_u
+{
+    struct
+    {
+        uint64_t rvi      : 8;
+        uint64_t svi      : 8;
+        uint64_t reserved : 48;
+    };
+    uint64_t raw;
+}guest_interrupt_status_t;
+
+static uint64_t md_vp_get_element_special_rd_handle(md_field_id_t field_id, md_access_t access_type,
+                                                    md_context_ptrs_t md_ctx, uint16_t vm_id, uint64_t read_value)
+{
+...
+    //读取的是 Guest State 类
+    else if (field_id.class_code == MD_TDVPS_GUEST_STATE_CLASS_CODE)
+    {
+        switch (field_id.field_code)
+        {   //读取的是 Guest State 类的 VCPU state details 域
+            case MD_TDVPS_VCPU_STATE_DETAILS_FIELD_CODE:
+            {
+                // Calculate virtual interrupt pending status
+                vcpu_state_t vcpu_state_details;
+                guest_interrupt_status_t interrupt_status;
+                uint64_t interrupt_status_raw;
+                //用指令 vmptrld 加载 VM ID = 0 的 VMCS
+                set_vm_vmcs_as_active(md_ctx.tdvps_ptr, 0);
+                //读取 VMCS 中 Guest 状态域中的 Guest Interrupt Status 域的值
+                ia32_vmread(VMX_GUEST_INTERRUPT_STATUS_ENCODE, &interrupt_status_raw);
+                interrupt_status.raw = (uint16_t)interrupt_status_raw;
+                vcpu_state_details.raw = 0ULL;
+                if ((interrupt_status.rvi & 0xF0UL) > (md_ctx.tdvps_ptr->vapic.vapic[PPR_INDEX] & 0xF0UL))
+                {   //如果请求服务的最高优先级虚拟中断的向量 > vCPU 的 vPPR，pending 的虚拟中断有效
+                    vcpu_state_details.vmxip = 1ULL;
+                }
+                read_value = vcpu_state_details.raw;
+
+                break;
+            }
+            default:
+                break;
+        }
+    }
+...
+}
 ```
 
 ## `wrmsr` 场景
