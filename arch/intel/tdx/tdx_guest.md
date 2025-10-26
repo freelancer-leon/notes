@@ -921,6 +921,7 @@ Date:   Wed Jun 5 07:46:43 2019 -0700
 ```
 * 于是 commit e80a48bade619ec5a92230b3d4ae84bfc2746822 将 `TDX_HCALL_ISSUE_STI` 相关的内容都移除了，因为 `__halt(irq_disabled)` 的参数 `irq_disabled` 才是告知 VMM 的中断开启状态的关键，而 TD guest 发出 tdcall 时中断的真实状态是关闭的
   * TD guest 中关闭中断的原因是 `safe_halt()` 函数是在 STI-shadow 状态下执行 `HLT` 指令，因此在执行 `TDCALL` 指令之前，必须保持中断请求（IRQ）禁用状态，以确保挂起的中断请求能被正确识别为唤醒事件。
+    * **STI-shadow（STI 影子状态）**：`STI`（Set Interrupt Flag，设置中断标志）指令执行后 CPU 进入的临时状态，此时中断虽已启用，但需等待下一条指令执行完成后才响应中断；`safe_halt()` 在此状态下执行 `HLT` 可避免中断响应时序问题。 
   * VMM 对于 idle halt 会按 IRQ 开启的状态来处理，即虚拟中断来时会调度 vCPU
 ```c
 commit e80a48bade619ec5a92230b3d4ae84bfc2746822

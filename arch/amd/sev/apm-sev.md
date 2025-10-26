@@ -251,15 +251,15 @@ Bit[s]  | 描述
 ### 15.35.4 退出的类型
 
 * 当 SEV-ES 启用时，所有 `#VMEXIT` 事件会被归类为 “自动退出（Automatic Exits，简称 AE）” 或 “非自动退出（Non-Automatic Exits，简称 NAE）” 两类。
-  * AE 事件通常是与 guest 执行过程异步发生的事件（例如中断），或是无需暴露任何 guest 寄存器状态的事件。
-  * 所有其他 `#VMEXIT` 事件均归类为 NAE 事件；对于 NAE 事件，guest 可自主决定在 GHCB 中暴露哪些寄存器状态（若需暴露）。
+  * **AE 事件** 通常是与 guest 执行过程 **异步发生** 的事件（例如中断），或是无需暴露任何 guest 寄存器状态的事件。
+  * 所有其他 `#VMEXIT` 事件均归类为 **NAE 事件**；对于 NAE 事件，guest 可自主决定在 GHCB 中暴露哪些寄存器状态（若需暴露）。
 * 在 guest 执行期间，仅当 VMCB 控制区域中对应的拦截位被设为 `1` 时，`#VMEXIT` 事件（包括 AE 和 NAE）才会被触发。
-* Hypervisor 仅能通过 VMCB 控制区域 `EXITCODE` 字段中的 `#VMEXIT` codes，获知特定的 AE 事件；而 NAE 事件会触发 `#VC`异常，并由 guest 处理。
+* Hypervisor 仅能通过 VMCB 控制区域 `EXITCODE` 字段中的 `#VMEXIT` codes，获知特定的 AE 事件；而 NAE 事件会触发 `#VC` 异常，并由 guest 处理。
 * 表 15-33 列出了所有可能的 AE 事件，其余所有事件均被视为 NAE 事件。
 * Table 15-33. AE Exitcodes
 
-代码 | 名称                    | 备注                   | 硬件把 `RIP` 提前
------|------------------------|------------------------|----
+代码 | 名称                    | 备注                   | 硬件推进 `RIP`
+-----|------------------------|------------------------|--------------
 52h  | VMEXIT_MC              | Machine check 异常     | No
 60h  | VMEXIT_INTR            | 物理中断                | No
 61h  | VMEXIT_NMI             | 物理 NMI                | No
@@ -279,3 +279,30 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 –2   | VMEXIT_BUSY            | `BUSY` bit 在 VMSA 中设置 | –
 -3   | VMEXIT_IDLE_REQUIRED   | sibling thread 不是 idle | –
 -4   | VMEXIT_INVALID_PMC     | 无效的 PMC 状态           | –
+
+* 对于因特定指令引发的退出（事件），CPU 会响应自动退出（AE）事件，自动推进 guest 的指令指针（`RIP`），以确保在后续执行 `VMRUN`（虚拟机运行）指令时，能从下一条指令开始恢复执行。
+* 对于嵌套页错误（nested page faults），仅当不存在 *保留位错误（reserved bit error）* 时，才会将其视为 AE 事件。这样设计的目的是帮助区分两类嵌套页错误：
+  * 一类是因需求缺失导致的错误（即 hypervisor 需分配页），
+  * 另一类是因内存映射 I/O（MMIO）模拟导致的错误（即 hypervisor 需模拟设备）。
+* 因此，hypervisor 应在所有计划模拟的 MMIO 页上设置一个页表保留位（例如某个保留地址位）。（这可能包括启用 SEV 后会变为保留位的地址位，详见 15.34.1 节。）此举可确保 MMIO 页错误会成为非自动退出（NAE）事件 —— 这一点至关重要，因为只有这样，才能调用 guest 的 `#VC` 处理程序，协助完成 MMIO 模拟。
+  * **译注**： TDX 在需要 MMIO 模拟时，是通过 hypervisor 清除 EPT 页表项的 *抑制 #VE 位* 让 TD guest 的 MMIO 再次访问造成 `#VE` 弹射回 TD VM，guest kernel 中的 `#VE` 处理程序，发出 `TDG.VP.VMCALL<#VE.RequestMMIO>` 请求 hypervisor 模拟 MMIO 访问。
+* 而属于 AE 事件的嵌套缺页不会调用任何 guest 处理程序，此时 hypervisor 应根据需要分配内存，随后恢复 guest 的执行。
+* ==注意，当 guest 在启用 SEV-ES 的情况下运行时，在嵌套缺页发生时，指令字节（存储于 VMCB 偏移量 `0xD0` 处）绝不会被保存到 VMCB 中==。
+
+### 15.35.5 `#VC` 异常
+* 当启用 SEV-ES 的 guest 正在运行，且发生非自动退出（NAE）事件时，**硬件始终会生成** VMM 通信异常（`#VC`，VMM Communication Exception）。
+  * **译注**：TDX 的 `#VE` 有可能是硬件/微码生成，也有可能是 TDX module 注入。
+* ==`#VC` 异常属于精确型、伴随型错误类异常（precise, contributory, fault type exception），使用异常向量 `29`（exception vector 29），且该异常 **无法被屏蔽**。==
+* `#VC` 异常的错误码等于触发此次 NAE 事件的 `#VMEXIT` 代码（详见附录 C）。
+* 在响应 `#VC` 异常时，典型流程如下：
+  * Guest 处理程序通过检查错误码，确定异常产生的原因，并判断为处理该事件需将哪些寄存器状态复制到 GHCB 中；
+  * 随后，处理程序执行 `VMGEXIT` 指令，创建一个自动退出（AE）事件并调用 hypervisor。
+  * 在之后执行 `VMRUN` 指令恢复 guest 后，guest 将从 `VMGEXIT` 指令之后继续执行
+    * 此时处理程序可查看 hypervisor 返回的结果，并根据需要将 GHCB 中的状态复制回自身内部状态。
+* 该流程如图 15-31 所示。
+* 注意，hypervisor 不应设置 VMCB 中针对 `#VC` 异常的拦截位（intercept bit）—— 此举会阻碍 guest 对 NAE 事件的正常处理。
+* 同理，对于可能在 `#VC` 处理程序中发生的事件（如执行 `IRET` 指令），hypervisor 也应避免设置其拦截位。
+
+![EXAMPLE #VC FLOW](pic/apm-vc.png)
+
+### 15.35.6 `VMGEXIT`
