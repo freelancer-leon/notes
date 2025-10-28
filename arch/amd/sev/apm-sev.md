@@ -292,7 +292,7 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 ### 15.35.5 `#VC` 异常
 * 当启用 SEV-ES 的 guest 正在运行，且发生非自动退出（NAE）事件时，**硬件始终会生成** VMM 通信异常（`#VC`，VMM Communication Exception）。
   * **译注**：TDX 的 `#VE` 有可能是硬件/微码生成，也有可能是 TDX module 注入。
-* ==`#VC` 异常属于精确型、伴随型错误类异常（precise, contributory, fault type exception），使用异常向量 `29`（exception vector 29），且该异常 **无法被屏蔽**。==
+* ==`#VC` 异常属于精确型、伴随型 **fault** 类型的异常（precise, contributory, fault type exception），使用异常向量 `29`（exception vector 29），且该异常 **无法被屏蔽**。==
 * `#VC` 异常的错误码等于触发此次 NAE 事件的 `#VMEXIT` 代码（详见附录 C）。
 * 在响应 `#VC` 异常时，典型流程如下：
   * Guest 处理程序通过检查错误码，确定异常产生的原因，并判断为处理该事件需将哪些寄存器状态复制到 GHCB 中；
@@ -306,3 +306,97 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 ![EXAMPLE #VC FLOW](pic/apm-vc.png)
 
 ### 15.35.6 `VMGEXIT`
+* `VMGEXIT` 指令会创建自动退出（AE）事件，其设计目的是允许 guest 的 `#VC` 处理程序在需要时调用 hypervisor。
+* `VMGEXIT` 指令会触发一个带有 `VMEXIT_VMGEXIT` 代码的 AE 事件，且其行为类似陷阱（**trap**）
+  * 这意味着在后续执行 `VMRUN` 指令恢复 guest 时，程序会从 `VMGEXIT` 指令的下一条指令开始继续执行。
+* `VMGEXIT` 指令没有对应的 hypervisor 拦截位（intercept bit），因为在启用 SEV-ES 的 guest 中执行该指令时，会无条件触发 AE 事件。
+* 仅当 guest 在 SEV-ES 模式启用的状态下运行时，`VMGEXIT` 操作码（opcode）才有效。若 guest 未启用 SEV-ES 模式，`VMGEXIT` 操作码会被当作 `VMMCALL` 操作码处理，且行为与 `VMMCALL` 指令完全一致。
+* Guest 的 `#VC` 处理程序可使用 “`VMGEXIT` 参数（`VMGEXIT` Parameter）” 功能，以原子方式向 hypervisor 传递一个参数。
+  * CPUID `Fn8000_001F_EAX` 寄存器的 “`VMGEXIT` 参数” 位（`VmgexitParameter`，第 `17` 位）若为 `1`，则表示支持该功能。
+  * 启用 “`VMGEXIT` 参数” 功能的方式为：在 VMSA（Virtual Machine State Area，虚拟机状态区域）的 `SEV_FEATURES`（SEV 功能）字段中，将第 `10` 位（`VmgexitParameter`）设为 `1`。
+  * 当该功能启用后，执行 `VMGEXIT` 指令时，`RAX` 寄存器的值和当前特权级（`CPL`）值会被写入 VMCB 控制区域的对应偏移量处：
+    * `RAX` 值写入偏移量 `0x110`（`VMGEXIT_RAX`）
+    * `CPL` 值写入偏移量 `0x118`（`VMGEXIT_CPL`）
+
+### 15.35.7 GHCB
+* GHCB 是一个未加密的内存页，用于 SEV-ES guest 与 hypervisor 之间传输寄存器状态。
+* Guest VM 可通过 GHCB MSR（地址为 `C001_0130`）设置 GHCB 的位置。
+  * 该 MSR 的值还会被包含在 VMCB 中，并分别在执行 `VMRUN` 指令时恢复、在触发 `#VMEXIT` 事件时保存。
+* GHCB MSR 的作用是配置 GHCB 内存页的位置，该 MSR 的格式定义如下：
+
+位   | 功能
+-----|----------------------------
+63:0 | GHCB 的 Guest 物理地址（GPA）
+
+* 该 MSR 的值会从 VMCB 偏移量 `0x0A0` 处进行保存/恢复。建议软件向该 MSR 写入页对齐地址（page-aligned address）。
+* GHCB MSR 仅能在 guest mode 下进行读写操作；若在 host mode 下尝试访问该 MSR，将触发 `#GP`。
+* 硬件从不直接访问 GHCB，因此 GHCB 的格式并非固定不变。
+
+### 15.35.8 `VMRUN`
+
+* 当 SEV-ES 启用时，*VM save state area* 不再位于 VMCB 页面的偏移量 `0x400` 处。相反，它会从一个名为 “**虚拟机保存区域（VM Save Area，简称 VMSA）**” 的独立页面的偏移量 `0x0` 处开始存放
+  * 该页面的位置由 VMCB 偏移量 `0x108` 处的 “**VMSA 指针（VMSA Pointer）**” 指示。
+  * VMSA 指针的值以 host 物理地址（host physical address）的形式存储。
+* 硬件访问 VMSA 保存状态区域时，始终会采用加密内存访问方式，并使用 guest 的内存加密密钥（guest's memory encryption key）进行加密。
+* 当硬件执行 `VMRUN` 指令，且 VMCB 指示 guest 已启用 SEV-ES 时，硬件会从 *VMSA 指针* 所指向的加密保存状态区域中加载 guest 状态。
+* 此外，除标准 `VMRUN` 指令的行为外，该指令还会执行以下操作：
+  * 计算 guest 状态的校验和（checksum），以验证状态完整性
+  * 执行 `VMLOAD` 操作，加载额外的 guest 寄存器状态
+  * 加载 guest 通用寄存器（GPR）状态
+  * 加载 guest 浮点单元（FPU）状态
+* 当 guest 启用 SEV-ES 后，加密的虚拟机状态保存区域定义会扩展，以包含所有通用寄存器（GPR）和浮点单元（FPU）的状态（详见附录 B）。
+* 若 `VMRUN` 流程的任意环节发生错误，或完整性校验和不匹配，则会生成 `#VMEXIT` 事件，并附带 `VMEXIT_INVALID` 代码。
+* 注意，若 SEV-ES 已启用，`VMRUN` 指令会忽略 VMCB“*清理位（clean bits）*” 的第 `5-10` 位（`bits 10:5`），并始终重新加载完整的 guest 状态。
+* 另需注意，对于启用 SEV-ES 的 guest ，尽管 `VMRUN` 指令会加载完整的 guest 状态，但仅会将 “传统 `VMRUN` 指令定义的最小 hypervisor 状态”（详见 15.5.1 节）保存到 host save area。
+  * Hypervisor 需自行将其所需的额外段状态（segment state）和通用寄存器（GPR）值保存到 host save area —— 因为这些值会在后续 `#VMEXIT` 事件发生时由硬件自动恢复。
+  * 硬件在执行 `VMRUN` 指令时，不会自动保存 hypervisor 的 host 状态（如 `FS` 段寄存器、`STAR` 寄存器或通用寄存器的值）。
+  * 有关 VMCB 各状态项的详细分类，详见附录 B。
+* 最后需注意，对启用 SEV-ES 的 guest 进行 “事件注入（event injection）” 存在限制：不允许注入软件中断（software interrupts）以及第 `3`、`4` 号异常向量（exception vectors `3` and `4`）。
+  * 若尝试执行此类注入操作，`VMRUN` 指令会失败，并返回 `VMEXIT_INVALID` 错误码。
+* **译注**：TDX 则是将 TD VM 的所有 VMCS 都纳入运行在 SEAM Root Mode 的 TDX module 的管理范畴；而 TDX module 会给每个 pCPU 创建一个 VMCS，作为一个虚拟 CPU 来管理，因此 TD host 的状态也会被纳入 TDX module 的管理范畴。它们都运行在加密内存中。
+
+### 15.35.9 Automatic Exits
+* 当启用 SEV-ES 的 guest 正在执行时，若发生自动退出（AE）事件，硬件会自动将 guest 状态保存到 *加密保存状态区域*，并从 host 保存区域恢复 hypervisor 状态。
+* 具体而言，除 `#VMEXIT` 流程标准的状态保存/恢复操作外，硬件还会执行以下步骤：
+  * 执行 `VMSAVE` 操作，保存额外的 guest 寄存器状态
+  * 保存 guest 通用寄存器（GPR）状态
+  * 保存 guest 浮点单元（FPU）状态
+  * 计算并存储 guest 状态的校验和（checksum），供后续执行 `VMRUN` 指令时使用
+  * 执行 `VMLOAD` 操作，加载额外的 host 寄存器状态
+  * 加载 host  通用寄存器（GPR）状态
+  * 将浮点单元（FPU）状态重新初始化为复位值
+* 从 host 保存区域加载 host 通用寄存器状态时，采用的格式与附录 B 中描述的 “扩展 VMCB（虚拟机控制块）” 格式一致。
+  * 所有寄存器状态要么从该区域加载，要么重新初始化为默认值，因此 hypervisor 无法看到任何 guest 寄存器状态。
+
+### 15.35.10 控制寄存器写 Traps
+* 对于启用 SEV-ES 的 guest，不建议使用 `CR [0-15]_WRITE` 拦截功能。
+  * 这些拦截发生在控制寄存器被修改之前，而由于该寄存器位于加密状态镜像中，hypervisor 无法自行修改控制寄存器。
+* 建议 hypervisor 改用新的 `CR [0-15]_WRITE_TRAP` 和 `EFER_WRITE_TRAP` 拦截位，这些拦截位会在控制寄存器被修改后引发自动退出（AE）事件。
+  * 通过这些拦截，hypervisor 能够跟踪 guest 模式，并验证是否启用了所需功能。
+  * 当触发这些陷阱时，控制寄存器的新值会被保存到 `EXITINFO1 中`。
+* `CR` 写入陷阱仅支持 SEV-ES guest。
+* 注意，SEV-ES guest 对 `EFER.SVME` 的写入操作始终会被硬件忽略。
+
+### 15.35.11 与 SMI 和 `#MC` 的交互
+
+* 当启用 SEV-ES 的 guest 正在执行时，若发生 SMI，平台 SMI 处理程序不会立即执行。相反，该 SMI 会处于挂起状态，并生成一个 `#VMEXIT` 事件，且附带 SMI 相关退出代码（`#VMEXIT (SMI)`）。
+  * 随后，在执行 `STGI`（Set Global Interrupt Enable，设置全局中断使能）指令后，SMI 会在 hypervisor 上下文环境中被处理。
+* 注意，无论 VMCB 中 SMI 拦截位（SMI intercept bit）的值如何，都会出现此行为。
+* 在部分系统中，machine check error 会首先以 SMI 的形式送达。
+  * 若此类情况发生在启用 SEV-ES 的 guest 执行期间，会生成 `#VMEXIT (SMI)` 事件，且 `EXITINFO1[MCREDIR]`（machine check redirect bit，机器检查重定向位）会被设为 `1`（详见第 522 页 “SMI 拦截（SMI Intercept）” 章节）。
+  * 如前文所述，该 SMI 会保持挂起状态，直至 `STGI` 指令执行。
+  * 在 `STGI` 指令执行后、平台 SMI 处理程序完成执行时，hypervisor 应检查 `MCREDIR` 位，以判断此次 `#VMEXIT (SMI)` 事件是否由 guest 中的 machine check error 引发，并进行相应处理。
+* **译注**：TDX 在启用 EMCA gen2 后`#MC` 的行为类似，也是先产生 SMI。然后将 SMI 转化为 VM-exit 到 TDX module 去处理，TD exit 的时候递交 pending 的 SMI，由 SMI 去注入 `#MC` 到 host VMM。
+
+## 15.36 Secure Nested Paging (SEV-SNP) 
+* SEV-SNP 功能为加密 VM 提供了额外保护，旨在实现与 hypervisor 更强的隔离。SEV-SNP 需与 15.34 节和 15.35 节分别描述的 SEV 和 SEV-ES 功能配合使用，且需要启用并使用这些功能。
+* SEV-SNP 的主要作用是为虚拟机内存提供完整性保护，以帮助防范基于 hypervisor 的攻击 —— 这类攻击通常依赖于破坏 guest 数据、地址别名（aliasing）、重放（replay）及其他多种攻击手段。
+* 为实现这一目标，系统引入了一种名为 **反向映射表（Reverse Map Table，RMP）** 的全新系统级数据结构，用于对内存访问执行额外的安全检查（详见 15.36.3 节）。
+* 除内存保护外，SEV-SNP 还包含多项安全功能，包括全新的虚拟机特权级别（Virtual Machine Privilege Level，VMPL）架构、中断注入限制以及侧信道（side-channel）保护。这些功能旨在支持更多使用场景并增强安全防护能力。
+* 本章虽描述了 SEV-SNP 的 CPU 硬件行为，但该技术还需配合使用 AMD Secure Processor（AMD-SP）的 SEV-SNP Application Binary Interface（ABI），以管理 SEV-SNP 虚拟机的生命周期事件。更多详情请参阅 AMD 官网发布的《SEV-SNP ABI 规范》（文档编号：PID#56860）。
+
+### 15.36.1 确定对 SEV-SNP 的支持
+* 可通过读取 CPUID `Fn8000_001F [EAX]` 来确定对 SEV-SNP 的支持，如 15.34.1 节所述。
+  * 第 `4` 位表示对 SEV-SNP 的支持，第 `5` 位表示对 VMPL 的支持。
+  * 在实现中可用的 VMPL 数量由 CPUID `Fn8000_001F [EBX]` 的第 `15-12` 位（bits `15:12`）指示。
+* CPUID `Fn8000_001F [EAX]` 还会指示对 SEV-SNP guest 所使用的其他安全功能的支持情况，这些功能将在以下章节中介绍。
