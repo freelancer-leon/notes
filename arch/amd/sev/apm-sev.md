@@ -400,3 +400,179 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
   * 第 `4` 位表示对 SEV-SNP 的支持，第 `5` 位表示对 VMPL 的支持。
   * 在实现中可用的 VMPL 数量由 CPUID `Fn8000_001F [EBX]` 的第 `15-12` 位（bits `15:12`）指示。
 * CPUID `Fn8000_001F [EAX]` 还会指示对 SEV-SNP guest 所使用的其他安全功能的支持情况，这些功能将在以下章节中介绍。
+
+### 15.36.2 开启 SEV-SNP
+
+* SEV-SNP 的机密性保护依赖于 SEV。启用 SEV-SNP 之前，必须设置 MSR `C001_0010`（即 `SYSCFG` 寄存器，系统配置寄存器）中的 `MemEncryptionModEn` 位（内存加密模式使能位），且需满足 15.34.3 节中描述的所有编程要求。
+* 当 MSR `C001_0010` 中的 `SecureNestedPagingEn` 位（安全嵌套分页使能位）设为 `1` 后，部分 MSR（模型专用寄存器）将无法再修改。这些寄存器包括：
+  * 固定范围 MTRR 寄存器（内存类型范围寄存器，详见 7.7.2 节）
+  * IORR 寄存器（I/O 范围寄存器，详见 7.9.2 节）
+  * TOP_MEM 与 TOP_MEM2 寄存器（内存顶部地址寄存器，详见 7.9.4 节）
+  * SMM_KEY 寄存器（系统管理模式密钥寄存器，详见 15.32.2 节）
+  * `SYSCFG` MSR 本身
+* 若在 `SecureNestedPagingEn` 位设为 `1` 后尝试写入 `SYSCFG` MSR，该操作将被硬件忽略；而尝试写入上述其他 MSR 时，会触发 `#GP(0)`。
+* 启用 SEV-SNP 需执行两步初始化流程：
+  * 按照 15.36.4 节的描述构建反向映射表（Reverse Map Table，RMP）；
+  * 在系统的每个核心上，设置 MSR `C001_0010`（`SYSCFG`）中的 `VMPLEn` 位（虚拟机特权级别使能位）与 `SecureNestedPagingEn` 位。
+* 当 SEV-SNP 功能已全局启用后，可在虚拟机创建阶段，通过设置 VMSA 偏移量 `0x3B0` 处 `SEV_FEATURES` 字段的第 `0` 位，为单个虚拟机（per-VM basis）激活 SEV-SNP。
+* 此外，已激活 SEV-SNP 的虚拟机还必须启用 SEV-ES（配置方式详见 15.35.2 节）与 SEV（配置方式详见 15.34.3 节）。
+* 本章中，“*SNP-enabled（SNP 已启用）*” 一词表示 SEV-SNP 已在 `SYSCFG` MSR 中全局启用；“*SNP-active（SNP 已激活）*” 一词表示 SEV-SNP 已在特定虚拟机的 VMSA 之 `SEV_FEATURES` 字段中启用。
+  * 处于 “SNP-enabled” 状态的系统，既支持 “SNP-active” 虚拟机，也支持非 “SNP-active” 虚拟机；
+  * 而 “SNP-active” 虚拟机仅能在 “SNP-enabled” 状态的系统上运行。
+
+### 15.36.3 反向映射表 Reverse Map Table
+* **反向映射表（Reverse Map Table，简称 RMP）** 是一个由所有逻辑处理器全局共享的数据结构，驻留在系统内存中，用于确保系统物理地址（system physical address）与guest 物理地址（guest physical address）之间呈一对一映射关系。
+* 对于每一个可能分配给 guest 使用的物理内存页，RMP 中都会对应存在一条表项。如表格 15-34（Table 15-34）所述，RMP 表项包含该系统物理页（system physical page）的安全属性信息。
+* Table 15-34. Fields of an RMP Entry
+
+名称                   | 说明
+-----------------------|-------------------------
+Assigned               | 用于指示系统物理页已分配给 guest 还是 AMD-SP 的标志位。<br/> 0：hypervisor 所有<br/> 1：一个 guest 或 AMD-SP 所有
+Page_Size              | 页面大小的编码。<br/> 0：4KB 页<br/> 1：2MB 页
+Immutable              | 用于指示软件可通过 x86 RMP 操作指令修改表项的标志位。<br/> 0：RMP 条目可以被软件修改<br/> 1：RMP 条目不能被软件修改
+Guest_Physical_Address | 与该页关联的 Guest 物理地址（GPA）
+ASID                   | 该页被分配给的 guest 的 ASID
+VMSA                   | 用于指示该页是一个 VMSA 页面的标志位。<br/> 0：非 VMSA 页<br/> 1：VMSA 页
+Validated              | 用于指示 guest 已经检验过该页面的标志位。<br/> 0：guest 还未校验过该页<br/> 1：guest 用 `PVALIDATE` 校验过该页
+Permissions[0]         | 该页的 VMPL 权限掩码。更多细节见 15.36.7 节
+...                    | .
+Permissions[n-1]       | .
+
+* RMP 的完整性通过以下方式保障：仅允许软件通过特定专用指令对其进行操作，具体包括：
+  * `RMPUPDATE`：供 hypervisor 使用，用于修改 RMP 表项中的 `Guest_Physical_Address`、分配状态（`Assigned`）、页大小（`Page_Size`）、不可变（`Immutable`）及地址空间标识符（`ASID`）字段。详见 15.36.5 节。
+  * `PSMASH`：允许 hypervisor 将 RMP 中一个 `2MB` 的表项拆分为 `512` 个 `4KB` 的表项。详见 15.36.11 节。
+  * `RMPADJUST`：允许 guest 修改 RMP 表项的 *VMPL 权限掩码*。详见 15.36.7 节。
+  * `PVALIDATE`：允许 guest 写入 RMP 表项中的 “已验证（`Validated`）” 标志位。详见 15.36.6 节。
+* 当 SEV-SNP 全局启用后，它会对页访问控制施加更多限制。Hypervisor 和 guest 通过上述指令来强制实施这些内存访问限制。若违反 RMP 所规定的内存访问限制，将会触发异常。详见 15.36.10 节。
+
+### 15.36.4 初始化 RMP
+
+* 本节介绍单级 RMP（反向映射表）的初始化流程。两级 RMP 的相关内容，请参见第 621 页的 15.36.22 节 “分段式 RMP（Segmented RMP）”。
+* MSR `C001_0132`（即 `RMP_BASE` 寄存器，RMP 基地址寄存器）定义了 RMP 第一个字节的系统物理地址；
+* MSR `C001_0133`（即 `RMP_END` 寄存器，RMP 结束地址寄存器）定义了 RMP 最后一个字节的系统物理地址。
+* 软件必须在全局启用 SEV-SNP 之前，为系统中的每个 core 配置完全相同的 `RMP_BASE` 和 `RMP_END` 值。
+* `RMP_BASE` 与 `(RMP_END + 1)` 必须按 `8KB` 对齐。AMD-SP 可能会对这两个寄存器提出更高的对齐要求，具体需参考最新的 AMD-SP 规范以确定所需的对齐方式。
+* `RMP_BASE` 至 `RMP_END` 之间的内存区域包含两部分：
+  * 首先是一个 `16KB` 的区域，用于处理器的记录管理（bookkeeping）；
+  * 后续区域则存放 RMP 表项，每个表项大小为 `16B`。
+    * **译注**：TDX 的 PAMT 表的每个表现大小也是 `16B`
+* RMP 的大小决定了运行时 hypervisor 可分配给 SNP-active 的虚拟机的物理内存范围。
+* RMP 覆盖的系统物理地址空间从 `0x0` 开始，直至通过以下公式计算得出的地址：
+  `((RMP_END + 1 – RMP_BASE – 16KB) / 16B) × 4KB`
+* 例如，若 `RMP_BASE` 等于 `0x10_0000`，要覆盖前 `4GB` 物理内存，需将 `RMP_END` 设置为 `0x110_3FFF` —— 此时 RMP 的大小略超过 `16MB`。
+* 当 SEV-SNP 全局启用后，内存访问会受到 RMP 检查的限制。为确保 RMP 初始状态 “已知且无限制（known and non-restrictive）”，
+  * 软件应在设置 `SYSCFG` MSR 中的 `SecureNestedPagingEn` 位之前，将 `RMP_BASE` 至 `RMP_END` 范围内的所有内存写零。
+  * 之后，hypervisor 需请求 AMD-SP 完成 RMP 的初始化收尾工作：AMD-SP 会对 RMP 进行初始化，防止所有软件直接写入 `RMP_BASE` 至 `RMP_END` 之间的内存。
+  * 此后，所有 RMP 表项的操作都必须通过 x86 RMP 操作指令，或通过与 AMD-SP 的交互来完成。
+
+### 15.36.5 Hypervisor RMP 管理
+* Hypervisor 通过修改分配给 SNP-active 的 guest 的页面所对应的 RMP 表项，来管理这些页面的 SEV-SNP 安全属性。
+* 由于 RMP 经 AMD-SP 初始化后会禁止对其进行直接访问，因此 hypervisor 必须使用 `RMPUPDATE` 指令来修改 RMP 表项。
+* 通过 `RMPUPDATE` 指令，hypervisor 可修改 RMP 表项中的 `Guest_Physical_Address`、分配状态（`Assigned`）、页大小（`Page_Size`）、不可变（`Immutable`）及地址空间标识符（`ASID`）字段。
+* SEV-SNP 会根据页面 RMP 表项中 “分配状态（`Assigned`）”“地址空间标识符（`ASID`）” 和 “不可变（`Immutable`）” 字段的设置（具体规则见表 15-35），为每个系统物理页关联一个所有者。
+* 一个页面的所有者可为 hypervisor、guest 或 AMD-SP。
+* Table 15-35. RMP Page Assignment Settings
+
+所有者      | Assigned | ASID         | Immutable
+-----------|----------|---------------|------------
+Hypervisor | 0        | 0             | -
+Guest      | 1        | Guest 的 ASID | -
+AMD-SP     | 1        | 0             | 1
+
+* 当 hypervisor 将某一页面分配给 guest 时，还必须设置该页面 RMP 表项中的 `Guest_Physical_Address` 与 “页大小（`Page_Size`）”，使其与 guest 的嵌套页表（nested page table）映射关系保持一致。
+  * 若未保持一致，guest 对该页面的访问将触发 fault。有关 RMP 访问检查的详细说明，请参见 15.36.10 节。
+* 对于 “不可变（`Immutable`）” 字段设为 `0` 的页面，hypervisor 可通过执行 `RMPUPDATE` 指令，将 “分配状态（`Assigned`）” 设为 `0` 且 “地址空间标识符（`ASID`）” 设为 `0`，从而将该页面转为 hypervisor 所有的页面。
+* 若页面的 “不可变（`Immutable`）” 字段设为 `1`，hypervisor 需请求 AMD-SP 协助完成页面的归属转换。
+* 根据 RMP 初始化要求需将 RMP 区域内存写零（详见 15.36.4 节），系统中所有页面的初始归属均为 hypervisor。
+  * 未被 RMP 覆盖的内存页面，将被视为 hypervisor 的永久页面（permanent hypervisor pages）。
+  * 例如，若 RMP 配置为仅覆盖前 `4GB` 内存，则在 RMP 访问检查机制中，所有 `4GB` 以上的内存都会被认定为 hypervisor 内存。
+
+### 15.36.6 页面验证
+
+* 分配给 VM 的每个页面要么处于已验证状态，要么处于未验证状态，这由该页面 RMP 表项中的 “已验证（`Validated`）” 标志位指示。
+* VM 对未验证的私有页面进行内存访问时，会触发 `#VC`。
+* 所有页面初始分配时均处于未验证状态。
+* VM 可使用 `PVALIDATE` 指令来设置或清除页面的 `Validated` 标志位。通常，VM 应在启动期间使用 `PVALIDATE` 指令设置 `Validated` 标志位，以获得对 hypervisor 分配的内存的访问权限。
+* 如果 VM 的内存空间需要缩减（例如在内存热插拔事件后），它可在之后使用 `PVALIDATE` 指令清除 `Validated` 标志位。
+* 页面验证机制使 VM 能够检测到 hypervisor 对其页面的意外重映射。
+  * VM 在访问某一页面之前，必须先验证该页面。
+  * 页面一旦通过验证，hypervisor 若使用 `RMPUPDATE` 指令对该页面执行解除分配、重新分配或重映射操作，都会导致该页面变为未验证状态。
+    * 此时，VM 可通过访问未验证页面时触发的 `#VC` 异常，检测到页面映射被篡改。
+* `PVALIDATE` 指令接收 *一个页大小* 作为输入参数，指示应验证 `4KB` 页面还是 `2MB` 页面。
+  * 如果 VM 尝试对嵌套页表中映射为 `2MB` 或 `1GB` 页面执行 `4KB` 页面的 `PVALIDATE` 指令，`PVALIDATE` 会触发 `#VMEXIT`（NPF，页未命中）。
+    * 在这种情况下，hypervisor 可使用 `PSMASH` 指令（详见 15.36.11 节）将较大的页面拆分为 `4KB` 页面。
+    * **译注**：TDX 中的 page demotion 逻辑
+  * 如果 VM 尝试对嵌套页表中映射为 `4KB` 页面执行 `2MB` guest 页面的 `PVALIDATE` 指令，`PVALIDATE` 会向 VM 返回错误指示。
+    * 此时，VM 可改为对每个 `4KB` 页面单独执行 `PVALIDATE` 指令。
+    * **译注**：TD guest 中也有类似的逻辑
+
+### 15.36.7 Virtual Machine Privilege Levels
+
+* 典型的 guest VM 可能包含多个 vCPU。SEV-SNP 对这一能力进行了扩展，允许 vCPU 在不同的 **虚拟机特权级别（Virtual Machine Privilege Levels，简称 VMPL）** 下运行。
+* ==在单个 vCPU 内部，不同 VMPL 通过唯一的 VMSA 来表示，且各 VMPL 的运行方式需互斥（即同一时间 vCPU 仅能以一个 VMPL 运行）。==
+* 每个 VMSA 都会被分配一个 VMPL，该 VMPL 由 VMSA 中的 `VMPL` 字段标识。
+* VMPL 以数字形式标识，起始值为 `0`，其中 `VMPL0` 的特权级别最高。
+* 某一硬件实现中可用的 VMPL 数量，由 `CPUID` 指令 `Fn8000_001F` 功能的 `EBX` 寄存器第 `15-12` 位（`bits 15:12`）指示。
+* 借助 VMPL 功能，guest 可对自身地址空间进行细分，并以 “按页（page-by-page）” 为粒度，为不同 vCPU 实现特定的访问控制规则。
+* 处理器会根据 RMP 表项中的 *VMPL 权限掩码*，对 guest 的内存访问进行限制。
+  * 每个 RMP 表项都包含一组权限掩码，已实现的每个 VMPL 对应一个掩码。
+* ==当 guest 发起内存访问时，处理器会检查当前页面的 VMPL 权限掩码，以判断该访问是否被允许。==
+* 权限掩码各比特位的定义详见表 15-36（Table 15-36）。
+* Table 15-36. VMPL Permission Mask Definition
+
+Bit   | 名称    | 设置
+------|---------|----------------
+0     | Read    | `0`：读引起 `#VMEXIT(NPF)` <br/>`1`：允许读
+1     | Write   | `0`：写引起 `#VMEXIT(NPF)` <br/>`1`：允许写
+2     | Execute-User | `0`：在 `CPL 3` 执行引起 `#VMEXIT(NPF)` <br/>`1`：允许在 `CPL 3` 执行
+3     | Execute-Supervisor | `0`：在 `CPL < 3` 执行引起 `#VMEXIT(NPF)` <br/>`1`：允许在 `CPL < 3` 执行
+4     | Supervisor-Shadow-Stack | `0`：SSS 访问引起 `#VMEXIT(NPF)` <br/>`1`：允许 SSS 访问
+5 - 7 | Reserved | SBZ
+
+* 当 guest 的访问因 VMPL 权限违规而触发 `#VMEXIT(NPF)` 时，`EXITINFO1` 中的某个错误码位会被置位，具体规则详见 15.36.10 节。
+* 注意，配置页面时仅允许 VMPL *写权限* 而不允许 *读权限* 的做法是非法的；对这类非法配置的页面发起数据访问，会触发 `#VMEXIT(NPF)`。
+* 当 hypervisor 通过 `RMPUPDATE` 指令将页面分配给 guest 时，会为 `VMPL0` 启用完整权限（读、写、执行等），同时禁用所有其他 VMPL 的权限。
+* 之后，VM 可使用 `RMPADJUST` 指令修改数值上高于自身 VMPL 的权限。
+  * 例如，以 `VMPL0` 权限运行的 vCPU，可通过 `RMPADJUST` 指令限制某一内存页的权限，使其在 `VMPL1` 下仅具备读写权限、不具备执行权限；
+  * 但以 `VMPL1` 权限运行的 vCPU，既无法修改自身的权限，也无法修改 `VMPL0` 的权限。
+* 此外，`RMPADJUST` 指令无法授予 “超出当前 VMPL 权限掩码允许范围” 的权限。
+  * 例如，若 `VMPL1` 尝试通过该指令为 `VMPL2` 授予某页面的写权限，但 `VMPL1` 自身并不具备该页面的写权限，则 `RMPADJUST` 指令会执行失败。
+
+#### VMPL Supervisor Shadow Stack
+* VMPL Supervisor Shadow Stack（VMPL SSS）功能允许 SNP-active 的 guest（而非 hypervisor，详见 15.25.14 节）通过 “VMPL SSS 权限位” 将特定页面标记为 *SSS 页面*，从而限制哪些 guest 物理地址可用于 guest 的 supervisor 影子栈。
+  * 若 guest 对 “VMPL 权限中未标记为 SSS 页面” 的内存发起 supervisor 影子栈访问，将触发 `#VMEXIT(NPF)`。
+* VMPL SSS 功能的支持情况可通过 `CPUID` 指令判断：当 `CPUID` 功能号 `Fn8000_001F` 的 `EAX` 寄存器中 “`VmplSSS`” 位（第 `7` 位）的值为 `1` 时，表示硬件支持该功能。
+* 启用 VMPL SSS 功能需在 VMSA 的 `SEV_FEATURES` 字段中设置第 `8` 位（`VmplSSS` 位）。
+* 注意，VMPL SSS 功能与 “嵌套页表控制的 SSS 功能” 二者互斥：若 `SEV_FEATURES` 字段的 `VmplSSS` 位（第 `8` 位）设为 `1`，且 VMCB 的 `SSS` 位设为 `1`，则执行 `VMRUN` 指令会失败，并触发 `#VMEXIT(VMEXIT_INVALID)`。
+* 若 VMPL SSS 功能已启用，则无论是 supervisor 影子栈访问，还是用户态影子栈访问，都必须指向私有内存页面。
+  * 若访问的不是私有内存页面，将在 guest 中触发 `#PF` 异常，且该异常的错误码中 “`Reserved(RSV)`” 位会被置位。
+
+### 15.36.8 Virtual Top-of-Memory
+* 在 SNP-active 的 guest 的 VMSA 中，`VIRTUAL_TOM` 字段会指定一个按 `2MB` 对齐的 guest 物理地址，该地址被称为 “**虚拟内存顶部”（virtual top of memory）**。
+* 当某一 SNP-active 的 VM 的 VMSA 中，`SEV_FEATURES` 字段的第 `1` 位（`vTOM` 位）被置 `1` 时，数据访问的 `C-bit`（加密位）将由 `VIRTUAL_TOM` 字段决定，而非guest 页表内容。具体规则如下：
+  * 所有地址低于 `VIRTUAL_TOM` 的数据流访问，其有效 `C-bit` 为 `1`；
+  * 所有地址等于或高于 `VIRTUAL_TOM` 的数据流访问，其有效 `C-bit` 为 `0`。
+* **注意**，无论 `VIRTUAL_TOM` 的值如何，也无论该功能是否启用，页表访问和指令获取的有效 `C-bit` 始终为 `1`。
+* Virtual TOM MSR（`C001_0135`）寄存器，可用于修改 `VIRTUAL_TOM` 的值。
+  * 当 `CPUID` 指令功能号 `Fn8000_001F` 的 `EAX` 寄存器中 “`VirtualTom`” 位（第 `18` 位）的值为 `1` 时，表示硬件支持该 MSR。
+  * 当 Virtual TOM 功能处于激活状态时，该 MSR 寄存器支持读写；若功能未激活时尝试访问该寄存器，将触发 `#GP(0)` 异常。
+  * 此外，Virtual TOM MSR 的第 `63-52` 位和第 `20-0` 位为保留位（`Reserved`），读取时始终返回 `0`（RAZ，Read As Zero）。
+  * 对该寄存器执行 `WRMSR` 指令时，会刷新当前 ASID 所属的 TLB 条目。
+* 当 `SEV_FEATURES` 字段中  virtual top of memory 功能已启用时，guest 页表项中的 `C-bit` 必须全部设为 `0`。
+  * 若 guest 页表中某一内存访问对应的 `C-bti` 被设为 `1`，将因 “保留位错误” 触发 `#PF` 异常。
+
+### 15.36.9 Reflect `#VC`
+* 运行 SEV-SNP VM 时，CPU 会针对响应可能需要 hypervisor 交互的事件而生成 `#VC` 异常。`#VC` 异常及可能导致这些异常的事件已在 15.35.5 节中讨论。
+* SEV-SNP VM 既可以选择在其当前 guest 上下文中直接处理 `#VC` 异常，也可以将 `#VC` 异常转换为自动退出（Automatic Exits）。
+  * 此行为由 `SEV_FEATURES` 的第 `2` 位（`ReflectVC`）控制。
+    * 如果该位设置为 `1`，那么任何原本会导致 `#VC` 异常的事件都将转为自动退出。
+* 当 `#VC` 被转换为自动退出时，guest VM 会终止，并返回退出代码 `VMEXIT_VC`。
+  * `#VC` 的错误码（反映导致 `#VC` 的事件，例如 `VMEXIT_CPUID`）会被保存到 VMSA 中的 `GUEST_EXITCODE` 字段。
+  * 有关导致 `#VC` 的事件的附加信息会被保存到 VMSA 中的 `GUEST_EXITINFO1`、`GUEST_EXITINFO2`、`GUEST_EXITINTINFO` 和 `GUEST_NRIP` 字段。
+  * 保存到这些字段的信息与为所发生事件提供的标准退出信息相同。例如，如果 VM 执行了一条被标记为需要拦截的 port I/O 指令，`GUEST_EXITCODE` 字段将被设置为 `VMEXIT_IOIO`，而 `GUEST_EXITINFO1` 字段将包含有关 I/O port 访问的信息，如 15.10.2 节所定义。
+* Reflect `#VC` 功能使 `#VC` 事件能够由处于不同于发起事件的 VMPL 的 vCPU 处理。
+  * 例如，一个客户机可能包含一个由两个不同VMSA（虚拟机状态区域）组成的vCPU。其中一个VMSA定义为在VMPL0级别执行，另一个则启用了ReflectVC并定义为在VMPL3级别执行。当在VMPL3级别运行的vCPU遇到#VC情况时，相关信息会被保存到其VMSA中，控制权会交还给管理程序。然后，管理程序可以让该vCPU在VMPL0级别运行，VMPL0级别的vCPU可以读取保存到VMPL3 VMSA中的退出信息，根据需要与管理程序交互，将适当的响应数据写回VMPL3 VMSA，并指示管理程序恢复vCPU在VMPL3级别上的执行。
+
+如果#VC事件是在处理中断或异常期间发生的，GUEST_EXITINTINFO.V位将被设置。如果启用了交替注入（Alternate Injection）功能（参见15.36.15节），硬件会自动设置VMSA中的VINTR_CTRL[BUSY]位。这使更高特权级别的VMPL能够重新注入导致#VC的事件。
+
+无论ReflectVC功能是否启用，硬件都会在每次自动退出时填充GUEST_EXITCODE、GUEST_EXITINFO1、GUEST_EXITINFO2、GUEST_EXITINTINFO和GUEST_NRIP字段。对于非反射#VC的自动退出，这些字段被设置为与VMCB（虚拟机控制块）中设置的值相同。
