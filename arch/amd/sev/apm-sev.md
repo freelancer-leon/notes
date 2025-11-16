@@ -357,7 +357,7 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 
 ### 15.35.9 Automatic Exits
 * 当启用 SEV-ES 的 guest 正在执行时，若发生自动退出（AE）事件，硬件会自动将 guest 状态保存到 *加密保存状态区域*，并从 host 保存区域恢复 hypervisor 状态。
-* 具体而言，除 `#VMEXIT` 流程标准的状态保存/恢复操作外，硬件还会执行以下步骤：
+* 具体而言，除 `#VMEXIT` 流程标准的状态保存/恢复操作外，**硬件** 还会执行以下步骤：
   * 执行 `VMSAVE` 操作，保存额外的 guest 寄存器状态
   * 保存 guest 通用寄存器（GPR）状态
   * 保存 guest 浮点单元（FPU）状态
@@ -517,6 +517,7 @@ AMD-SP     | 1        | 0             | 1
 * 处理器会根据 RMP 表项中的 *VMPL 权限掩码*，对 guest 的内存访问进行限制。
   * 每个 RMP 表项都包含一组权限掩码，已实现的每个 VMPL 对应一个掩码。
 * ==当 guest 发起内存访问时，处理器会检查当前页面的 VMPL 权限掩码，以判断该访问是否被允许。==
+  * **译注**：SEV-SNP 白皮书提到过，RMP 页面权限检查在页表遍历（table-walk）结束后的 RMP 查找阶段执行
 * 权限掩码各比特位的定义详见表 15-36（Table 15-36）。
 * Table 15-36. VMPL Permission Mask Definition
 
@@ -549,10 +550,10 @@ Bit   | 名称    | 设置
 
 ### 15.36.8 Virtual Top-of-Memory
 * 在 SNP-active 的 guest 的 VMSA 中，`VIRTUAL_TOM` 字段会指定一个按 `2MB` 对齐的 guest 物理地址，该地址被称为 “**虚拟内存顶部”（virtual top of memory）**。
-* 当某一 SNP-active 的 VM 的 VMSA 中，`SEV_FEATURES` 字段的第 `1` 位（`vTOM` 位）被置 `1` 时，数据访问的 `C-bit`（加密位）将由 `VIRTUAL_TOM` 字段决定，而非guest 页表内容。具体规则如下：
+* 当某一 SNP-active 的 VM 的 VMSA 中，`SEV_FEATURES` 字段的第 `1` 位（`vTOM` 位）被置 `1` 时，数据访问的 `C-bit` 将由 `VIRTUAL_TOM` 字段决定，而非guest 页表内容。具体规则如下：
   * 所有地址低于 `VIRTUAL_TOM` 的数据流访问，其有效 `C-bit` 为 `1`；
   * 所有地址等于或高于 `VIRTUAL_TOM` 的数据流访问，其有效 `C-bit` 为 `0`。
-* **注意**，无论 `VIRTUAL_TOM` 的值如何，也无论该功能是否启用，页表访问和指令获取的有效 `C-bit` 始终为 `1`。
+* **注意**，无论 `VIRTUAL_TOM` 的值如何，也无论该功能是否启用，*页表访问* 和 *指令获取* 的有效 `C-bit` 始终为 `1`。
 * Virtual TOM MSR（`C001_0135`）寄存器，可用于修改 `VIRTUAL_TOM` 的值。
   * 当 `CPUID` 指令功能号 `Fn8000_001F` 的 `EAX` 寄存器中 “`VirtualTom`” 位（第 `18` 位）的值为 `1` 时，表示硬件支持该 MSR。
   * 当 Virtual TOM 功能处于激活状态时，该 MSR 寄存器支持读写；若功能未激活时尝试访问该寄存器，将触发 `#GP(0)` 异常。
@@ -571,8 +572,131 @@ Bit   | 名称    | 设置
   * 有关导致 `#VC` 的事件的附加信息会被保存到 VMSA 中的 `GUEST_EXITINFO1`、`GUEST_EXITINFO2`、`GUEST_EXITINTINFO` 和 `GUEST_NRIP` 字段。
   * 保存到这些字段的信息与为所发生事件提供的标准退出信息相同。例如，如果 VM 执行了一条被标记为需要拦截的 port I/O 指令，`GUEST_EXITCODE` 字段将被设置为 `VMEXIT_IOIO`，而 `GUEST_EXITINFO1` 字段将包含有关 I/O port 访问的信息，如 15.10.2 节所定义。
 * Reflect `#VC` 功能使 `#VC` 事件能够由处于不同于发起事件的 VMPL 的 vCPU 处理。
-  * 例如，一个客户机可能包含一个由两个不同VMSA（虚拟机状态区域）组成的vCPU。其中一个VMSA定义为在VMPL0级别执行，另一个则启用了ReflectVC并定义为在VMPL3级别执行。当在VMPL3级别运行的vCPU遇到#VC情况时，相关信息会被保存到其VMSA中，控制权会交还给管理程序。然后，管理程序可以让该vCPU在VMPL0级别运行，VMPL0级别的vCPU可以读取保存到VMPL3 VMSA中的退出信息，根据需要与管理程序交互，将适当的响应数据写回VMPL3 VMSA，并指示管理程序恢复vCPU在VMPL3级别上的执行。
+  * 例如，一个 guest 可能包含一个由两个不同 VMSA 组成的 vCPU。其中一个 VMSA 定义为在 `VMPL0` 级别执行，另一个则启用了 Reflect `#VC` 并定义为在 `VMPL3` 级别执行。
+  * 当在 `VMPL3` 级别运行的 vCPU 遇到 `#VC` 情况时，相关信息会被保存到其 VMSA 中，控制权会交还给 hypervisor。
+  * 然后，hypervisor 可以让该 vCPU 在 `VMPL0` 级别运行，`VMPL0` 级别的 vCPU 可以读取保存到 `VMPL3` VMSA中的退出信息，根据需要与 hypervisor 交互，将适当的响应数据写回 `VMPL3` VMSA，并指示 hypervisor 恢复 vCPU 在 `VMPL3` 级别上的执行。
+* 如果 `#VC` 事件是在处理中断或异常期间发生的，`GUEST_EXITINTINFO.V` 位将被设置。
+  * 如果启用了 *备用注入（Alternate Injection）* 功能（参见 15.36.15 节），硬件会自动设置 VMSA 中的 `VINTR_CTRL[BUSY]` 位。这使更高特权级别的 VMPL 能够重新注入导致 `#VC` 的事件。
+* 无论 Reflect `#VC` 功能是否启用，硬件都会在每次自动退出时填充 `GUEST_EXITCODE`、`GUEST_EXITINFO1`、`GUEST_EXITINFO2`、`GUEST_EXITINTINFO` 和 `GUEST_NRIP` 字段。
+  * 对于非 Reflect `#VC` 的自动退出，这些字段被设置为与 VMCB 中设置的值相同。
 
-如果#VC事件是在处理中断或异常期间发生的，GUEST_EXITINTINFO.V位将被设置。如果启用了交替注入（Alternate Injection）功能（参见15.36.15节），硬件会自动设置VMSA中的VINTR_CTRL[BUSY]位。这使更高特权级别的VMPL能够重新注入导致#VC的事件。
+### 15.36.10 RMP 和 VMPL 访问检查
 
-无论ReflectVC功能是否启用，硬件都会在每次自动退出时填充GUEST_EXITCODE、GUEST_EXITINFO1、GUEST_EXITINFO2、GUEST_EXITINTINFO和GUEST_NRIP字段。对于非反射#VC的自动退出，这些字段被设置为与VMCB（虚拟机控制块）中设置的值相同。
+- 当 SEV-SNP 全局启用后，处理器会根据 RMP 的内容对所有内存访问施加限制，无论发起访问的是 hypervisor、传统 guest VM、非 SNP guest VM 或 SNP-active guest VM。
+- 根据访问的上下文，处理器可能执行以下一项或多项检查：
+- **RMP 覆盖性检查（RMP-Covered）**：检查目标页是否被 RMP 覆盖。如果某页对应的 RMP 表项位于 `RMP_END` 之下，则该页被 RMP 覆盖。
+  - 任何未被 RMP 覆盖的页都被视为 *Hypervisor 所有页（Hypervisor-Owned page）*。
+- **Hypervisor 所有性检查（Hypervisor-Owned）**：检查若目标页被 RMP 覆盖，则该目标页的 `Assigned` bit 是否为 `0`。
+  - 如果指定系统物理地址（sPA）的页表项表明目标页大小为 `2MB`，那么该目标页所包含的所有 `4KB` 子页的 RMP 表项的 `Assigned` bit 都必须设为 `0`。
+  - 当 SEV-SNP 启用时，对 `1GB` 页的访问仅会安装 `2MB` 的 TLB 表项，因此在本检查中，`1GB` 访问会被当作 `2MB` 访问处理。
+- **Guest 所有性检查（Guest-Owned）**：检查目标页 RMP 表项的 `ASID` 字段是否与当前 VM 的 `ASID` 匹配。
+- **反向映射检查（Reverse-Map）**：检查目标页 RMP 表项的 `Guest_Physical_Address` 是否与转换得到的 guest 物理地址一致。
+- **已验证检查（Validated）**：检查目标页 RMP 表项的 `Validated` 字段是否为 `1`。
+- **可修改性检查（Mutable）**：检查目标页 RMP 表项的 `Immutable` 字段是否为 `0`。
+- **页大小检查（Page-Size）**：检查是否满足以下条件：
+  - 若嵌套页表表明页大小为 `2MB` 或 `1GB`，则目标页 RMP 表项的 `Page_Size` 字段为 `1`。
+  - 若嵌套页表表明页大小为 `4KB`，则目标页 RMP 表项的 `Page_Size` 字段为 `0`。
+- **VMPL检查（VMPL）**：检查 VMPL 权限掩码是否允许该访问。详情参见 15.36.7 节。
+- Table 15-39 说明了各项检查分别在何种条件下执行，以及检查失败时会产生何种 fault。
+- Table15-39. RMP Memory Access Checks
+
+Host/Guest | SNP-Active | 访问类型 | C-Bit | 检查             | Fault
+-----------|------------|---------|-------|------------------|-----------
+Host       | -  | 数据写，页表访问 | -    | Hypervisor-Owned | `#PF`
+Guest      | 否 | 数据写，页表访问 | -    | Hypervisor-Owned | `#VMEXIT(NPF)`
+Guest      | 是 | 取指令，页表访问 | -    | RMP-Covered,<br/>Guest-Owned,<br/>Reverse-Map,<br/>Mutable,<br/>Page-Size | `#VMEXIT(NPF)`
+.          | . | .               | -   | Validate         | `#VC`
+.          | . | .               | -   | VMPL             | `#VMEXIT(NPF)`
+Guest      | 是 | 数据写          | 0   | Hypervisor-Owned | `#VMEXIT(NPF)`
+Guest      | 是 | 数据写，数据读  | 1    | RMP-Covered,<br/>Guest-Owned,<br/>Reverse-Map,<br/>Mutable,<br/>Page-Size | `#VMEXIT(NPF)`
+.          | . | .               | 1   | Validate         | `#VC`
+.          | . | .               | 1   | VMPL             | `#VMEXIT(NPF)`
+
+* 此外，任何导致 RMP 检查的内存访问，若被访问的 RMP 表项正被其他逻辑处理器使用，都可能引发 RMP 违规（`#PF` 或 `#VMEXIT(NPF)`）。这种情况下，软件应重试该访问。
+* 如果内存访问导致页表项中的 `Accessed` bit 或 `Dirty` bit 被修改，SEV-SNP 会将这种页表修改操作视为与 *数据写入* 访问类似的操作。对于任何此类页表修改访问，其访问的页大小本质上为 `4KB`。
+* 若启用了 Virtual TOM 功能（参见 15.36.8 节），则会根据 Virtual TOM 的设置来确定特定 guest 访问的 `C-bit`。
+  * Virtual TOM 地址以下的 guest 物理地址，其 `C-bit` 被视为 `1`。
+* 与 RMP 检查相关的 `#PF` 会设置以下 *错误位*：
+  * 第 31 位（RMP）：若错误由 RMP 检查或 VMPL 检查失败导致，该位设为 `1`；否则为 `0`。
+  * 本节描述的所有 RMP 违规都会将该位置`1`。
+* 此外，`#VMEXIT(NPF)` 在 `EXITINFO1` 中可能设置以下错误位：
+  * 第 34 位（ENC）：若 guest 的有效 `C-bit` 为 `1`，该位设为 `1`；否则为 `0`。
+  * 第 35 位（SIZEM）：若错误由 `PVALIDATE` 或 `RMPADJUST` 与 RMP 之间的大小不匹配导致，该位设为 `1`；否则为 `0`。
+  * 第 36 位（VMPL）：若错误由 VMPL 权限检查失败导致，该位设为`1`；否则为 `0`。
+  * 第 37 位（SSS）：若 VmplSSS 功能已启用，该位的值与 VMPL 权限掩码的 `SSS`位（第 4 位）一致。
+* 在 guest 的任何指令获取、页表访问或对私有（`C=1`）内存的数据写入操作中，有效 `C-bit` 始终为 `1`。
+* ==本节描述的所有 RMP 检查都在页表和嵌套页表访问检查 **之后** 执行，且优先级低于现有的分页检查。==
+* 表 15-39 反映了 RMP 检查的相对优先级：VMPL 检查的优先级最低，其次是页面验证检查。
+  * 例如，若 guest 访问同时未通过页大小检查和已验证检查，会触发 `#VMEXIT(NPF)` 而非 `#VC`，因为页大小检查的优先级高于页面验证检查。
+* 页面验证检查失败会导致 `#VC`，错误码为 `PAGE_NOT_VALIDATED（0x404）`。
+  * 发生该错误时，出错的 guest 虚拟地址会被保存到 `CR2` 寄存器中。
+
+### 15.36.11 大页管理
+
+* Hypervisor 可能需要将分配给 guest 的 `2MB` 页面转换为 `4KB` 页面。这种转换被称为 **页面拆分（page smashing）**，且要求 hypervisor 修改 RMP。
+* Hypervisor 可使用 `RMPUPDATE` 指令修改 RMP 中该页面的大小，但此操作会清除 `Validated` bit。
+* 若需将 `2MB` 页面转换为 `4KB` 页面，且不改变该内存区域的已验证状态，hypervisor 可使用 `PSMASH` 指令。
+* `PSMASH` 指令接收一个按 `2MB` 对齐的系统物理地址作为参数，在拆分页面的同时保留 RMP 中的 `Validated` bit。
+* `PSMASH` 指令成功执行后，生成的 `4KB` 页面对应的 RMP 表项将包含以下内容：
+   * `Guest_Physical_Address` 字段为连续值；
+   * `Page_Size` 设为 `0`，表示该表项对应 `4KB` 页面；
+   * 其他所有 RMP 字段均从原 `2MB` 页面的 RMP 表项中复制而来。
+* Hypervisor 可能需要拆分 `2MB` 页面的场景之一是：guest 对“由 `2MB` 页面后备（backed by a 2MB page）”的 `4KB` 页面执行 `PVALIDATE` 或 `RMPADJUST` 指令。此时，这两条指令会触发 `#VMEXIT(NPF)`，且 `EXITINFO1` 中的 `SIZEM` bit 会被置位。
+  * 要解决此问题，hypervisor 可拆分该 `2MB` 页面，之后让 guest 重新执行上述指令。
+* 若 guest 希望验证一个按 `2MB` 对齐的内存区域，应首先尝试以 `2MB` 为大小参数执行 `PVALIDATE` 指令。
+  * 如果该内存区域实际由 `4KB` 页面提供支持，`PVALIDATE` 指令会终止并返回 `FAIL_SIZEMISMATCH` 错误。
+  * 这种情况下，guest 应改为对每个 `4KB` 页面单独执行 `PVALIDATE` 指令。
+  * 通过这种方式，guest 可利用更高效的 `2MB` 映射（无需拆分），同时避免 hypervisor 执行不必要的页面拆分操作。
+* 表 15-40（Table 15-40）总结了可能出现的页大小不匹配场景及对应的解决方法。
+* Table 15-40. PVALIDATE/RMPADJUST Page Size Mismatch Combinations
+
+请求页面大小 | RMP 中的页面大小 | 错误条件        | 推荐处理方式
+------------|-----------------|----------------|---------------
+4 KB        | 2 MB            | `#VMEXIT(NPF)` | `PSMASH`（hypervisor）
+2 MB        | 4 KB            | `FAIL_SIZEMISMATCH` | guest 对每个 `4KB` 子页分别重试（操作）
+
+* 将一组连续的 `4KB` 页面反向转换为单个 `2MB` 页面的操作，需要 guest 或 AMD-SP的协助，以确保该操作的执行安全性。
+
+### 15.36.12 运行 SNP-Active 虚拟机
+
+* 与 SEV-ES guests 类似，SNP-active guest 由 hypervisor 控制的 VMCB 和 guest 加密的 VMSA 共同描述。
+* SNP-active guest 的初始 VMSA 必须通过与 AMD-SP 协同配置来搭建，其详细流程超出本手册范围。
+  * 这包括 VMSA 中 `SEV_FEATURES` 字段的初始配置——该字段用于指示特定 VM 实例已启用的 guest 安全功能。
+  * 若 SEV-SNP 未全局启用，对 SNP-active guest 执行 `VMRUN` 指令将失败，并返回 `VMEXIT_INVALID` 错误码。
+
+#### `VMRUN` 检查（VMRUN Checks）
+* 当系统全局启用 SEV-SNP 后，`VMRUN` 指令会对多个内存页面执行额外的安全检查。
+  * 这些检查与 15.36.10 节描述的检查类似。
+  * 注意：若某检查依赖页大小，则采用 `4KB` 页大小进行判断。
+* 除该节所述检查外，还新增一项检查：
+  * **VMSA 检查**：验证 RMP 表项中的 `VMSA` 字段是否等于 `1`。
+* RMP 表项中的 `VMSA` 字段可由 AMD-SP 设置，或由运行在 `VMPL0` 的 vCPU 通过 `RMPADJUST` 指令设置。
+* `VMRUN` 指令执行的具体检查如下：
+* Table 15-41. VMRUN Page Checks
+
+页类型 | SNP-Active    | 检查             | Fault
+------|---------------|------------------|--------------------------
+VMCB  | -             | Hypervisor-Owned | `#GP(0)`
+AVIC Backing Page | - | Hypervisor-Owned | `#VMEXIT(VMEXIT_INVALID)`
+VMSA  | 否            | Hypervisor-Owned | `#VMEXIT(VMEXIT_INVALID)`
+VMSA  | 是            | RMP-Covered<br/> Guest-Owned<br/> Reverse-Map<br/> Mutable<br/> VMSA | `#VMEXIT(VMEXIT_INVALID)`
+
+* AVIC 逻辑表（AVIC Logical Table）、AVIC 物理表（AVIC Physical Table）、IOPM_BASE_PA（I/O 权限映射基址物理地址）、MSRPM_BASE_PA（MSR 权限映射基址物理地址）以及 `nCR3` 不会被 `VMRUN` 指令检查，因为这些结构仅由硬件读取。
+* `VMRUN` 指令执行成功后，VMCB 页面、所有 AVIC 后备页面（AVIC Backing Page）以及 VMSA 页面会被硬件标记为 `in-use`；
+  * 此时若尝试通过 `RMPUPDATE` 等指令修改这些页面的 RMP 表项，将返回 `FAIL_INUSE` 响应。
+* 当发生 `#VMEXIT` 事件后，硬件会自动清除 `in-use` 标记。
+
+#### 其他检查（Other Checks）
+* 除 `VMRUN` 指令执行的 RMP 检查外，部分与 VM 相关的其他操作也会执行特殊的 RMP 检查：
+* `VM_HSAVE_PA` MSR 中存储的地址，是 `VMRUN` 指令用于保存 host 状态的页面地址，该地址必须指向一个 hypervisor-owned 的页面。
+  * 若此检查失败，执行 `WRMSR` 指令会触发 `#GP(0)`）。
+  * 注意，`VM_HSAVE_PA` MSR 的值不能为 `0` —— 若 `HSAVE_PA` 为 `0` 时尝试执行 `VMRUN`，指令会失败并触发 `#GP(0)` 异常。
+* `VMSAVE` 指令同样会执行检查，确保目标页面归 hypervisor 所有。
+  * 如 15.36.8 节所述，`VMSAVE` 指令不应与 SEV-ES guest 及 SNP-active guest 配合使用，但可用于其他类型的 guest。
+  * 若在 host 模式下执行 `VMSAVE`，且目标页面未通过 RMP 检查，会触发 `#GP(0)` 异常。
+  * 若 `VMSAVE` 指令处于虚拟化状态（详见 15.33.1 节），且在 guest 中执行时目标页面未通过 RMP 检查，会触发 `#VMEXIT(NPF)`，标识为 RMP 权限错误。
+* 在支持 SEV-SNP 的处理器中，不支持在 SEV-ES guest 或 SNP-active guest 内部执行 `VMSAVE` 指令，执行后会触发 `#VMEXIT(VMSAVE)`（即 `VMSAVE` 指令导致的虚拟机退出）。
+
+#### 拦截行为（Intercept Behavior）
+* SNP-active guest 执行的所有 port I/O 指令（`IN`、`INS`、`OUT`、`OUTS`）及 `CPUID` 指令，无论 VMCB 和 IOPM（I/O 权限映射）中设置的拦截位如何，都会被视为“需拦截（intercepted）”。
+* 在 SNP-active guest 中执行这些指令，会无条件触发“非自动退出（Non-Automatic Exit）”。
