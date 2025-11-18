@@ -404,11 +404,11 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 ### 15.36.2 开启 SEV-SNP
 
 * SEV-SNP 的机密性保护依赖于 SEV。启用 SEV-SNP 之前，必须设置 MSR `C001_0010`（即 `SYSCFG` 寄存器，系统配置寄存器）中的 `MemEncryptionModEn` 位（内存加密模式使能位），且需满足 15.34.3 节中描述的所有编程要求。
-* 当 MSR `C001_0010` 中的 `SecureNestedPagingEn` 位（安全嵌套分页使能位）设为 `1` 后，部分 MSR（模型专用寄存器）将无法再修改。这些寄存器包括：
+* 当 MSR `C001_0010` 中的 `SecureNestedPagingEn` 位设为 `1` 后，部分 MSR 将无法再修改。这些寄存器包括：
   * 固定范围 MTRR 寄存器（内存类型范围寄存器，详见 7.7.2 节）
   * IORR 寄存器（I/O 范围寄存器，详见 7.9.2 节）
-  * TOP_MEM 与 TOP_MEM2 寄存器（内存顶部地址寄存器，详见 7.9.4 节）
-  * SMM_KEY 寄存器（系统管理模式密钥寄存器，详见 15.32.2 节）
+  * `TOP_MEM` 与 `TOP_MEM2` 寄存器（内存顶部地址寄存器，详见 7.9.4 节）
+  * `SMM_KEY` 寄存器（系统管理模式密钥寄存器，详见 15.32.2 节）
   * `SYSCFG` MSR 本身
 * 若在 `SecureNestedPagingEn` 位设为 `1` 后尝试写入 `SYSCFG` MSR，该操作将被硬件忽略；而尝试写入上述其他 MSR 时，会触发 `#GP(0)`。
 * 启用 SEV-SNP 需执行两步初始化流程：
@@ -700,3 +700,348 @@ VMSA  | 是            | RMP-Covered<br/> Guest-Owned<br/> Reverse-Map<br/> Muta
 #### 拦截行为（Intercept Behavior）
 * SNP-active guest 执行的所有 port I/O 指令（`IN`、`INS`、`OUT`、`OUTS`）及 `CPUID` 指令，无论 VMCB 和 IOPM（I/O 权限映射）中设置的拦截位如何，都会被视为“需拦截（intercepted）”。
 * 在 SNP-active guest 中执行这些指令，会无条件触发“非自动退出（Non-Automatic Exit）”。
+
+### 15.36.13 调试寄存器
+* SEV-ES guest 与 SNP-active guest 可通过设置 `SEV_FEATURES` 字段的第 `5` 位（`DebugVirtualization`，调试虚拟化位），选择启用 CPU 调试寄存器的完全虚拟化功能。
+* 当该功能启用时，`DR [0-3]` 寄存器（调试寄存器 `0-3`）与 `DR[0-3]_ADDR_MASK` 寄存器（调试寄存器 `0-3` 地址掩码寄存器）会作为 “B 类状态（type ‘B’ state）” 进行切换（详见附录 B）。
+
+### 15.36.14 内存类型
+* 当 SNP-active guest 访问内存时，硬件会强制使用一致性内存类型（coherent memory types）。
+* 这一机制可防止 hypervisor 通过为 guest 的内存访问配置非一致性内存类型（non-coherent memory types），来破坏 guest 内存的完整性。
+* 若根据 15.25.8 节所述的内存类型判定逻辑，确定某一 guest 内存访问属于非一致性访问，**硬件** 会按照表 15-40（Table 15-40）中的说明，强制将其转换为一致性内存类型。
+* Table 15-40. Non-Coherent Memory Type Conversion
+
+非一致性内存类型 | 强制一致性内存类型
+----------------|--------------------
+UC              | CD
+WC              | WC+
+
+#### 补充说明（基于 SEV-SNP 内存安全语境）
+* **一致性内存类型（Coherent Memory Types）**：指遵循 CPU 缓存一致性协议的内存类型，确保多个处理器核心、硬件组件对同一内存地址的访问结果一致（即某一组件修改内存后，其他组件能读取到最新值），是保障内存数据可靠性的基础。
+* **非一致性内存类型（Non-Coherent Memory Types）**：不遵循缓存一致性协议的内存类型，可能导致不同组件访问同一内存时获取到过期数据；hypervisor 若恶意使用此类内存类型，可能引发 guest 内存数据错乱，因此 SEV-SNP 硬件会强制拦截并修正。
+* **内存类型判定逻辑**：SEV-SNP 架构中用于判断内存访问应归属何种类型的硬件逻辑（详见 15.25.8 节），涵盖访问主体（guest/hypervisor）、页面属性（私有 / 共享）等判断维度，非一致性判定结果会触发硬件的类型强制修正。
+
+### 15.36.15 TLB 管理
+
+* 对于 non-SNP-active guest，当 hypervisor 将某一 VMSA 迁移到新的逻辑处理器时，必须确保该 VMSA 无法使用任何过期（不正确）的 TLB 转换条目，以防止 guest 内存被破坏。
+* 而对于 SNP-active guest，为避免在 “正确管理 guest TLB 内容” 这一环节依赖 hypervisor，硬件会检测 VMSA 的迁移行为，并自动为该 guest 管理 TLB。
+* 硬件通过 VMSA 中的两个字段跟踪相关信息：`TLB_ID`（字节偏移量 `0x3D0`）和 `PCPU_ID`（字节偏移量 `0x3D8`）。
+  * 在 guest 创建阶段，软件应将 `TLB_ID` 和 `PCPU_ID` 初始化为 `0`。
+  * 在该 VMSA 的整个生命周期内，后续这两个字段的值均由硬件管理。
+* 在运行过程中，若有需求，软件可显式将 `PCPU_ID` 写为 `0`，以强制在下次对该 VMSA 执行 `VMRUN` 指令时刷新 TLB。
+  * 若执行此操作，硬件会在刷新 TLB 后，将 `PCPU_ID` 字段设为非零值。
+* 例如，当 guest 软件执行 `RMPADJUST` 指令修改某一 VMPL 的权限时，可能需要确保所有以目标 VMPL 运行的 vCPU 的现有 TLB 条目不再被使用。
+  * 此时，guest 软件可通过将受影响 VMSA 的 `PCPU_ID` 写为 `0` 来实现这一目的。
+  * 当这些 VMSA 通过 `VMRUN` 指令重新进入运行状态时，硬件会确保现有 TLB 条目不再被使用，并将 `PCPU_ID` 设为非零值。
+  * Guest 软件可通过检查该值是否为非零，来确认操作已完成，再继续执行后续流程。
+* 与所有类型的 guest 相同，hypervisor 可根据需求，使用 VMCB 中的 `TLB_CONTROL` 字段强制刷新 TLB。
+  * 当 hypervisor 向 `TLB_CONTROL` 字段写入 `0x3` 或 `0x7` 时，guest 的全局 TLB 条目和非全局 TLB 条目都会被置为无效。
+
+### 15.36.16 中断注入限制（Interrupt Injection Restrictions）
+* SNP-active guest 可分别通过设置 `SEV_FEATURES` 字段的第 `3` 位和第 `4` 位，选择启用“受限注入（Restricted Injection）”或“交替注入（Alternate Injection）”功能。
+  * 这两项功能会强制施加额外的中断与事件注入安全保护，旨在防范恶意注入攻击。
+  * 对于特定的 VMSA，这两项功能互斥；若尝试同时启用二者，执行 `VMRUN` 指令时会触发 `#VMEXIT(VMEXIT_INVALID)`。
+
+#### 受限注入（Restricted Injection）
+* 此功能会禁用所有基于 hypervisor 的中断排队与事件注入，仅保留一个新的异常向量—— `#HV`（向量号 `28`）。
+  * 该向量专为 SNP guest 预留，但 **从不由硬件生成**。
+  * 仅允许向启用了“受限注入”的 VMSA 注入 `#HV` 异常，且 `#HV` 属于良性异常，仅能以“异常”类型（`VMCB.EVENTINJ[Type]=3`）注入，且不携带错误码。
+* 启用“受限注入”的 guest 需通过软件管理的半虚拟化接口（para-virtualization interface）与 hypervisor 通信，传递事件相关信息。
+  * 该接口可将 `#HV` 注入用作“门铃信号（doorbell）”，告知 guest 已有新事件添加。
+* 若 hypervisor 尝试注入任何不支持的事件，或在启用 AVIC（高级虚拟化中断控制器）的情况下运行 guest，那么对“启用受限注入”的 guest 执行 `VMRUN` 指令会失败，并返回`VMEXIT_INVALID` 错误码。
+
+#### 交替注入（Alternate Injection）
+* 此功能会用“guest 控制的排队与注入”替代所有基于 hypervisor 的中断排队与事件注入。
+* 当某一 VMSA 中启用“交替注入”后，`VMRUN` 指令会从以下两个 VMSA 字段读取事件注入相关信息：
+  * 事件注入控制信息：读取 VMSA 的 `EventInjCtrl` 字段（偏移量 `0x3E0`）；
+  * 中断排队信息：读取 VMSA 的 `VIntrCtrl` 字段（偏移量 `0x3B8`）。
+* 该功能旨在用于多 VMPL 架构，使高特权级 VMSA 能直接向低特权级 VMSA 注入事件与中断。
+* 启用“交替注入”后，`VMRUN` 指令会忽略 VMCB 中 `EventInjCtlr` 字段（偏移量 `0xA8h`）的值；
+* 虽会处理 VMCB 中 `VIntrCtrl` 字段（偏移量 `0x60`），但仅使用其中的“虚拟中断屏蔽（`V_INTR_MASKING`）”“虚拟 GIF 模式（Virtual GIF Mode）”和“ AVIC 启用（AVIC Enable）”位。
+  * 若 guest 已启用“交替注入”，则“AVIC 启用”位必须设为 `0`，否则 `VMRUN` 指令会失败，并返回 `VMEXIT_INVALID` 错误码。
+  * `VIntrCtrl` 字段的其余子字段（`V_TPR`、`V_IRQ`、`VGIF`、`V_INTR_PRIO`、`V_IGN_TPR`、`V_INTR_VECTOR`、`V_NMI`、`V_NMI_MASK`、`V_NMI_EN`）均从 VMSA 中读取。
+  * 此外，加密的 `VIntrCtrl` 字段第 `10` 位定义为“中断影子（`INT_SHADOW`）”位，而 VMCB 偏移量 `0x68` 第 `0` 位处未加密的 `INT_SHADOW` 位会被忽略。
+  * 当发生 `#VMEXIT` 时，仅会将 `V_TPR`、`V_IRQ`、`V_NMI`、`V_NMI_MASK` 和 `INT_SHADOW` 的值写回加密的 `VIntrCtrl` 字段。
+* 在启用“交替注入”的 guest 中，加密的 `VIntrCtrl` 字段第 `63` 位定义为 `BUSY` bit。
+  * 执行 `VMRUN` 指令时，若 `VIntrCtrl[BUSY]` 设为 `1`，`VMRUN` 会失败并返回 `VMEXIT_BUSY` 错误码。
+  * `BUSY` bit 的作用是：当软件正在修改 VMSA 时，可将其临时标记为“不可运行”状态。
+
+#### 额外拦截行为（Additional Intercept Behavior）
+* 在启用上述两项功能（受限注入或交替注入）之一的 guest 中，还存在硬件强制的额外拦截行为：
+  * 对于任意一项功能，无论 VMCB 中设置的拦截位如何，硬件都会将物理 INTR、NMI、INIT 及 `#MC` 事件视为 “需拦截”。
+  * 在启用 “交替注入（Alternate Injection）” 的情况下，无论 `MSR_PROT`（MSR 保护）拦截配置及 MSR 保护位图如何，guest 对 x2APIC MSR 范围（MSR 地址 `0x800-0x8FF`）的任何 MSR 访问都会被拦截。
+    * 在此场景下，拦截行为与 “MSR 位图指示对应 MSR 需拦截” 时的行为一致。
+
+### 15.36.17 侧信道防护
+* SEV-SNP 针对特定侧信道攻击的可选防护措施。
+
+#### 分支目标缓冲区隔离（Branch Target Buffer Isolation）
+* SNP-active guest 可通过设置 `SEV_FEATURES` 字段的第 `7` 位（`BTBIsolation`），选择启用 *分支目标缓冲区隔离* 模式。
+* 分支目标缓冲区（Branch Target Buffer，BTB）是 CPU 内部用于间接分支预测的结构，SNP-active guest 可选择对其施加额外限制，以助力防范某些基于推测执行的侧信道攻击。
+* 当 BTB 隔离功能启用且 guest 处于运行状态时，CPU 硬件会确保：该 guest 上下文之外的任何代码，都无法影响硬件在 guest 内部基于 BTB 执行的预测。
+  * 硬件会跟踪 BTB 中预测信息的来源，并在维护隔离性有必要时，清空 BTB 内容。
+* 在支持 BTB 隔离的硬件中，若当前上下文的 `SPEC_CTRL[IBRS]`（推测控制寄存器的间接分支限制选择位）已启用，则不会写入新的 BTB 预测信息。
+  * 因此，建议临时执行的 non-guest 软件（如 hypervisor 退出处理代码）将 `SPEC_CTRL[IBRS]` 设为 `1`。
+  * 这能确保该上下文的间接分支信息不会存储到 BTB 中，且在恢复 guest 执行时，可能无需执行 BTB 清空操作。
+
+#### 入口处的间接分支预测屏障（Indirect Branch Prediction Barrier on Entry）
+* SNP-active guest 可通过设置 `SEV_FEATURES` 字段的第 `21` 位（`IbpbOnEntry`，入口间接分支预测屏障位），选择在进入 guest 时启用间接分支预测屏障（IBPB）。
+* IBPB on Entry 功能的支持情况，可通过 `CPUID` 指令功能号 `Fn8000_001F` 的第 `31` 位（`IbpbOnEntry` bit）判断
+  * 该 bit 为 `1` 表示支持。
+* 当启用 `IbpbOnEntry` 并进入 guest 上下文时，CPU 硬件会在执行 guest 指令前，将 `PRED_CMD[IBPB]`（预测命令寄存器的间接分支预测屏障位）设为 `1`。
+
+#### 基于指令的采样（Instruction Based Sampling）
+* SEV-ES guest 与 SNP-active guest 可选择禁止 hypervisor 使用基于指令的采样（IBS）功能，以限制 hypervisor 可能收集到的、与 guest 执行相关的信息。
+* Guest 可通过设置 `SEV_FEATURES` 字段的第 `6` 位（`PreventHostIBS`，禁止 host IBS bit）启用此限制。
+* 当对已启用该防护的 guest 执行 `VMRUN` 指令时，`IbsFetchCtl[IbsFetchEn]`（IBS 取指控制寄存器的 IBS 取指使能位）和 `IbsOpCtl[IbsOpEn]`（IBS 操作控制寄存器的 IBS 操作使能位）这两个 MSR bits 必须为 `0`。
+  * 若这两个位中任意一个不为 `0`，`VMRUN` 指令将执行失败，并返回 `VMEXIT_INVALID` 错误码。
+
+### 15.36.18 Secure TSC
+
+* SNP-active guests 可通过 `SEV_FEATURES` 寄存器的第 `9` 位（`SecureTscEn`，安全时间戳计数器使能位）选择启用 **安全时间戳计数器（Secure TSC）** 功能。
+* 该功能启用后，当 guest 通过 TSC MSR 寄存器、`RDTSC` 指令或 `RDTSCP` 指令读取时间戳计数器（Time Stamp Counter）时，Secure TSC 会改变 guest 所看到的 TSC 数值。
+  * 其计算方式为：先将原始 TSC 数值与 VMSA 中的 `GUEST_TSC_SCALE`（guest TSC 比例系数）值进行缩放运算，再将运算结果与 VMSA 中的 `GUEST_TSC_OFFSET`（guest TSC 偏移量）值相加。
+  * 在此计算过程中，不会使用 P0 频率、`TSC_RATIO`（`0xC001_0104`）以及 `TSC_OFFSET`（VMCB 偏移量 `0x50`）的值。
+  * `GUEST_TSC_SCALE` 是一个 8.32 格式的定点二进制数，由 8 位整数部分和 32 位小数部分组成。
+* 关于 Secure TSC 功能的更多细节以及 `GUEST_TSC_SCALE` 的初始化方法，可参考《AMD-SP SEV-SNP ABI 规范》（AMD-SP SEV-SNP ABI specification）。
+* 启用 Secure TSC 功能的 guest 可读取 `GUEST_TSC_FREQ` MSR 寄存器（`0xC001_0134`），该寄存器会返回 guest 视角下 TSC 的有效频率（单位：`MHz`）。
+  * 此 MSR 寄存器为只读属性：若尝试向其写入数据，或在未启用 Secure TSC 功能的 guest 外部读取该寄存器，都会触发 `#GP(0)` 异常。
+* 对于已启用 Secure TSC 功能的 guest，不建议对 TSC MSR 寄存器（`0x10`）执行写入操作。
+  * 若发生此类写入，后续读取到的 TSC 数值将处于未定义状态。
+
+### 15.36.19 SEV-SNP 指令虚拟化
+
+* 当启用 SEV-SNP 时，hypervisor 会使用 `RMPUPDATE` 和 `PSMASH` 指令来修改 RMP。
+* 在嵌套虚拟化场景中，当 hypervisor 以 guest 身份运行时，这两条指令应分别替换为 `WRMSR` 指令，对应的 MSR 分别为 `VIRT_RMPUPDATE`（`0xC001_F001`）和 `VIRT_PSMASH`（`0xC001_F002`）。
+  * 其中，`VIRT_RMPUPDATE` MSR、`VIRT_PSMASH` MSR，以及用于报告 `VIRT_RMPUPDATE` 和 `VIRT_PSMASH` MSR 支持情况的 `CPUID` 功能号（`Fn8000_001F_EAX`）的第 `29` 位（`NestedVirtSnpMsr`），均未在处理器硬件中实现，需由 top-level hypervisor 进行仿真。
+* `VIRT_RMPUPDATE` MSR 输入约定：
+  * `RAX`：按 `4KB` 对齐的 GPA
+  * `RDX`：新 RMP 条目的低 8 字节（字节 `7:0`）
+  * `R8` ：新 RMP 条目的高 8 字节（字节 `15:8`）
+* `VIRT_RMPUPDATE` MSR 输出约定：
+  * `RAX`：`RMPUPDATE` 指令的返回码
+* `VIRT_PSMASH` MSR 输入约定：
+  * `RAX`：按 `2MB` 对齐的 GPA
+* `VIRT_PSMASH` MSR 输出约定：
+  * `RAX`：`PSMASH` 指令的返回码
+
+### 15.36.20 允许的 SEV 特性（Allowed SEV Features）
+* Hypervisor 可通过 Allowed SEV Features 机制，限制 SEV-SNP VM 中可启用的 SEV 功能。
+* 该机制的支持情况可通过 `CPUID` 指令判断：当 `CPUID` 功能号 `Fn8000_001F_EAX[AllowedSevFeatures](bit 27) = 1` 时，表示硬件支持 Allowed SEV Features。
+* Allowed SEV Features Mask 的启用条件为：VMCB 偏移量 `0x138` 处的第 `63` 位设为 `1`。
+* Hypervisor 可通过以下方式控制功能权限：
+  - 将 `ALLOWED_SEV_FEATURES_MASK` 中对应的位设为 `1`，允许启用特定 SEV 功能；
+  - 将该掩码中对应的位设为 `0`，禁止启用特定 SEV 功能。
+* 其中，`ALLOWED_SEV_FEATURES_MASK` 的第 `61-0` 位，与 VMSA 中 `SEV_FEATURES` 字段的第 `61-0` 位一一对应。
+* 部分 SEV 功能的使用存在双重条件：需同时满足 *Allowed SEV Features Mask 已启用* 和 *掩码中已配置允许该功能*。
+  * 若 Allowed SEV Features Mask 未启用，则这些功能不可用（详见附录 B 的表 B-4 中关于 `SEV_FEATURES` 的说明）。
+* 当 Allowed SEV Features Mask 已启用时，执行 `VMRUN` 指令会触发一项检查：
+  * 验证 VMSA 偏移量 `0x3B0` 处 `SEV_FEATURES` 字段中所有已置 `1` 的位，是否在`ALLOWED_SEV_FEATURES_MASK` 中也同样置`1`。
+  * 若不满足该条件，`VMRUN` 指令会执行失败，并返回 `VMEXIT_INVALID` 错误码。
+* 当发生 `#VMEXIT` 事件时，`SEV_FEATURES` 字段的值会被保存到 VMCB 偏移量 `0x140` 处的 `GUEST_SEV_FEATURES` 字段中。
+
+### 15.36.21 Secure AVIC
+* 安全高级虚拟化中断控制器（Secure AVIC）功能可为对性能敏感的 APIC 访问提供硬件加速，并支持为 SEV-SNP guest 管理其专属的 APIC 状态。
+* 此外，Secure AVIC 还具备安全防护能力：通过限制可注入到 SEV-SNP guest 中的事件类型，助力防范恶意注入攻击。
+
+#### 15.36.21.1 启用 Secure AVIC
+* Secure AVIC 的硬件支持情况可通过 `CPUID` 指令判断：当 `CPUID` 功能号 `Fn8000_001F` 的 `EAX` 寄存器中 `SecureAvic` 位（第 `26` 位）的值为 `1` 时，表示硬件支持 Secure AVIC。
+* 当 `SEV_FEATURES` 字段的 `SecureAvic` 位（第 `16` 位）被置 `1` 时，将选择进入 Secure AVIC 模式。
+* 在 Secure AVIC 模式下，guest 可将 “Secure AVIC Control MSR” 的 `SecureAvicEn` 位（第 `0` 位）置 `1`，以启用 guest APIC 后备页面及完整的 Secure AVIC 功能。
+* 此外，该功能的启用还依赖于 VMCB 中 `ALLOWED_SEV_FEATURES_MASK` 的值。
+* 注意，Secure AVIC 功能仅支持 x2APIC MSR 接口。
+
+#### 15.36.21.2 `VMRUN` and `#VMEXIT`
+* Secure AVIC 模式与“受限注入（Restricted Injection）”、“交替注入（Alternate Injection）”及“hypervisor 控制的 AVIC 模式”三者互斥。
+  * 若 `SecureAvic` 位（`SEV_FEATURES` 第 `16` 位）设为 `1`，且同时满足以下任一条件，执行 `VMRUN` 指令将失败，并触发 `#VMEXIT(VMEXIT_INVALID)`：
+    - VMCB 中的 `AVIC Enable` bit 设为 `1`；
+    - `SEV_FEATURES` 中的“受限注入（RestrictedInjection）”bit 或“交替注入（AlternateInjection）”bit 设为 `1`。
+* `VMRUN` 指令会从 VMSA 偏移量 `0x320` 处加载“Secure AVIC Control MSR”。
+  * 若 `SecureAvicEn` 位（该 MSR 第 `0` 位）设为 `1`，且 `GuestApicBackingPagePtr`（guest APIC 后备页面指针）并非有效的 guest 物理地址（GPA），`VMRUN` 指令将执行失败，并触发 `#VMEXIT(VMEXIT_INVALID)`。
+* 在 Secure AVIC 模式下，从 VMCB 和 VMSA 加载的中断控制信息，与“交替注入（Alternate Injection）”模式下加载的信息一致。
+* 当 `SecureAvicEn` 位设为 `1` 时，将忽略从 VMSA 加载的 “虚拟 INTR（可屏蔽中断）”和“虚拟 VNMI（虚拟不可屏蔽中断）”信息，转而按以下规则确定：
+1. **IRR（中断请求寄存器）更新**：  
+   * Guest APIC 后备页面中的 `IRR` 字段，会用 hypervisor 希望注入的 `IRR` 值进行更新。
+   * 若 `UpdateIRR` 位（VMCB 中控制 `IRR` 更新的标志位）设为 `1`，
+     * 需先将“guest-controlled AllowedIRR mask”与“host-controlled RequestedIRR”执行 **逻辑与** 运算，
+     * 再将结果与 guest APIC 后备页面的 `IRR` 字段执行 **逻辑或** 运算，最终更新 `IRR` 字段。  
+   * 其中，256 位的 `AllowedIRR` 向量通过 guest 后备页面中的 8 个 32 位寄存器指定：
+     * Guest Allowed IRR 的第 `n` 位，对应后备页面偏移量（`0x204 + n/32`）处寄存器的第（`n mod 32`）位；
+     * `RequestedIRR` 则在 VMCB 偏移量 `0x150` 处指定。
+2. **虚拟中断状态字段更新**：  
+   * 硬件会评估 guest APIC 后备页面的内容，并自动更新“`V_IRQ`（虚拟中断请求）”、“`V_INTR_PRIO`（虚拟中断优先级）”、“`V_IGN_TPR`（忽略虚拟任务优先级）”和“`V_INTR_VECTOR`（虚拟中断向量）”字段。
+3. **`V_NMI` 位设置规则**：  
+   * 满足以下任一条件时，硬件会设置 `V_NMI` 位（虚拟不可屏蔽中断标志）：
+     - VMSA 中“guest-controlled V_NMI” bit 设为 `1`；
+     - VMSA 中“guest-controlled AllowedNMI” bit 与 VMCB 中“host-controlled V_NMI” bit 均设为 `1`；
+     - Guest APIC 后备页面中 “`NmiReq`（不可屏蔽中断请求）”bit（偏移量 `0x278` 第 `0` 位）设为 `1`。
+* 当 `SecureAvicEn` 位设为 `1` 时，`VMRUN` 指令会执行以下清除操作：
+  - 清除 guest APIC 后备页面中的 `NmiReq` 位；
+  - 将 VMCB 中的 `UpdateIRR` 字段和 `RequestedIRR` 字段清零。
+* 在支持 Secure AVIC 的处理器上，若 VMSA 的 `VIntrCtrl` 字段中 `BUSY` bit 设为 `1`，对 SEV-ES guest 或 SEV-SNP guest 执行 `VMRUN` 指令将失败，并返回`VMEXIT_BUSY` 错误码。
+* 在 Secure AVIC 模式下发生 `#VMEXIT` 时，硬件会执行以下保存操作：
+  - 将“guest 虚拟中断状态（`VIntrCtrl` 字段第 `15-0` 位）”和“Secure AVIC Control MSR”的值保存到 VMSA 中；
+  - 若 `EXITINTINFO` 的 `VECTOR` 字段不等于 `29`（即非 `#VC` 异常），则将 `EXITINTINFO` 写入 VMSA 的 `EVENTINJ` 字段。
+  - 此操作可确保处理器在下次执行 `VMRUN` 时，自动重新注入此前被中断的事件。
+* 在 Secure AVIC 模式下，无论 VMCB 中对应事件的“拦截位”取值如何，硬件都会将“物理INTR（物理可屏蔽中断）”、“NMI（不可屏蔽中断）”、“INIT（初始化信号）”及“`#MC`”事件视为“需拦截”状态。
+
+#### 15.36.21.3 Secure AVIC Control MSR
+* Secure AVIC Control MSR 用于在 guest 中配置 Secure AVIC 功能。该 Secure AVIC Control MSR（`C001_0138`）的字段定义如下：
+* Figure 15-32. Secure AVIC Control MSR
+
+![Secure AVIC Control MSR](pic/sec-avic-ctrl-msr.png)
+
+Bits  | 助记符       | 描述      | 访问类型
+------|-------------|-----------|----------
+63:52 | 保留         |.          | MBZ
+51:12 | GuestApicBackingPagePtr | guest APIC 后备页面指针 | R/W
+11:2  | 保留         | .         | MBZ
+1     | AllowedNmi   | 允许 NMI 的 host 注入 | R/W
+0     | SecureAvicEn | Secure Avic 开启      | R/W
+
+* Secure AVIC Control MSR 仅能在 Secure AVIC 模式下访问。
+  * 若在非 Secure AVIC 模式下尝试访问该 MSR，将触发 `#GP(0)` 异常。
+* 向该 MSR 写入数据时，若 `SecureAvicEn`（Secure AVIC 使能位）” 已设为 `1`，且 “guest APIC 后备页面指针（Guest APIC Backing Page Pointer）” 并非有效的 guest 物理地址（GPA），则会生成 `#GP (0)` 异常。
+
+#### 15.36.21.4 Guest APIC Backing Page
+
+##### Guest 对 local APIC 寄存器的访问
+* Guest 对 local APIC 寄存器的访问会被重定向至系统内存中的 “guest APIC 后备页面”。
+* 该后备页面的 GPA 存储在 VMSA 中，guest 可通过 Secure AVIC Control MSR 对其进行管理。
+
+##### Guest APIC 后备页面的内存固定要求
+* 在 `VMRUN` 至 `VMEXIT` 的期间，必须将 vCPU 对应的 guest APIC后备页面 *固定（pinned）* 在系统内存中。
+  * 这是因为当 Secure AVIC 功能启用时，一些 AVIC 硬件加速流程可能不支持重启。
+* 若 AVIC 硬件对 guest 所拥有后备页面的访问触发“嵌套页缺页（nested page fault）”，会触发以下操作：
+  1. 将 `EXITINFO1`的第 `63` 位（Not Restartable，不可重启位）设为 `1`（此退出类型为“自动退出（Automatic Exit）”）；
+  2. 将 VMSA 中的 `BUSY` 位置为 `1`。
+* 若 guest APIC 后备页面未通过验证（即 RMP 表项中的 `Validated` bit 为 `0`），会触发 `#VC`，错误码为 `NOT_RESTARTABLE(0x406)`。
+* 此外，若 ReflectVC 功能已启用，还会将 VMSA 中的 `BUSY` 位置为 `1`。
+
+##### Guest APIC 后备页面的安全性要求
+* 为保障安全，guest 应确保“guest 后备页面指针（Guest Backing Page Pointer）”映射到一个加密的 guest 页面。
+
+#### 15.36.21.5 Guest APIC 访问
+* Guest 对 APIC 的访问由 Secure AVIC 硬件按以下规则处理：
+  - **允许（Allow）**：执行对后备页面的访问操作。
+  - **错误（Fault）**：不执行对后备页面的访问，且生成 `#VC`（NAE）。
+  - **陷阱（Trap）**：执行对后备页面的访问操作，且生成 `#VC`（NAE）。
+* 除 Interrupt Command Register（`ICR`）的访问行为外（详见表 15-22），Secure AVIC 模式与 x2APIC 模式下 APIC 寄存器的访问行为完全一致。
+* 当生成 `VMEXIT_AVIC_INCOMPLETE_IPI`（AVIC 不完整 IPI 退出）或 `VMEXIT_AVIC_NOACCEL`（AVIC 无加速退出），且 ReflectVC 功能已启用时，VMSA 中的 `BUSY`位会被置 `1`。
+* 在 Secure AVIC 模式下，MSRPM（MSR 权限映射表）中关于 x2APIC MSR 的拦截配置会被忽略。具体拦截规则如下：
+  - 启用 Secure AVIC 时，对 x2APIC MSR 的访问 **不会** 被拦截；
+  - 禁用 Secure AVIC 时，对 x2APIC MSR 的访问 **始终** 会被拦截。
+
+##### ICR，TPR 和 EOI 访问
+* Secure AVIC 硬件会对 Self IPI 进行加速，具体包括以下两种场景：
+  * 对 `ICR` MSR（`0x830`）的写操作，且该寄存器的 “目标简码（Destination Shorhand，DSH）” 字段值为 `self (01b)`；
+  * 对 `SELF_IPI` MSR（`0x83F`）的写操作。
+* 执行加速时，硬件会先更新后备页面中的 `IRR`，评估更新后的 `IRR` 状态；若中断屏蔽规则和优先级允许，则注入虚拟中断 `VINTR`，随后继续执行 guest 代码。
+* 若对 `ICR` 的写操作满足以下任一条件，会触发 “非自动退出（Non-Automatic Exit）”，并返回 “`AVIC_INCOMPLETE_IPI`（AVIC 未完成处理器间中断）” 退出码，且 `Reason ID` 为 `Unaccelerated IPI (5)`：
+  * `DSH` 字段值为 `all including self (10b)`；
+  * `DSH` 字段值为 `all excluding self (11b)`；
+  * `DSH` 字段值为 “特定目标（target，非自身相关）”。
+* 在 Secure AVIC 模式下，物理 APIC ID 表和逻辑 APIC ID 表均不生效。
+* 此外，Secure AVIC 硬件还会对任务优先级寄存器（`TPR`）和中断结束寄存器（`EOI`）这两类 APIC 寄存器的访问进行加速。
+  * Secure AVIC 对这两类寄存器的加速逻辑，与传统 AVIC（legacy AVIC）的加速逻辑完全一致。
+
+### 15.36.22 分段式 RMP（Segmented RMP）
+
+* 分段式 RMP 功能提供了一种分配非连续 RMP 内存的方式，有助于实现更高效的 RMP 布局，并降低 NUMA 系统中的 RMP 访问延迟。
+* 一个 RMP 段对应一段系统物理地址范围，以及一个覆盖该段中部分或全部地址的 RMP。
+* RMP 段的大小支持可编程配置，这为不同的系统配置提供了灵活性。
+* **RMP 段表（RMP Segment Table）** 用于指定每个段的 RMP 基址，以及该段中被 RMP 覆盖的内存大小。
+
+#### 15.36.22.1 判定分段式 RMP 的支持情况
+* 分段式 RMP 的硬件支持情况可通过 `CPUID` 指令判断：当 `CPUID` 功能号 `Fn8000_001F_EAX[SegmentedRmp](bit 23) = 1` 时，表示硬件支持分段式 RMP。
+  * 若支持分段式 RMP，`CPUID` 功能号 `Fn8000_0025` 的 `EAX` 寄存器与 `EBX` 寄存器会提供更多分段式 RMP 相关信息。
+* **段大小** 指的是 RMP 段表（RMP Segment Table）中一个表项所映射的系统物理地址空间大小。
+* RMP 段的 *最小大小* 与 *最大大小*，需通过 `CPUID` 功能号 `Fn8000_0025` 的 `EAX` 寄存器计算得出：
+  - **最小 RMP 段大小**：由 `Fn8000_0025_EAX[MinRmpSegSize](bits 5:0)` 计算，结果为 `2^(MinRmpSegSize) Mbytes`；
+  - **最大 RMP 段大小**：由 `Fn8000_0025_EAX[MaxRmpSegSize](bits 11:6)` 计算，结果为 `2^(MaxRmpSegSize) Mbytes`。
+* `CPUID` 功能号 `Fn8000_0025_EBX[NumCachedSegments](bits 9:0)`，表示硬件可缓存的 RMP 段定义数量。
+  * 为实现最佳性能，配置的 RMP 段数量应小于或等于该缓存数量（`NumCachedSegments`）。
+* `CPUID` 功能号 `Fn8000_0025_EBX[NumSegReduction](bit 10)`，表示 RMP 段表所定义的 RMP 段数量是否受限。具体规则如下：
+  - 当 `NumSegReduction` 值为 `0` 时，最多可定义 `512` 个 RMP 段；
+  - 当 `NumSegReduction` 值为 `1` 时，最多可定义的 RMP 段数量等于 `NumCachedSegments`（硬件可缓存的 RMP 段数量）。
+
+#### 15.36.22.2 启用分段式 RMP
+
+* Segmented RMP Configuration MSR（`C001_0136`）用于配置分段式 RMP。该 MSR 的字段定义如下：
+* Figure15-33. Segmented RMP Configuration Register
+
+![Segmented RMP Configuration Register](pic/seg-rmp-cfg-reg.png)
+
+Bits  | 助记符       | 描述           | 访问类型
+------|-------------|----------------|----------
+63:14 | 保留         |.               | MBZ
+13:8  | RmpSegSize   | RMP 段大小     | R/W
+7:1   | 保留         | .              | MBZ
+0     | SegRmpEn     | 分段式 RMP 开启 | R/W
+
+1. **寄存器写入权限与异常规则**
+   * 仅当 `SYSCFG` MSR 中的 `SecureNestedPagingEn` 为 `0` 时，才能对该寄存器执行写入操作。
+   * 若在 `SecureNestedPagingEn` 为 `1` 时尝试写入，将触发 `#GP(0)` 异常。
+     * 当 `SecureNestedPagingEn` 为 `1` 时，此 MSR 处于只读状态。
+
+2. **`RmpSegSize` 字段（RMP 段大小配置）**
+   * `RmpSegSize` 用于确定 RMP 段的大小，计算公式为 `2^(RmpSegSize)`。
+   * 当 `SegRmpEn` 为 `1` 时，`RmpSegSize` 的值必须在 `MinRmpSegSize` 和 `MaxRmpSegSize` 之间（包含边界值）。
+   * 若尝试将 `RmpSegSize` 设置为超出允许范围的值，将触发 `#GP(0)` 异常。
+3. **分段式 RMP 启用后的 `RMP_BASE` MSR 规则**
+   * 当分段式 RMP 启用时，`RMP_BASE` MSR（**RMP 基地址** MSR）指向一个 `1MB` 对齐的内存区域。该区域的使用规则如下：
+     - 区域的前 `16KB` 用于处理器的簿记操作（bookkeeping，即系统状态记录与管理）。
+     - 区域的接下来 `4KB` 包含 RMP 段表（RMP Segment Table）。
+     - 必须在 `SecureNestedPagingEn` 设置为 `1` 之前，完成 RMP 段表的填充（即写入必要配置数据）。在 AMD-SP 完成 SNP 的系统初始化后，软件将无法再修改 RMP 段表。
+4. **`RMP_BASE` 对齐检查与异常**
+   * 当 `SecureNestedPagingEn` 设置为 `1` 时，硬件会检查 `RMP_BASE` 的对齐状态。
+   * 若 `SegRmpEn` 为 `1` 且 `RMP_BASE` 的值未满足 `1MB` 对齐要求，将触发 `#GP(0)` 异常。
+
+#### 15.36.22.3 RMP 段表（RMP Segment Table）
+
+* **RMP 段表（RMP Segment Table，RST）** 用于指定每个段对应的 RMP，以及该 RMP 所覆盖的系统内存大小。
+* 每个 RST 表项的格式如下：
+* Figure 15-34. RMP Segment Table Entry
+
+![RMP Segment Table Entry](pic/rmp-seg-tbl-ent.png)
+
+##### 各字段说明
+1. **`SegRmpBase`（段 RMP 基址）**
+   * 该字段指定指向“当前段中受 RMP 覆盖的内存所对应的 RMP”的指针。
+2. **`CoveredSize`（覆盖大小）字段**
+   * 该字段表示 RMP 所覆盖的段大小，单位为 `Gbytes`。具体规则如下：
+     - 若 `CoveredSize` 等于 `0`，则当前段对应的内存 **不受 RMP 覆盖**；
+     - 若 `CoveredSize` 对应的覆盖大小 **大于** RMP 段本身的大小，则整个段均受 RMP 覆盖；
+     - 当前段对应的 RMP 大小计算公式为：`4MB × CoveredSize`。
+
+##### RST 表项相关异常规则
+1. 当 `NumSegReduction` 等于 `0` 时，若在表遍历（table walk）过程中检测到对应 RST 表项的“保留位（`reserved` bits）”被置 `1`，将生成 `#PF` 或 `VMEXIT_NPF`保留位错误。
+2. 当 `NumSegReduction` 等于 `1`，且 `SecureNestedPagingEn` 从 `0` 切换为 `1` 时，若已定义的 RST 表项所对应的 RMP **未位于有效的物理地址空间内**，将生成 `#GP(0)`。
+
+##### 分段式 RMP 启用时的 RMP 条目存在条件
+* 当分段式 RMP 启用后，系统内存中的某一页若满足以下所有条件，则存在对应的 RMP 条目：
+1. 该页的地址存在对应的 RST 表项；
+2. 对应 RST 表项中的 `CoveredSize` 值 **不等于 0**；
+3. 该页的地址处于“由 `SegRmpBase` 和 `CoveredSize` 共同定义的 RMP 覆盖范围内”。
+* 若某一页不满足上述条件（即不存在对应的 RMP 条目），则该页属于“Hypervisor-Owned page”。
+* 关于分段式 RMP 启用时如何确定 RMP 条目地址的更多细节，可参考《AMD架构程序员手册》第三卷（APM Volume 3）中的 `GET_RMP_ENTRY_ADDR` 函数说明。
+
+### 15.36.23 Guest 拦截控制（Guest Intercept Control）
+* Guest 拦截控制功能允许在较高特权级 VMPL 下执行的 vCPU，对在较低特权级 VMPL 下运行的 vCPU 的特定事件进行拦截和仿真。
+* Guest 拦截控制功能的支持情况可通过 `CPUID` 指令判断：当 `CPUID` 功能号 `Fn8000_001F[GuestInterceptCtl] (bit 22) = 1` 时，表示硬件支持该功能。
+* `SEV_FEATURES[GuestInterceptCtl]`（第 `13` 位）可用于在 SEV-SNP guest 中启用 guest 拦截控制功能。
+* Guest 控制的 “指令、异常及中断事件拦截”，由 VMSA 中从偏移量 `0x900` 开始的 `8` 个 `4` 字节拦截向量定义。
+  * 这些字段的布局，与 VMCB 中从偏移量 `0x0` 开始的 “host 控制拦截向量” 布局完全一致。
+  * 当 `SEV_FEATURES` 中的 `GuestInterceptCtl` 位被置 `1` 时，若 “host 控制的对应拦截位” 或 “guest 控制的对应拦截位” 中任意一个被置 `1`，该指令、异常或中断事件都会被拦截。
+* 注意，在 SEV-ES 和 SEV-SNP guest 中，`CPUID` 指令及所有 I/O 端口访问均会被无条件拦截。
+* Guest 控制的 “MSR 拦截”，由 VMSA 中从偏移量 `0x920` 开始的 `4` 个 `8` 字节拦截向量定义，**适用于特定 MSR**（详见第 743 页的表 B-2）。
+  * 对于每个 MSR，会为 “读访问” 和 “写访问” 分别定义 `2` 个控制位：其中
+    * *低位（lsb）* 为 “MSR 读拦截位”
+    * *高位（msb）* 为 “MSR 写拦截位”
+    * 详见第 753 页的附录 B.1 “Guest MSR Intercepts”。
+  * 若某一 MSR 的对应拦截位被置 `1`，则对该 MSR 执行的 `RDMSR` 或 `WRMSR` 指令会被拦截。
+  * 除非有明确说明，否则若某一 MSR 在这些 VMSA 向量中 **未定义拦截位**，对其执行的 `RDMSR` 或 `WRMSR` 指令将被无条件拦截。
+* Guest 控制的 MSR 拦截，与第 518 页 15.11 节 “MSR Intercepts” 中定义的 “host 控制 MSR 拦截” 相互独立
+  * 只要 “host 控制的对应拦截位” 或 “guest 控制的对应拦截位” 中任意一个指示拦截，`RDMSR` 或 `WRMSR` 指令就会被拦截。
+* ==VM 创建期间，所有未定义的 “guest 控制 MSR 拦截位” 均应初始化为 `1`。==
+* 在 Secure AVIC 模式下，x2APIC 相关 MSR 不受 guest 拦截控制功能的约束（即该功能无法拦截 x2APIC MSR 的访问）。
