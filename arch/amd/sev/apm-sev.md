@@ -5,16 +5,16 @@
 * 当 CPU 利用 AMD-V 虚拟化特性在 guest mode 下运行时，可启用 **安全加密虚拟化（Secure Encrypted Virtualization，简称 SEV）** 功能。
   * SEV 能够支持加密虚拟机（VM）的运行，在该模式下，虚拟机的代码与数据会受到安全保护，仅虚拟机自身内部可获取其解密版本。
   * 每个虚拟机可关联一个唯一的加密密钥：若其他实体使用不同密钥访问数据，SEV 加密虚拟机的数据会因解密密钥错误而无法正确解密，最终得到无法识别的乱码数据。
-* 需重点注意的是，SEV 模式与 *标准 x86 虚拟化安全模型存在显著差异*
+* 需重点注意的是，SEV 模式与标准 x86 虚拟化安全模型存在显著差异
   * 在 SEV 模式下，hypervisor 不再能检查或修改 guest 的全部代码与数据。
-  * 由 guest 管理的 guest 页表（guest page tables）可将数据内存页标记为 “私有”（private）或 “共享”（shared），允许被选中的页面在 guest 外部进行共享访问。
+  * 由 guest 管理的 guest 页表（guest page tables）可将数据内存页标记为 **私有（private）** 或 **共享（shared）**，允许被选中的页面在 guest 外部进行共享访问。
     * “私有页” 则通过 guest 专属密钥进行加密，
     * “共享页” 可被 hypervisor 访问。
 
 ### 15.34.1 确定对 SEV 的支持
 
 * 内存加密功能的支持情况会在 CPUID `8000_001F [EAX]` 中报告，具体描述参见 7.10.1 节 “Determining Support for Secure Memory Encryption” 第 238 页。其中`Bit 1` 用于指示是否支持安全加密虚拟化。
-* 当内存加密功能存在时，CPUID `8000_001F [EBX]` 和 `CPUID 8000_001F [ECX]` 会提供与内存加密使用相关的额外信息，例如，同时支持的密钥数量、用于将页面标记为加密状态的页表位等。
+* 当内存加密功能存在时，CPUID `8000_001F [EBX]` 和 CPUID `8000_001F [ECX]` 会提供与内存加密使用相关的额外信息，例如，同时支持的密钥数量、用于将页面标记为加密状态的页表位等。
 * 此外，在部分实现中，启用内存加密功能后，处理器的物理地址大小可能会缩减（例如从 `48` bits 缩减至 `43` bits）。
   * 以该示例而言，物理地址的第 `47` 至 `43` 位（`bits 47:43`）将被视为保留位，除非有其他特别说明。
   * 若某一实现支持内存加密，CPUID `8000_001F [EBX]` 会报告是否存在物理地址大小缩减的情况。
@@ -61,7 +61,7 @@ minimum SEV guest ASID                   = 0x1 (1)
 * 由此可见，到了第四代 EPYC，SEV 支持了更多的 SEV-enabled guest，但对物理地址位的重用反而减少了
 
 ### 15.34.2 Key 管理
-* 在本文档定义的内存加密扩展功能下，每个启用 SEV 的 geuest 虚拟机都关联有一个内存加密密钥，而 SME 模式（若使用，参见第 238 页的 7.10 节）则关联另一个独立密钥。
+* 在本文档定义的内存加密扩展功能下，每个启用 SEV 的 guest 虚拟机都关联有一个内存加密密钥，而 SME 模式（若使用，参见第 238 页的 7.10 节）则关联另一个独立密钥。
 * SEV 功能的密钥管理不由 CPU 负责，而是由 AMD SOC（系统级芯片）上搭载的独立处理器 —— **AMD 安全处理器（AMD Secure Processor，简称 AMD-SP）** 处理。关于 AMD-SP 运行机制的详细讨论，超出了本手册的涵盖范围。
 * CPU 软件无法感知这些密钥的具体值，但 hypervisor 应通过 *AMD-SP 驱动* 协调虚拟机密钥的加载。
   * 该协调过程还会确定 hypervisor 应为特定 guest 分配哪个 ASID（地址空间标识符）。
@@ -105,8 +105,9 @@ minimum SEV guest ASID                   = 0x1 (1)
 ![Guest Data Request](pic/guest-data-request.png)
 
 * **译注**
-* TDX 在处理 guest 缺页时需要根据 shared-bit 来区分是私有页面还是共享页面的缺页，fault in 和填 EPT 页表的路径是不同的。EPT 映射建立后，guest 的页面访问时，硬件会根据 shared-bit 是否设置去查 shared EPT 或 security EPT。
-* TDX host 可以通过 `td_params->config_flags` 中的配置的 `TDX_CONFIG_FLAGS_MAX_GPAW` 了解到 guest shared-bit 的位置
+* TDX host 在处理 TDVM 缺页时需要根据 `shared-bit` 来区分是私有页面还是共享页面的缺页，fault in 和填 EPT 页表的路径是不同的。
+  * TDX host 可以通过 `td_params->config_flags` 中的配置的 `TDX_CONFIG_FLAGS_MAX_GPAW` 了解到 guest `shared-bit` 的位置。
+* 在 EPT 映射建立后，guest 的页面访问时，硬件会根据 `shared-bit` 是否设置去走 shared EPT 页表还是 secure EPT 页表。
 
 ### 15.34.7 限制
 
@@ -250,7 +251,7 @@ Bit[s]  | 描述
 
 ### 15.35.4 退出的类型
 
-* 当 SEV-ES 启用时，所有 `#VMEXIT` 事件会被归类为 “自动退出（Automatic Exits，简称 AE）” 或 “非自动退出（Non-Automatic Exits，简称 NAE）” 两类。
+* 当 SEV-ES 启用时，所有 `#VMEXIT` 事件会被归类为 “**自动退出（Automatic Exits，简称 AE）**” 或 “**非自动退出（Non-Automatic Exits，简称 NAE）**” 两类。
   * **AE 事件** 通常是与 guest 执行过程 **异步发生** 的事件（例如中断），或是无需暴露任何 guest 寄存器状态的事件。
   * 所有其他 `#VMEXIT` 事件均归类为 **NAE 事件**；对于 NAE 事件，guest 可自主决定在 GHCB 中暴露哪些寄存器状态（若需暴露）。
 * 在 guest 执行期间，仅当 VMCB 控制区域中对应的拦截位被设为 `1` 时，`#VMEXIT` 事件（包括 AE 和 NAE）才会被触发。
@@ -285,7 +286,7 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
   * 一类是因需求缺失导致的错误（即 hypervisor 需分配页），
   * 另一类是因内存映射 I/O（MMIO）模拟导致的错误（即 hypervisor 需模拟设备）。
 * 因此，hypervisor 应在所有计划模拟的 MMIO 页上设置一个页表保留位（例如某个保留地址位）。（这可能包括启用 SEV 后会变为保留位的地址位，详见 15.34.1 节。）此举可确保 MMIO 页错误会成为非自动退出（NAE）事件 —— 这一点至关重要，因为只有这样，才能调用 guest 的 `#VC` 处理程序，协助完成 MMIO 模拟。
-  * **译注**： TDX 在需要 MMIO 模拟时，是通过 hypervisor 清除 EPT 页表项的 *抑制 #VE 位* 让 TD guest 的 MMIO 再次访问造成 `#VE` 弹射回 TD VM，guest kernel 中的 `#VE` 处理程序，发出 `TDG.VP.VMCALL<#VE.RequestMMIO>` 请求 hypervisor 模拟 MMIO 访问。
+  * **译注**： TDX 在需要 MMIO 模拟时，是通过 hypervisor 在 fault in 时填入清除 `suppress #VE bit (63)` 的 EPT 页表项，然后让 TD guest MMIO 再次访问造成 `#VE` 弹射回 TD VM，在 guest kernel 的 `#VE` 处理程序中发出 `TDG.VP.VMCALL<#VE.RequestMMIO>`，请求 hypervisor 模拟 MMIO 访问。
 * 而属于 AE 事件的嵌套缺页不会调用任何 guest 处理程序，此时 hypervisor 应根据需要分配内存，随后恢复 guest 的执行。
 * ==注意，当 guest 在启用 SEV-ES 的情况下运行时，在嵌套缺页发生时，指令字节（存储于 VMCB 偏移量 `0xD0` 处）绝不会被保存到 VMCB 中==。
 
@@ -295,10 +296,10 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 * ==`#VC` 异常属于精确型、伴随型 **fault** 类型的异常（precise, contributory, fault type exception），使用异常向量 `29`（exception vector 29），且该异常 **无法被屏蔽**。==
 * `#VC` 异常的错误码等于触发此次 NAE 事件的 `#VMEXIT` 代码（详见附录 C）。
 * 在响应 `#VC` 异常时，典型流程如下：
-  * Guest 处理程序通过检查错误码，确定异常产生的原因，并判断为处理该事件需将哪些寄存器状态复制到 GHCB 中；
-  * 随后，处理程序执行 `VMGEXIT` 指令，创建一个自动退出（AE）事件并调用 hypervisor。
-  * 在之后执行 `VMRUN` 指令恢复 guest 后，guest 将从 `VMGEXIT` 指令之后继续执行
-    * 此时处理程序可查看 hypervisor 返回的结果，并根据需要将 GHCB 中的状态复制回自身内部状态。
+  1. Guest 处理程序通过检查错误码，确定异常产生的原因，并判断为处理该事件需将哪些寄存器状态复制到 GHCB 中；
+  2. 随后，处理程序执行 `VMGEXIT` 指令，创建一个自动退出（AE）事件并调用 hypervisor。
+  3. 在之后执行 `VMRUN` 指令恢复 guest 后，guest 将从 `VMGEXIT` 指令之后继续执行
+  4. 此时处理程序可查看 hypervisor 返回的结果，并根据需要将 GHCB 中的状态复制回自身内部状态。
 * 该流程如图 15-31 所示。
 * 注意，hypervisor 不应设置 VMCB 中针对 `#VC` 异常的拦截位（intercept bit）—— 此举会阻碍 guest 对 NAE 事件的正常处理。
 * 同理，对于可能在 `#VC` 处理程序中发生的事件（如执行 `IRET` 指令），hypervisor 也应避免设置其拦截位。
@@ -311,7 +312,12 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
   * 这意味着在后续执行 `VMRUN` 指令恢复 guest 时，程序会从 `VMGEXIT` 指令的下一条指令开始继续执行。
 * `VMGEXIT` 指令没有对应的 hypervisor 拦截位（intercept bit），因为在启用 SEV-ES 的 guest 中执行该指令时，会无条件触发 AE 事件。
 * 仅当 guest 在 SEV-ES 模式启用的状态下运行时，`VMGEXIT` 操作码（opcode）才有效。若 guest 未启用 SEV-ES 模式，`VMGEXIT` 操作码会被当作 `VMMCALL` 操作码处理，且行为与 `VMMCALL` 指令完全一致。
-* Guest 的 `#VC` 处理程序可使用 “`VMGEXIT` 参数（`VMGEXIT` Parameter）” 功能，以原子方式向 hypervisor 传递一个参数。
+  * **译注**：参考 Linux 内核的实现，`VMGEXIT()` 宏的编码是给 `vmmcall` 指令加上 `rep` 前缀
+  * arch/x86/include/asm/sev.h 
+  ```c
+  #define VMGEXIT()  { asm volatile("rep; vmmcall\n\r"); }
+  ```
+* Guest 的 `#VC` 处理程序可使用 **`VMGEXIT` 参数（`VMGEXIT` Parameter）** 功能，以原子方式向 hypervisor 传递一个参数。
   * CPUID `Fn8000_001F_EAX` 寄存器的 “`VMGEXIT` 参数” 位（`VmgexitParameter`，第 `17` 位）若为 `1`，则表示支持该功能。
   * 启用 “`VMGEXIT` 参数” 功能的方式为：在 VMSA（Virtual Machine State Area，虚拟机状态区域）的 `SEV_FEATURES`（SEV 功能）字段中，将第 `10` 位（`VmgexitParameter`）设为 `1`。
   * 当该功能启用后，执行 `VMGEXIT` 指令时，`RAX` 寄存器的值和当前特权级（`CPL`）值会被写入 VMCB 控制区域的对应偏移量处：
@@ -320,7 +326,7 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 
 ### 15.35.7 GHCB
 * GHCB 是一个未加密的内存页，用于 SEV-ES guest 与 hypervisor 之间传输寄存器状态。
-* Guest VM 可通过 GHCB MSR（地址为 `C001_0130`）设置 GHCB 的位置。
+* Guest VM 可通过 `GHCB` MSR（地址为 `C001_0130`）设置 GHCB 的位置。
   * 该 MSR 的值还会被包含在 VMCB 中，并分别在执行 `VMRUN` 指令时恢复、在触发 `#VMEXIT` 事件时保存。
 * GHCB MSR 的作用是配置 GHCB 内存页的位置，该 MSR 的格式定义如下：
 
@@ -329,14 +335,14 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 63:0 | GHCB 的 Guest 物理地址（GPA）
 
 * 该 MSR 的值会从 VMCB 偏移量 `0x0A0` 处进行保存/恢复。建议软件向该 MSR 写入页对齐地址（page-aligned address）。
-* GHCB MSR 仅能在 guest mode 下进行读写操作；若在 host mode 下尝试访问该 MSR，将触发 `#GP`。
+* `GHCB` MSR 仅能在 guest mode 下进行读写操作；若在 host mode 下尝试访问该 MSR，将触发 `#GP`。
 * 硬件从不直接访问 GHCB，因此 GHCB 的格式并非固定不变。
 
 ### 15.35.8 `VMRUN`
 
 * 当 SEV-ES 启用时，*VM save state area* 不再位于 VMCB 页面的偏移量 `0x400` 处。相反，它会从一个名为 “**虚拟机保存区域（VM Save Area，简称 VMSA）**” 的独立页面的偏移量 `0x0` 处开始存放
   * 该页面的位置由 VMCB 偏移量 `0x108` 处的 “**VMSA 指针（VMSA Pointer）**” 指示。
-  * VMSA 指针的值以 host 物理地址（host physical address）的形式存储。
+  * VMSA 指针的值以 host 物理地址（Host Physical Address）的形式存储。
 * 硬件访问 VMSA 保存状态区域时，始终会采用加密内存访问方式，并使用 guest 的内存加密密钥（guest's memory encryption key）进行加密。
 * 当硬件执行 `VMRUN` 指令，且 VMCB 指示 guest 已启用 SEV-ES 时，硬件会从 *VMSA 指针* 所指向的加密保存状态区域中加载 guest 状态。
 * 此外，除标准 `VMRUN` 指令的行为外，该指令还会执行以下操作：
@@ -353,7 +359,7 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
   * 有关 VMCB 各状态项的详细分类，详见附录 B。
 * 最后需注意，对启用 SEV-ES 的 guest 进行 “事件注入（event injection）” 存在限制：不允许注入软件中断（software interrupts）以及第 `3`、`4` 号异常向量（exception vectors `3` and `4`）。
   * 若尝试执行此类注入操作，`VMRUN` 指令会失败，并返回 `VMEXIT_INVALID` 错误码。
-* **译注**：TDX 则是将 TD VM 的所有 VMCS 都纳入运行在 SEAM Root Mode 的 TDX module 的管理范畴；而 TDX module 会给每个 pCPU 创建一个 VMCS，作为一个虚拟 CPU 来管理，因此 TD host 的状态也会被纳入 TDX module 的管理范畴。它们都运行在加密内存中。
+* **译注**：TDX 则是将 TD VM 的所有 VMCS 都纳入运行在 SEAM Root Mode 的 TDX module 的管理范畴；而 TDX module 会给每个 pCPU 创建一个 VMCS，作为一个虚拟 CPU 来管理，因此 TD host 的状态也会被纳入 TDX module 的管理范畴。它们都保持在加密内存中。
 
 ### 15.35.9 Automatic Exits
 * 当启用 SEV-ES 的 guest 正在执行时，若发生自动退出（AE）事件，硬件会自动将 guest 状态保存到 *加密保存状态区域*，并从 host 保存区域恢复 hypervisor 状态。
@@ -368,13 +374,13 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
 * 从 host 保存区域加载 host 通用寄存器状态时，采用的格式与附录 B 中描述的 “扩展 VMCB（虚拟机控制块）” 格式一致。
   * 所有寄存器状态要么从该区域加载，要么重新初始化为默认值，因此 hypervisor 无法看到任何 guest 寄存器状态。
 
-### 15.35.10 控制寄存器写 Traps
+### 15.35.10 控制寄存器写入 Traps
 * 对于启用 SEV-ES 的 guest，不建议使用 `CR [0-15]_WRITE` 拦截功能。
-  * 这些拦截发生在控制寄存器被修改之前，而由于该寄存器位于加密状态镜像中，hypervisor 无法自行修改控制寄存器。
-* 建议 hypervisor 改用新的 `CR [0-15]_WRITE_TRAP` 和 `EFER_WRITE_TRAP` 拦截位，这些拦截位会在控制寄存器被修改后引发自动退出（AE）事件。
+  * 这些拦截发生在控制寄存器被修改之前，然而由于该寄存器位于加密状态镜像中，hypervisor 无法自行修改控制寄存器。（**译注**：意思是说，即使 hypervisor 拦截了也无法模拟）
+* 建议 hypervisor 改用新的 `CR[0-15]_WRITE_TRAP` 和 `EFER_WRITE_TRAP` 拦截位，这些拦截位会在控制寄存器 **被修改后** 引发自动退出（AE）事件。
   * 通过这些拦截，hypervisor 能够跟踪 guest 模式，并验证是否启用了所需功能。
   * 当触发这些陷阱时，控制寄存器的新值会被保存到 `EXITINFO1 中`。
-* `CR` 写入陷阱仅支持 SEV-ES guest。
+* `CR` 写入 traps 仅支持 SEV-ES guest。
 * 注意，SEV-ES guest 对 `EFER.SVME` 的写入操作始终会被硬件忽略。
 
 ### 15.35.11 与 SMI 和 `#MC` 的交互
@@ -455,7 +461,7 @@ Permissions[n-1]       | .
 * `RMP_BASE` 至 `RMP_END` 之间的内存区域包含两部分：
   * 首先是一个 `16KB` 的区域，用于处理器的记录管理（bookkeeping）；
   * 后续区域则存放 RMP 表项，每个表项大小为 `16B`。
-    * **译注**：TDX 的 PAMT 表的每个表现大小也是 `16B`
+    * **译注**：TDX 的 PAMT 表的每个表项大小也是 `16B`
 * RMP 的大小决定了运行时 hypervisor 可分配给 SNP-active 的虚拟机的物理内存范围。
 * RMP 覆盖的系统物理地址空间从 `0x0` 开始，直至通过以下公式计算得出的地址：
   `((RMP_END + 1 – RMP_BASE – 16KB) / 16B) × 4KB`

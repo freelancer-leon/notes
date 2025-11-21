@@ -85,6 +85,37 @@
   * 因此，当前 SEV 技术的核心重点仍是保护虚拟机内的敏感数据内容。
 * 未来版本的 SEV 技术可能会新增对部分指纹攻击的防护能力。
 
+### 表 1：威胁模型
+
+* **V**: Mitigated, **X**: Not Mitigated, **O**: Optionally Mitigated
+
+潜在的威胁                                                 | SEV | SEV-ES | SEV-SNP
+----------------------------------------------------------|-----|--------|----------
+**机密性**                                                 | .   | .      | .
+VM 内存<br/>*攻击示例：Hypervisor 读私有 VM 内存*            | V   | V      | V
+VM 寄存器状态<br/>*攻击示例：`VMEXIT` 后读取 VM 的寄存器状态* | X   | V      | V
+DMA 防护<br/>*攻击示例：设备尝试读 VM 内存*                  | V   | V      | V
+**完整性**                                                 | .   | .      | .
+重放保护<br/>*攻击示例：用旧的拷贝替换 VM 内存*               | X   | X      | V
+数据污染<br/>*攻击示例：用垃圾数据替换 VM 内存*               | X   | X      | V
+内存别名<br/>*攻击示例：将两个 guest 页面映射到同一个 DRAM 页面* | X | X     | V
+内存重映射<br/>*攻击示例：切换映射到 guest 页面的 DRAM 页面*  | X   | X      | V
+**可用性**                                                 | .   | .      | .
+Hypervisor 拒绝服务<br/>*攻击示例：恶意 guest 拒绝挂起/退出*  | V   | V      | V
+Guest 拒绝服务<br/>*攻击示例：恶意 hypervisor 拒绝运行 guest* | X  | X      | X
+**物理访问攻击**                                            | .   | .      | .
+离线 DRAM 分析<br/>*攻击示例：Cold boot*                     | V   | V      | V
+活动 DRAM 污染<br/>*攻击示例：当 VM 运行时操作 DDR 总线*      | X   | X      | X
+**Misc.**                                                  | .   | .      | .
+TCB 回滚<br/>*攻击示例：回退 AMD-SP 固件到旧版本*             | X   | X      | V
+恶意中断/异常注入<br/>*当 `RFLAGS.IF=0` 时注入中断*           | X   | X      | O
+间接分支预测污染<br/>*从 hypervisor 污染 BTB*                | X   | X      | O
+安全硬件调试寄存器<br/>*攻击示例：调试期间修改断点*            | X   | X      | O
+可信的 CPUID 信息<br/>*Hypervisor 欺骗平台的能力*            | X   | X      | O
+体系结构的侧信道<br/>*攻击示例：PRIME+PROBE 跟踪 VM 访问*     | X   | X      | X
+Page-level 侧信道<br/>*攻击示例：通过页表跟踪 VM 访问模式*    | X   | X      | X
+性能计数器跟踪<br/>*攻击示例：根据性能数据活动 VM app 的指纹*  | X   | X      | X
+
 ### 表 2：完整性威胁
 
 威胁      | 需要的安全属性                | SEV-SNP 实施的机制
@@ -128,7 +159,7 @@
   * 例如，在原生（非虚拟化，non-VM）模式下，虚拟地址会通过标准 x86 页表转换为物理地址；
   * 转换完成后，最终得到的物理地址将用于索引 RMP，读取并检查对应的 RMP 表项
   * 若 RMP 表项显示该页面为 hypervisor 所有，则检查通过，并创建新的 TLB 表项；
-  * 若 RMP 表项显示该页面 hypervisor 所有，则页表遍历会触发页错误（`#PF`，Page Fault），对应的内存访问请求被拒绝。
+  * 若 RMP 表项显示该页面非 hypervisor 所有，则页表遍历会触发页错误（`#PF`，Page Fault），对应的内存访问请求被拒绝。
 * 当在 SEV-SNP 虚拟机中运行时，RMP 检查流程会略复杂。
   * 与原生模式类似，虚拟地址需先转换为系统物理地址，但在此场景下，会通过 AMD-V 二级分页机制完成地址转换：
   * 先将 guest 虚拟地址（GVA，Guest Virtual Address）转换为 guest 物理地址（GPA，Guest Physical Address），最终转换为系统物理地址（SPA，System Physical Address）。
@@ -244,8 +275,11 @@ CONTEXT       | 页面不可变且用于上下文信息 | 上下文页面（Cont
 * **虚拟机特权级别（Virtual Machine Privilege Levels，VMPLs）** 是 SEV-SNP 架构中的一项新可选功能，允许 guest VM 将其地址空间划分为四个级别。这些级别可用于在虚拟机内部提供硬件隔离的抽象层，以实现额外的安全控制，同时也有助于管理与 hypervisor 之间的通信。
 * 这些级别本质上具有层级关系，其中 **VMPL0** 是最高特权级别，**VMPL3** 是最低特权级别。
 * 启用此功能后，虚拟机的每个虚拟 CPU（vCPU）都会被分配一个 VMPL。
-* Guest 私有内存中每个页面的 RMP（Reverse Map，反向映射）表项也会新增与各个 VMPL 对应的页面访问权限，并且这些权限会在标准分页权限之外额外生效。
-  * 具体而言，guest 的单个页面可被标记为可读、可写、超级用户模式可执行（supervisor-mode executable）和用户模式可执行（user-mode executable）。
+* Guest 私有内存中每个页面的 RMP（Reverse Map，反向映射）表项也会新增与各个 VMPL 对应的页面访问权限，并且这些权限会在标准分页权限之外额外生效。具体而言，guest 的单个页面可被标记为
+  * 可读
+  * 可写
+  * 超级用户模式可执行（supervisor-mode executable）
+  * 用户模式可执行（user-mode executable）
 * 默认情况下，当一个页面首次被 guest 验证时，VMPL0 会被授予该页面的完整权限，而其他所有 VMPL 则不被授予任何权限。
   * Guest 可通过新的 `RMPADJUST` 指令修改 VMPL 权限。
   * `RMPADJUST` 指令允许某个给定的 VMPL 修改特权级别更低的 VMPL 的权限。例如，VMPL0 可以向 VMPL1 授予某个页面的读写权限（但不包括执行权限）。
@@ -268,7 +302,7 @@ CONTEXT       | 页面不可变且用于上下文信息 | 上下文页面（Cont
   * 而 SEV-SNP 则在云环境中实现了相同的使用模式。
   * 在这种场景下，由于云中的实际 hypervisor 被视为不可信，guest 内部的 VMPL0 会承担起强制执行所需页面权限的角色。
 * 除作为抽象层外，虚拟机特权级别（VMPLs）还可用于多个额外场景。
-  * 例如，高级可编程中断控制器（APIC）模拟传统上是由 hypervisor 处理的任务。在 SEV-SNP 架构中，部分虚拟机可能需要更具限制性的环境，此时可将 APIC 模拟迁移到 guest的信任域内部。
+  * 例如，高级可编程中断控制器（APIC）模拟传统上是由 hypervisor 处理的任务。在 SEV-SNP 架构中，部分虚拟机可能需要更具限制性的环境，此时可将 APIC 模拟迁移到 guest 的信任域内部。
   * 这种情况下，可通过 VMPL0 执行可信的 APIC 模拟，同时允许 guest 的其余部分在较低级别的 VMPLs 中运行，且无需感知模拟过程的存在。
 * VMPL0 还可充当 guest 与 hypervisor 通信的中介。在此之前，SEV 和 SEV-ES 技术要求 guest OS 具备 “感知能力”（enlightened），即能够识别这些安全特性。
   * 当时的设计预期是，guest OS 需执行一系列操作，例如在页表中设置 `C-bit` 、处理 `#VC` 异常（SEV-ES 架构中）等。
@@ -317,9 +351,10 @@ CONTEXT       | 页面不可变且用于上下文信息 | 上下文页面（Cont
 * 为简化 guest 必须执行的验证操作，SEV-SNP 支持一项可选功能 —— 通过 AMD 安全处理器（AMD-SP）对 `CPUID` 结果进行过滤。
   * AMD-SP 会验证 hypervisor 上报的 `CPUID` 结果：一方面确保其不超出平台实际具备的能力，另一方面确保 x86 扩展保存区大小等安全敏感信息的准确性。
 * `CPUID` 过滤可实时（on-the-fly）执行，也可作为 guest 启动流程的一部分。
-  * 若选择实时过滤，guest 在接收到 `CPUID` 信息后，可请求 AMD-SP 验证安全敏感信息的正确性；
-* 此外，在虚拟机启动时，还可创建一个特殊的 “CPUID page”，该页面包含经 AMD-SP 预先校验的 `CPUID` 信息，使 guest 从启动初期即可获取可信的 `CPUID` 信息。
+  * 若选择实时过滤，guest 在接收到 `CPUID` 信息后，可请求 AMD-SP 验证安全敏感信息的正确性。
+* 此外，在虚拟机启动时，还可创建一个特殊的 “**CPUID page**”，该页面包含经 AMD-SP 预先校验的 `CPUID` 信息，使 guest 从启动初期即可获取可信的 `CPUID` 信息。
   * 除安全优势外，这个特殊页面还能加快 `CPUID` 信息的访问速度，从而缩短虚拟机的启动时间。
+* **译注**：TDX 则是由 TDX module 完成类似的功能，`tdcs_ptr->cpuid_config_vals[cpuid_index]` 的功能类似 CPUID page
 
 ## TCB 版本控制（TCB Versioning）
 

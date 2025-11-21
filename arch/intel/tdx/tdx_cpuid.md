@@ -1051,7 +1051,7 @@ CPU:
   * `bit 7+` 作为 package 的索引。对于 xAPIC ID `127` 而言就是 `0`，对于 xAPIC ID `128` 而言就是 `1`
 * 最后看到的就是 `sockets=1` 时看到的 LPs 不均匀分布在 packages 上的情况，尽管 x2APIC ID 在 Qemu --> KVM --> TDX Module --> Guest kernel 传递的通道是正常工作的。
 
-### Qemu 创建 vCPU 时的传递含义 x2APIC ID 的信息
+### Qemu 创建 vCPU 时的传递含有 x2APIC ID 的信息
 * Qemu 创建 vCPU 线程时传递 `CPUState *cpu` 的指针包含之前组装好的数据 
 ```c
 (gdb) bt

@@ -134,7 +134,7 @@ notdxvm-533084  [088] ...1. 14915.616720: <stack trace>
   * 清除 *抑制 #VE 位* 以注入`#VE`
 * 对于 MMIO SPTE，spte 值变化如下：
 0. Per VM 的 MMIO 初始值设置为 `0`（*抑制 #VE 位* 不需要被置位）
-1. Guest 进行 MMIO，由于从未被映射过，触发 EPT 违规，VM exit 到 KVM
+1. Guest 进行 MMIO，由于从未被映射过，触发 EPT 违规，TD exit 到 KVM
 2. KVM 逐级建立 EPT 页表条目，最后一级的 SPTE 值更新为 per VM 的 MMIO 值（*抑制 VE 位* 为零），重新进入 Guest
 3. Guest 恢复到 MMIO 现场，再次 MMIO 访问，由于 *抑制 VE 位* 没被置位，将触发 `#VE`（由微码将 EPT 违规转化 `#VE`，这是原本就有的功能，不是 TDX module 注入的）
 4. 处理器根据 IDT 找到 `#VE` 的入口执行 Guest `#VE` 处理程序，发出 `TDG.VP.VMCALL<#VE.RequestMMIO>`

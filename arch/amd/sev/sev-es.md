@@ -6,8 +6,8 @@
   * 加密虚拟机非常适用于云计算等多租户环境，因为它能防范各类跨虚拟机攻击和基于虚拟机监控程序（hypervisor）的攻击。
   * 例如，若 hypervisor 存在漏洞，导致共存的其他虚拟机突破自身隔离环境并读取系统任意内存，此类漏洞也无法用于窃取启用 SEV 的虚拟机数据或破坏其安全性。
 * 尽管没有任何安全系统能达到 100% 的安全性，但 SEV 通过以下方式大幅缩小了云中虚拟机的攻击面：为每个虚拟机分配唯一的密钥，并用该密钥对虚拟机内存进行加密，且此密钥对 hypervisor 不可见。
-  * 虚拟机的内存空间中通常存储着大量敏感信息和重要数据，对这些内容进行加密有助于防范攻击，避免敏感数据泄露。
-* 然而，当虚拟机正在使用敏感信息时，这些信息往往不仅存在于内存中，还会驻留在 CPU 寄存器内。
+* 虚拟机的内存空间中通常存储着大量敏感信息和重要数据，对这些内容进行加密有助于防范攻击，避免敏感数据泄露。
+  * 然而，当虚拟机正在使用敏感信息时，这些信息往往不仅存在于内存中，还会驻留在 CPU 寄存器内。
   * 每当虚拟机因中断或其他事件暂停运行时，其寄存器内容会被保存到 hypervisor 的内存中 —— 即便启用了 SEV，hypervisor 仍能读取这部分内存。
   * 对于恶意或已被攻陷的 hypervisor 而言，这些信息可能使其得以窃取数据，或篡改 guest 状态中的关键值（如指令指针、加密密钥等）。
 * 新推出的 “**带加密状态的 SEV（SEV-ES，SEV with Encrypted State）**” 特性，通过在虚拟机暂停运行时对所有 CPU 寄存器内容进行加密和保护，阻断了上述这类攻击。
@@ -26,7 +26,7 @@
 
 ![Stealing AES keys from a VM](pic/steal_aes_key.png)
 
-* 保护虚拟机寄存器状态面临一项挑战：在某些情况下，hypervisor 确实需要访问虚拟机寄存器，以提供设备模拟、MSR（模型专用寄存器）处理等服务。
+* 保护虚拟机寄存器状态面临一项挑战：在某些情况下，hypervisor 确实需要访问虚拟机寄存器，以提供设备模拟、MSR 处理等服务。
   * 这些访问必须受到严格控制，以防止被恶意利用 —— 但此类恶意行为往往难以检测。
   * 为解决这一问题，SEV-ES 技术允许 guest VM 根据具体场景，自主决定向 hypervisor 暴露哪些信息。
   * 这一设计原则与 SEV（基础安全加密虚拟化）类似：在 SEV 中，guest VM 可自主控制共享哪些内存页面。
@@ -61,7 +61,7 @@
 * 需注意的是，在 SEV-ES 架构中，用于描述特定虚拟机的 **虚拟机控制块（VMCB，Virtual Machine Control Block）** 被划分为两个部分：
   * 第一部分称为 “控制区（control area）”，由 hypervisor 拥有和管理，包含 hypervisor 希望拦截的事件信息、中断传递信息等内容；
   * 第二部分即 “保存区（save area）”，用于存储虚拟机寄存器状态。
-* 当 SEV-ES 启用时，该区域会按上述方式进行加密，并受到完整性保护。
+    * 当 SEV-ES 启用时，该区域会按上述方式进行加密，并受到完整性保护。
 
 ### VM "Exits"
 
@@ -70,21 +70,24 @@
   * 例如，hypervisor 可设置拦截位，使外部中断、对控制寄存器的写入操作、对特定端口的读取操作等事件触发 VMEXIT。
   * 在传统 AMD-V 架构中，当 VMEXIT 事件发生时，CPU 硬件会将控制权交还给 hypervisor，并返回一个事件代码，用于指示触发 VMEXIT 的原因。
 * 在 SEV-ES 架构中，所有可能的 VMEXIT 事件被划分为两组，分别称为 “**自动退出（AE，Automatic Exits）**” 和 “**非自动退出（NAE，Non-Automatic Exits）**”。
-  * 通常而言，当 guest VM 执行需要 hypervisor 进行模拟处理的操作（如内存映射 I/O（MMIO）、访问模型专用寄存器（MSR）等）时，会触发 NAE 事件；
-  * 与之相反，AE 事件无需 hypervisor 进行任何模拟处理，这类事件包括异步中断、shutdown 事件以及特定类型的页错误。
+  * 通常而言，当 guest VM 执行 **需要 hypervisor 进行模拟处理** 的操作（如内存映射 I/O（MMIO）、访问 MSR 等）时，会触发 **NAE** 事件；
+  * 与之相反，**AE** 事件 **无需 hypervisor 进行任何模拟处理**，这类事件包括异步中断、shutdown 事件以及特定类型的页错误。
 * 当 SEV-ES 启用时，AE 事件是唯一会触发完整 “世界切换（world switch）” 并将控制权交还给 hypervisor 的 VMEXIT 事件。
   * 如前所述，这类事件会促使 CPU 硬件保存并加密所有 guest 寄存器状态，同时加载 hypervisor 状态。
   * Hypervisor 完成所需执行的任务后，可通过 `VMRUN` 指令恢复 guest 运行 —— 该指令会将控制权交还给 guest，并从其暂停的位置继续执行。
 * 与 AE 事件不同，NAE 事件的触发始终源于 guest 内部的特定行为，例如执行特定指令、访问经模拟的设备寄存器等。
   * 且与传统 AMD-V 虚拟化不同：当 SEV-ES 启用时，这些事件不会触发 “世界切换” 以将控制权交还给 hypervisor；
   * 相反，当 NAE 事件发生时，系统会生成一个新的异常 —— `#VC`（**虚拟化通信异常，VMM Communication Exception**），该异常必须由 guest VM 自行处理。
+* **译注**
+  * TDX 里的 *同步 TD Exit（Synchronous TD Exit）*  和 SEV-ES 的 NAE 类似，需要模拟的事件引发的 VMEXIT 会以 `#VE` 的方式弹射回 TDVM，`#VE` 的处理函数需要将模拟请求以 `TDG.VP.VMCALL` 的方式引发 TD Exit，让 hypervisor 来模拟。
+  * TDX 里的 *异步 TD Exit（Asynchronous TD Exit）* 则与 SEV-ES 的 AE 类似，由 TDX module 来负责保存/恢复所有的状态。
 
-### VMM Communication 异常（#VC）
+### VMM Communication 异常（`#VC`）
 
 * 新的 `#VC` 异常会通知 guest VM 操作系统：其执行的某一操作需要 hypervisor 进行仿真处理。
   * 随后，`#VC` 异常处理程序必须决定如何响应，并向 hypervisor 请求相应服务。
 * 为便于实现这一通信过程，SEV-ES 架构定义了 “**客户机 - 监控程序通信块（GHCB，Guest Hypervisor Communication Block）**”。
-  * GHCB 位于一块共享内存页中，因此 guest VM 和 hypervisor 均可访问。
+  * **GHCB 位于一块共享内存页中**，因此 guest VM 和 hypervisor 均可访问。
   * SEV-ES 架构未明确规定 GHCB 的具体结构，但建议其镜像 VMCB 的保存区设计，以便 guest 与 hypervisor 便捷地传递状态信息。
 * **译注**：TD guest 通过 tdcall<`TDG.VP.VEINFO.GET`> 获取 VE info 结构的信息，通过 tdcall<`TDG.VP.VMCALL`> 的 GHCI 规范，通过寄存器将信息传递给 VMM
   * 此时，用 TDX hypercall Leaf ID `.r10 = TDX_HYPERCALL_STANDARD = 0`，`.r11 = hcall_func(EXIT_REASON_CPUID)` 传递退出原因
@@ -94,7 +97,7 @@
   * 反之，若 guest 通过 `OUTW` 指令尝试向端口写入数据，则应共享 `AX` 和 `DX` 寄存器的值，依此类推。
 * 为共享所需信息，`#VC` 处理程序会将相关状态数据及 hypervisor 服务请求复制到 GHCB 中。通过这种方式，`#VC` 处理程序可自主决定向 hypervisor 暴露哪些状态信息。
 * 复制完相关状态后，`#VC` 处理程序通过新的 `VMGEXIT`（**虚拟机通用退出，Virtual Machine General Exit**）指令将控制权转移给 hypervisor。
-  * 该指令会触发一次 AE Exit，此时 CPU 会保存所有 guest 状态，并恢复 hypervisor 的执行。
+  * **该指令会触发一次 AE Exit**，此时 CPU 会保存所有 guest 状态，并恢复 hypervisor 的执行。
 * 至此，hypervisor 通过读取 GHCB，即可确定 guest 所需的模拟支持。
   * 由于 hypervisor 无法直接修改 guest 状态，它需执行必要的模拟操作，并将 guest 所需的新状态值回写到 GHCB 中。
   * 例如，完成 `CPUID` 模拟后，hypervisor 应将 `RAX/RBX/RCX/RDX` 寄存器的新值写入 GHCB。
