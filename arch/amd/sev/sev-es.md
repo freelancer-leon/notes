@@ -80,7 +80,7 @@
   * 相反，当 NAE 事件发生时，系统会生成一个新的异常 —— `#VC`（**虚拟化通信异常，VMM Communication Exception**），该异常必须由 guest VM 自行处理。
 * **译注**
   * TDX 里的 *同步 TD Exit（Synchronous TD Exit）*  和 SEV-ES 的 NAE 类似，需要模拟的事件引发的 VMEXIT 会以 `#VE` 的方式弹射回 TDVM，`#VE` 的处理函数需要将模拟请求以 `TDG.VP.VMCALL` 的方式引发 TD Exit，让 hypervisor 来模拟。
-  * TDX 里的 *异步 TD Exit（Asynchronous TD Exit）* 则与 SEV-ES 的 AE 类似，由 TDX module 来负责保存/恢复所有的状态。
+  * TDX 里的 *异步 TD Exit（Asynchronous TD Exit）* 则与 SEV-ES 的 AE 类似，由中断、EPT Violation 事件引起的，此类退出由 TDX module 来负责保存/恢复所有的状态。
 
 ### VMM Communication 异常（`#VC`）
 
@@ -89,7 +89,7 @@
 * 为便于实现这一通信过程，SEV-ES 架构定义了 “**客户机 - 监控程序通信块（GHCB，Guest Hypervisor Communication Block）**”。
   * **GHCB 位于一块共享内存页中**，因此 guest VM 和 hypervisor 均可访问。
   * SEV-ES 架构未明确规定 GHCB 的具体结构，但建议其镜像 VMCB 的保存区设计，以便 guest 与 hypervisor 便捷地传递状态信息。
-* **译注**：TD guest 通过 tdcall<`TDG.VP.VEINFO.GET`> 获取 VE info 结构的信息，通过 tdcall<`TDG.VP.VMCALL`> 的 GHCI 规范，通过寄存器将信息传递给 VMM
+* **译注**：TD guest 通过 tdcall<`TDG.VP.VEINFO.GET`> 获取 VE info 结构的信息，然后根据 GHCI 规范的 tdcall<`TDG.VP.VMCALL`> ，通过约定的寄存器将信息传递给 VMM
   * 此时，用 TDX hypercall Leaf ID `.r10 = TDX_HYPERCALL_STANDARD = 0`，`.r11 = hcall_func(EXIT_REASON_CPUID)` 传递退出原因
   * 类似 `TDVMCALL_MAP_GPA`、`TDVMCALL_GET_QUOTE` 用的是其他的 TDX hypercall Leaf ID
 * 不同事件需要 guest 与 hypervisor 之间传递不同的状态数据。因此，`#VC` 处理程序必须在运行时判断应向 hypervisor 暴露哪些 guest 状态信息。
