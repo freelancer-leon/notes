@@ -427,13 +427,13 @@ A6h  | VMEXIT_IDLE_HLT        | 如果 `HLT` 指令 idle     | Yes
   * 而 “SNP-active” 虚拟机仅能在 “SNP-enabled” 状态的系统上运行。
 
 ### 15.36.3 反向映射表 Reverse Map Table
-* **反向映射表（Reverse Map Table，简称 RMP）** 是一个由所有逻辑处理器全局共享的数据结构，驻留在系统内存中，用于确保系统物理地址（system physical address）与guest 物理地址（guest physical address）之间呈一对一映射关系。
+* **反向映射表（Reverse Map Table，简称 RMP）** 是一个由所有逻辑处理器全局共享的数据结构，驻留在系统内存中，用于确保系统物理地址（system physical address）与 guest 物理地址（guest physical address）之间呈一对一映射关系。
 * 对于每一个可能分配给 guest 使用的物理内存页，RMP 中都会对应存在一条表项。如表格 15-34（Table 15-34）所述，RMP 表项包含该系统物理页（system physical page）的安全属性信息。
 * Table 15-34. Fields of an RMP Entry
 
 名称                   | 说明
 -----------------------|-------------------------
-Assigned               | 用于指示系统物理页已分配给 guest 还是 AMD-SP 的标志位。<br/> 0：hypervisor 所有<br/> 1：一个 guest 或 AMD-SP 所有
+Assigned               | 用于指示系统物理页已分配给 guest 或 AMD-SP 的标志位。<br/> 0：hypervisor 所有<br/> 1：一个 guest 或 AMD-SP 所有
 Page_Size              | 页面大小的编码。<br/> 0：4KB 页<br/> 1：2MB 页
 Immutable              | 用于指示软件可通过 x86 RMP 操作指令修改表项的标志位。<br/> 0：RMP 条目可以被软件修改<br/> 1：RMP 条目不能被软件修改
 Guest_Physical_Address | 与该页关联的 Guest 物理地址（GPA）
@@ -495,14 +495,14 @@ AMD-SP     | 1        | 0             | 1
 
 ### 15.36.6 页面验证
 
-* 分配给 VM 的每个页面要么处于已验证状态，要么处于未验证状态，这由该页面 RMP 表项中的 “已验证（`Validated`）” 标志位指示。
+* 分配给 VM 的每个页面要么处于 *已验证* 状态，要么处于 *未验证* 状态，这由该页面 RMP 表项中的 “已验证（`Validated`）” 标志位指示。
 * VM 对未验证的私有页面进行内存访问时，会触发 `#VC`。
-* 所有页面初始分配时均处于未验证状态。
+* 所有页面初始分配时均处于 *未验证* 状态。
 * VM 可使用 `PVALIDATE` 指令来设置或清除页面的 `Validated` 标志位。通常，VM 应在启动期间使用 `PVALIDATE` 指令设置 `Validated` 标志位，以获得对 hypervisor 分配的内存的访问权限。
 * 如果 VM 的内存空间需要缩减（例如在内存热插拔事件后），它可在之后使用 `PVALIDATE` 指令清除 `Validated` 标志位。
 * 页面验证机制使 VM 能够检测到 hypervisor 对其页面的意外重映射。
   * VM 在访问某一页面之前，必须先验证该页面。
-  * 页面一旦通过验证，hypervisor 若使用 `RMPUPDATE` 指令对该页面执行解除分配、重新分配或重映射操作，都会导致该页面变为未验证状态。
+  * 页面一旦通过验证，hypervisor 若使用 `RMPUPDATE` 指令对该页面执行解除分配、重新分配或重映射操作，都会导致该页面变为 *未验证* 状态。
     * 此时，VM 可通过访问未验证页面时触发的 `#VC` 异常，检测到页面映射被篡改。
 * `PVALIDATE` 指令接收 *一个页大小* 作为输入参数，指示应验证 `4KB` 页面还是 `2MB` 页面。
   * 如果 VM 尝试对嵌套页表中映射为 `2MB` 或 `1GB` 页面执行 `4KB` 页面的 `PVALIDATE` 指令，`PVALIDATE` 会触发 `#VMEXIT`（NPF，页未命中）。
@@ -556,7 +556,7 @@ Bit   | 名称    | 设置
 
 ### 15.36.8 Virtual Top-of-Memory
 * 在 SNP-active 的 guest 的 VMSA 中，`VIRTUAL_TOM` 字段会指定一个按 `2MB` 对齐的 guest 物理地址，该地址被称为 “**虚拟内存顶部”（virtual top of memory）**。
-* 当某一 SNP-active 的 VM 的 VMSA 中，`SEV_FEATURES` 字段的第 `1` 位（`vTOM` 位）被置 `1` 时，数据访问的 `C-bit` 将由 `VIRTUAL_TOM` 字段决定，而非guest 页表内容。具体规则如下：
+* 当某一 SNP-active 的 VM 的 VMSA 中，`SEV_FEATURES` 字段的第 `1` 位（`vTOM` 位）被置 `1` 时，数据访问的 `C-bit` 将由 `VIRTUAL_TOM` 字段决定，而非 guest 页表内容。具体规则如下：
   * 所有地址低于 `VIRTUAL_TOM` 的数据流访问，其有效 `C-bit` 为 `1`；
   * 所有地址等于或高于 `VIRTUAL_TOM` 的数据流访问，其有效 `C-bit` 为 `0`。
 * **注意**，无论 `VIRTUAL_TOM` 的值如何，也无论该功能是否启用，*页表访问* 和 *指令获取* 的有效 `C-bit` 始终为 `1`。
@@ -661,7 +661,7 @@ Guest      | 是 | 数据写，数据读  | 1    | RMP-Covered,<br/>Guest-Owned,
 4 KB        | 2 MB            | `#VMEXIT(NPF)` | `PSMASH`（hypervisor）
 2 MB        | 4 KB            | `FAIL_SIZEMISMATCH` | guest 对每个 `4KB` 子页分别重试（操作）
 
-* 将一组连续的 `4KB` 页面反向转换为单个 `2MB` 页面的操作，需要 guest 或 AMD-SP的协助，以确保该操作的执行安全性。
+* 将一组连续的 `4KB` 页面反向转换为单个 `2MB` 页面的操作，需要 guest 或 AMD-SP 的协助，以确保该操作的执行安全性。
 
 ### 15.36.12 运行 SNP-Active 虚拟机
 
@@ -709,7 +709,7 @@ VMSA  | 是            | RMP-Covered<br/> Guest-Owned<br/> Reverse-Map<br/> Muta
 
 ### 15.36.13 调试寄存器
 * SEV-ES guest 与 SNP-active guest 可通过设置 `SEV_FEATURES` 字段的第 `5` 位（`DebugVirtualization`，调试虚拟化位），选择启用 CPU 调试寄存器的完全虚拟化功能。
-* 当该功能启用时，`DR [0-3]` 寄存器（调试寄存器 `0-3`）与 `DR[0-3]_ADDR_MASK` 寄存器（调试寄存器 `0-3` 地址掩码寄存器）会作为 “B 类状态（type ‘B’ state）” 进行切换（详见附录 B）。
+* 当该功能启用时，`DR[0-3]` 寄存器（调试寄存器 `0-3`）与 `DR[0-3]_ADDR_MASK` 寄存器（调试寄存器 `0-3` 地址掩码寄存器）会作为 “B 类状态（type ‘B’ state）” 进行切换（详见附录 B）。
 
 ### 15.36.14 内存类型
 * 当 SNP-active guest 访问内存时，硬件会强制使用一致性内存类型（coherent memory types）。
@@ -1019,6 +1019,10 @@ Bits  | 助记符       | 描述           | 访问类型
      - 若 `CoveredSize` 等于 `0`，则当前段对应的内存 **不受 RMP 覆盖**；
      - 若 `CoveredSize` 对应的覆盖大小 **大于** RMP 段本身的大小，则整个段均受 RMP 覆盖；
      - 当前段对应的 RMP 大小计算公式为：`4MB × CoveredSize`。
+   * **译注**：例如，`CoveredSize = 1` 时该 RMP 覆盖 `1 GB` 的内存
+     - 覆盖 `1 GB` 内存需 `2^30 / 2^12 = 2^18` 个 RMP 条目
+     - 一个 RMP 条目是 `16 B`，`2^18` 个 RMP 条目占用的空间为 `2^18 x 2^4 = 2^22` 即 `4 MB`
+     - 故，当 `CoveredSize = n GB` 时，需要一个大小为 `4 MB x n` 的 RMP 分段来表示
 
 ##### RST 表项相关异常规则
 1. 当 `NumSegReduction` 等于 `0` 时，若在表遍历（table walk）过程中检测到对应 RST 表项的“保留位（`reserved` bits）”被置 `1`，将生成 `#PF` 或 `VMEXIT_NPF`保留位错误。

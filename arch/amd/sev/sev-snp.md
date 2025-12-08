@@ -292,7 +292,7 @@ CONTEXT       | 页面不可变且用于上下文信息 | 上下文页面（Cont
   * RMP 表（由特权级别更高的 VMPL 管理）。
 * **译注**
   * VMPL 在 VMSA 中设置
-  * 只有 VMPL0 可以设置 VMSA 属性，用于运行 vCPU
+  * 仅 VMPL0 可设置用于运行 vCPU 的 VMSA 属性
 
 ![VMPLs](pic/vmpls.png)
 
