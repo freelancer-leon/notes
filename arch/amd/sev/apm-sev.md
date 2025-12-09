@@ -973,7 +973,7 @@ Bits  | 助记符       | 描述      | 访问类型
 
 #### 15.36.22.2 启用分段式 RMP
 
-* Segmented RMP Configuration MSR（`C001_0136`）用于配置分段式 RMP。该 MSR 的字段定义如下：
+* **Segmented RMP Configuration** MSR（`C001_0136`）用于配置分段式 RMP。该 MSR 的字段定义如下：
 * Figure15-33. Segmented RMP Configuration Register
 
 ![Segmented RMP Configuration Register](pic/seg-rmp-cfg-reg.png)
@@ -1035,6 +1035,74 @@ Bits  | 助记符       | 描述           | 访问类型
 3. 该页的地址处于“由 `SegRmpBase` 和 `CoveredSize` 共同定义的 RMP 覆盖范围内”。
 * 若某一页不满足上述条件（即不存在对应的 RMP 条目），则该页属于“Hypervisor-Owned page”。
 * 关于分段式 RMP 启用时如何确定 RMP 条目地址的更多细节，可参考《AMD架构程序员手册》第三卷（APM Volume 3）中的 `GET_RMP_ENTRY_ADDR` 函数说明。
+```cpp
+#define RMP_BASE = RMP_BASE_MSR //RMP BASE MSR 的值
+#define RMP_END = RMP_END_MSR   //RMP END MSR 的值
+#define SEGMENTED_RMP = RMP_CFG_MSR.SEGMENTED_RMP_EN //分段式 RMP 配置 MSR 中的分段式 RMP 是否启用位
+#define RMP_SEG_SIZE = RMP_CFG_MSR.RMP_SEGMENT_SIZE  //分段式 RMP 配置 MSR 中的 RMP 段大小
+#define NUM_SEG_REDUCTION = CPUID Fn8000_0025_EBX[NumSegmentReduction] //RMP 段表所定义的 RMP 段数量是否受限
+#define NUM_CACHED_SEG = CPUID Fn8000_0025_EBX[NumCachedSegments] //硬件可缓存的 RMP 段定义数量
+
+///////////////////////////////////////////////////////////////////////////////
+// GET_RMP_ENTRY_ADDR (SYSTEM_PA)
+// Checks if a system physical address is covered by RMP, and if covered
+// returns RMP entry address
+// Usage: GET_RMP_ENTRY_ADDR (SYSTEM_PA)
+///////////////////////////////////////////////////////////////////////////////
+//初始化为 RMP 未覆盖该 SPA
+RMP_COVERED = FALSE
+
+IF (SEGMENTED_RMP) //如果分段式 RMP 已启用
+    IF (NUM_SEG_REDUCTION) //如果 RMP 段表所定义的 RMP 段数量受限
+        N = NUM_CACHED_SEG //硬件可缓存的 RMP 段数目为 NUM_CACHED_SEG 的值
+    ELSE                   //如果 RMP 段表所定义的 RMP 段数量不受限
+        N = 512            //硬件可缓存的 RMP 段数目为 512 的值
+    //2^RMP_SEG_SIZE 为一个分段式 RMP 所能覆盖的物理地址大小
+    //N * 2^RMP_SEG_SIZE 为当前配置的分段式 RMP 总共所能覆盖的物理地址范围
+    //如果 SPA 在当前配置的分段式 RMP 所能覆盖的物理地址范围内
+    IF (SYSTEM_PA < N * 2^RMP_SEG_SIZE)
+        //分段式 RMP 启用后 RST 段表总大小是 4 KB，一个 RST 表项是 8B，故总共有 512 个 RST 表项
+        //RMP_SEG_SIZE+8 ~ RMP_SEG_SIZE 总共占用 9 个 bits，可以用来索引这 512 个 RST 表项
+        //每个 RST 表项映射的物理地址范围是 RMP_SEG_SIZE，故下面语句求得 SPA 在 RST 中的表项的索引
+        RST_INDEX = SYSTEM_PA[RMP_SEG_SIZE+8:RMP_SEG_SIZE]
+        //RST 表的前 16 KB 是 bookkeeping，故 + 0x4000
+        //一个 RST 表项的大小是 8B，故 RST 索引 x 大小 = RST 表中的偏移
+        //分段式 RMP 启用时，RMP BASE MSR 中的值为 RST 表的基地址，加上偏移得到 RST 表项的物理地址
+        RST_PA = RMP_BASE + 0x4000 + RST_INDEX * 8
+        //读取该条 RST 表项中的内容
+        RST_ENTRY = READ_MEM_PA.o [RST_PA]
+        //RST 表项 19~0 bits 为该 RMP 分段覆盖的内存大小，CoveredSize，单位为 GB
+        MAPPED_SIZE = RST_ENTRY[19:0]
+        //RST 表项 51~20 bits 为该 RMP 分段的 RMP 表物理基地址，SegRmpBase，低 20 位忽略
+        RMP_SEGMENT_BASE = {RST_ENTRY[51:20], 00000h}
+        //因为 CoveredSize 的单位是 GB，故 SPA 中 RMP_SEG_SIZE-1 ~ 30 的 bits 表示它在该 RMP 分段中的第几个 GB
+        //感觉需将最小 RMP 段大小 Fn8000_0025_EAX[MinRmpSegSize](bits 5:0) 设为 > 1GB 才行，否则这里会有问题
+        SYSTEM_PA_SEGMENT = SYSTEM_PA[RMP_SEG_SIZE-1:30]
+        //SPA 在该分段 RMP 表中的偏移，和上面求得的 SYSTEM_PA_SEGMENT 没关系
+        SYSTEM_PA_OFFSET = SYSTEM_PA[RMP_SEG_SIZE-1:0]
+        //如果 SPA 在该 RMP 分段覆盖范围内，和 CoveredSize 做个快速比较，他们的单位都是 GB
+        IF (SYSTEM_PA_SEGMENT < MAPPED_SIZE)
+            //一个 RMP 表条目映射一个 4 KB 的页，故 SYSTEM_PA_OFFSET / 0x1000 得到 SPA 在该分段 RMP 表中的索引
+            //一个 RMP 表条目大小是 16B，SPA 在该分段 RMP 表中的索引 * 16 得到条目在表中的偏移的字节
+            //该分段 RMP 表的物理基地址 + SPA 对应的表中偏移 = SPA 对应的 RMP 表项的物理地址
+            RMP_ENTRY_PA = RMP_SEGMENT_BASE + (SYSTEM_PA_OFFSET/0x1000)* 16
+            COVERED = TRUE //则该 SPA 被该分段 RMP 覆盖
+ELSE //如果分段式 RMP 未启用
+    //RMP 表的前 16 KB 是 bookkeeping，故 + 0x4000
+    //一个 RMP 表条目映射一个 4 KB 的页，故 SYSTEM_PA / 0x1000 得到 SPA 在 RMP 表中的索引
+    //一个 RMP 表条目大小是 16B，故 bookkeeping 大小 + SPA 在 RMP 表中的索引 * 16 得到条目在表中的偏移的字节
+    //RMP 表的物理基地址 + SPA 对应的表中偏移 = SPA 对应的 RMP 表项的物理地址
+    RMP_ENTRY_PA = RMP_BASE + 0x4000 + (SYSTEM_PA / 0x1000) * 16
+    IF (RMP_ENTRY_PA <= RMP_END) //如果 SPA 对应的 RMP 表项的物理地址被 RMP 表结束地址覆盖
+        RMP_COVERED = TRUE       //则该 SPA 被 RMP 覆盖
+//返回 SPA 是否被 RMP 覆盖，以及 SPA 对应的 RMP 表项的物理地址
+RETURN (RMP_COVERED, RMP_ENTRY_PA)
+```
+* **译注**
+* 感觉需将 *最小 RMP 段大小* `Fn8000_0025_EAX[MinRmpSegSize](bits 5:0)` 设为 `> 1 GB` 才行，否则会有问题
+* 由 `RST_INDEX = SYSTEM_PA[RMP_SEG_SIZE+8:RMP_SEG_SIZE]` 可见一旦 **Segmented RMP Configuration** MSR 中的 `RmpSegSize` 字段设定，每个 RMP 分段能映射的范围也就确定了，而且大小相同，总共能映射的范围也能确定了
+  * RST 表项的 `CoveredSize` 字段相当于在 `RmpSegSize` 限定的范围内又划定一个上限
+* 某个 RMP 分段可以不映射，把 RMP 表所占用的空间省下来，比如 NUMA 场景时物理地址空间中的空洞就不需要 RMP 映射
 
 ### 15.36.23 Guest 拦截控制（Guest Intercept Control）
 * Guest 拦截控制功能允许在较高特权级 VMPL 下执行的 vCPU，对在较低特权级 VMPL 下运行的 vCPU 的特定事件进行拦截和仿真。
