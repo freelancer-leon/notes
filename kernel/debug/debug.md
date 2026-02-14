@@ -72,7 +72,9 @@ config KALLSYMS_ALL
           the real console.
   ```
 
-### printk的频率限制
+### printk 的频率限制
+
+#### 全局限制
 * 用法
   ```c
   if (error && printk_ratelimit())
@@ -83,6 +85,22 @@ config KALLSYMS_ALL
   echo 5 > /proc/sys/kernel/printk_ratelimit        # Wait sec before re-open printk
   echo 10 > /proc/sys/kernel/printk_ratelimit_burst # Message number before limiting the rate
   ```
+#### 本地限制
+* 可以采用本地限制的方式使用打印函数 `printk_ratelimited()`，更加安全
+```c
+#define DEFAULT_RATELIMIT_INTERVAL  (5 * HZ)
+#define DEFAULT_RATELIMIT_BURST     10
+
+#define printk_ratelimited(fmt, ...)                    \
+({                                  \
+    static DEFINE_RATELIMIT_STATE(_rs,              \
+                      DEFAULT_RATELIMIT_INTERVAL,   \
+                      DEFAULT_RATELIMIT_BURST);     \
+                                    \
+    if (__ratelimit(&_rs))                      \
+        printk(fmt, ##__VA_ARGS__);             \
+})
+```
 
 ## log
 

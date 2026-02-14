@@ -185,7 +185,8 @@
 * 创建 TD 时，TDX module 将要求 VMM 提供一组内存页面，用于存放虚拟机控制结构（virtual-machine-control structures，VMCS）、TD 的状态保存区等。
 * 该 module 的目标是使用其页面分配跟踪器来强制这些页面没有被 VMM 同时分配给其他 TD。
 * 然后，TDX module 将使用分配给该 TD 的私钥初始化和配置这些结构，为 TD-CPU 状态的加密机密性和完整性提供保护帮助。
-  ![CPU-STATE CONFIDENTIALITY AND INTEGRITY](pic/cpu_cfd_int.png)
+
+![CPU-STATE CONFIDENTIALITY AND INTEGRITY](pic/cpu_cfd_int.png)
 
 ## 安全中断和异常传递
 
@@ -208,20 +209,19 @@
 * 认证结果包括：
   * 与 TD 自身相关的数据
     * 目标是在请求证明时由 TD 中的软件提供此信息。例如，TD 软件可能包含它想用来与依赖方通信的公钥，作为证明的一部分。
-  * TDX module 提供的 TD 度量
-    * 创建 TD 时，
-      * TDX module 初始化 TD 的度量寄存器，
-      * VMM 请求模块为 TD 分配一组页面，
-      * 然后，该模块将扩展一个称为 **TD 度量寄存器（TD-measurement register，TDMR）** 的静态测量寄存器，其中包含添加到 TD 的初始页面的测量值以及与这些页面关联的元数据。
-      * 它还寻求为 TD 提供一组 **运行时可扩展度量寄存器（runtime-extendable-measurement registers，RTMR）**，这些寄存器将由 TD 中的代码扩展，并在运行时度量附加代码和数据。
-      * 证明的目标是包括所有度量寄存器。
+  * TDX module 提供的 TD 度量，创建 TD 时，
+    * TDX module 初始化 TD 的度量寄存器，
+    * VMM 请求 module 为 TD 分配一组页面，
+    * 然后，该 module 将扩展一个称为 **TD 度量寄存器（TD-measurement register，TDMR）** 的静态测量寄存器，其中包含添加到 TD 的初始页面的度量值以及与这些页面关联的元数据。
+    * 它还寻求为 TD 提供一组 **运行时可扩展度量寄存器（runtime-extendable-measurement registers，RTMR）**，这些寄存器将由 TD 中的代码扩展，并在运行时度量附加代码和数据。
+    * 证明的目标是包括所有度量寄存器。
   * TDX module 提供的其他未度量状态的详细信息
     * TD 的某些状态，例如 TD 的属性、TD 所有者（MROWNER）的身份等，不会被度量，但会包含在 TD 的证明结果中。
   * CPU 硬件提供的 TDX TCB 元素的 *安全版本号（SVN）*
     * TDX TCB 中的每个元素都分配了一个 SVN
     * 如果 TCB 的所有组件的 SVN 大于或等于组件作者发布的阈值，则认为 TCB 是最新的。
     * 对于硬件，这些 SVN 统称为 **CPUSVN**，包括 SEAMLDR SVN。
-    * 按照设计 module 在 TD 的 TCB 中，模块的 SVN 也要在证明中体现。
+    * 按照设计 module 在 TD 的 TCB 中，module 的 SVN 也要在证明中体现。
 * TDX 的一个目标是使用基于椭圆曲线数字签名算法（Elliptic-Curve-DigitalSignature-Algorithm，ECDSA）的 asymmetric-attestation key 来表示 Intel TDX-TCB 版本的 ，以便使用上面列出的信息对证明（a Quote）进行签名。
 * TDX 的设计目的是，如果一个漏洞通过平台更新得到缓解或以其他方式解决，依赖方可以验证是否已安装更新。
   * 更新平台证明以反映更新的过程称为 **TCB Recovery**。
