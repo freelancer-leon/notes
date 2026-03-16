@@ -182,6 +182,8 @@ Slots -> | 0 | 1 | 2 | ... | 12 | 13 | 14 | 15 |
 `0b010` | `32 bit` 值，类型在 `bit 0-2`，槽位偏移在 `bit 3-6`
 `0b110` | `64 bit` 值，类型在 `bit 0-2`，槽位偏移在 `bit 3-6`
 
+### 节点结构
+
 * `struct maple_metadata` 元数据用于优化空闲区间更新相关代码，同时也为 *反向搜索空闲区间* 或其他需要 *查找数据末尾* 的代码提供支持。
 ```cpp
 struct maple_metadata {
@@ -241,7 +243,10 @@ struct maple_topiary {
     struct maple_pnode *parent;
     struct maple_enode *next; /* Overlaps the pivot */
 };
-//树的类型
+```
+
+### 树的类型枚举
+```cpp
 enum maple_type {
     maple_dense,     //密集型
     maple_leaf_64,   //叶子
@@ -274,9 +279,160 @@ enum store_type {
 #define MT_FLAGS_LOCK_EXTERN    0x300  //不使用内部 mt_lock（使用外部锁）
 #define MT_FLAGS_ALLOC_WRAPPED  0x0800
 ```
-* 能够被存储的最大高度
+* Maple Tree 能够被存储的最大高度
 ```c
 #define MAPLE_HEIGHT_MAX    31 //能够被存储的最大高度
+```
+
+### `struct maple_tree` 结构
+* 如果树在 *索引 `0`* 处只包含一个条目，该条目通常存放在 `tree->ma_root` 中。
+* 为了对页缓存（page cache）进行优化，以 `00`、`01` 或 `11` 结尾的条目会存放在根节点中，而以 `10` 结尾的条目则会存放在普通节点中。
+* Bits `3～6` 用于存放 `enum maple_type` 类型。
+* `ma_flags` 域的作用：
+  * 存储上面的 Maple Tree 的标志位，既用于存放关于该树的一些不可变信息（在树创建时设置），也用于在自旋锁保护下设置动态信息。
+  * 标志位的另一个用途是指示树的全局状态，`MT_FLAGS_USE_RCU` 标志就是如此，它表示该树当前处于 RCU 模式。
+    * 加入该模式是为了让树在单用户场景下能够复用节点，而不必重新分配节点并通过 RCU 机制释放节点。
+```cpp
+struct maple_tree {
+    union {
+        spinlock_t      ma_lock;
+#ifdef CONFIG_LOCKDEP
+        struct lockdep_map  *ma_external_lock;
+#endif
+    };  
+    unsigned int    ma_flags;
+    void __rcu      *ma_root;
+};
+```
+### `struct maple_node` 结构
+* Maple Tree 会在多处位置巧妙地压缩各类比特位，这些位置不一定直观。
+  * 通常的做法是利用指针按 `N-byte` 对齐这一特性，因此其低侧 `log<sub>2</sub>(N)` 个比特位可以被复用。
+  * 我们 **不会** 使用指针的高位来存储额外信息，因为无法确定在任意给定架构上哪些高位是未被使用的。
+  * 节点大小为 `256` 字节，并且同样按 `256` 字节对齐，这为我们提供了 `8` 个低位比特位可供自行使用。
+* 节点目前分为 4 种类型：
+  1. 单指针节点（范围为 `0-0`）
+  2. 非叶子分配范围（Non-leaf Allocation Range）节点
+  3. 非叶子范围（Non-leaf Rang）节点
+  4. 叶子范围节点，所有节点都由若干个节点槽位、枢轴值以及一个父指针组成。
+```cpp
+struct maple_node {
+    union {
+        struct {
+            struct maple_pnode *parent;
+            void __rcu *slot[MAPLE_NODE_SLOTS];
+        };
+        struct {
+            void *pad;
+            struct rcu_head rcu;
+            struct maple_enode *piv_parent;
+            unsigned char parent_slot;
+            enum maple_type type;
+            unsigned char slot_len;
+            unsigned int ma_flags;
+        };
+        struct maple_range_64 mr64;
+        struct maple_arange_64 ma64;
+        struct maple_alloc alloc;
+    };
+};
+```
+### `struct ma_topiary` 结构
+* 更复杂的存储操作可能会导致两个节点合并为一个，或者一个节点分裂为三个，并有可能改变树的高度。
+  * 此时可能需要对树的某一半相对于另一半进行重新平衡。
+  * `ma_topiary` 结构体用于跟踪哪些节点已从树中 “摘除”，以便后续可以安全地完成变更操作。这一设计是为了支持 RCU。
+```cpp
+struct ma_topiary {                     
+    struct maple_enode *head;
+    struct maple_enode *tail;                                            
+    struct maple_tree *mtree;                                            
+};  
+```
+
+## 高级 API
+
+### Maple State 状态枚举
+
+```cpp
+enum maple_status {
+    ma_active,    //表示 maple state 已指向某个节点及偏移量，可继续对树进行操作
+    ma_start,     //表示尚未对树执行搜索操作
+    ma_root,      //表示已完成树搜索，且找到的条目位于树的根节点（即索引为 0、长度为 1，且是树中唯一条目）
+    ma_none,      //表示已完成树搜索，但树中不存在对应条目
+    ma_pause,     //表示 maple state 中的数据可能已失效，需重新开始操作
+    ma_overflow,  //表示搜索已达到搜索上限
+    ma_underflow, //表示搜索已达到搜索下限
+    ma_error,     //表示发生错误，需通过节点检查错误码
+};
+```
+### `struct ma_state` 结构
+* **maple state（maple tree 状态）** 定义在 `ma_state` 结构体中，用于在操作过程中跟踪记录相关信息；即便使用高级 API 时，也可在多次操作之间保留该状态。
+```cpp
+struct ma_state {
+    struct maple_tree *tree;    /* 当前操作所属的 maple tree */
+    unsigned long index;        /* 操作对应的索引 - 区间起始值 */
+    unsigned long last;         /* 操作对应的最后一个索引 - 区间结束值 */
+    struct maple_enode *node;   /* 包含本条目的节点 */
+    unsigned long min;          /* 该节点的最小索引 - 隐含的枢轴最小值 */
+    unsigned long max;          /* 该节点的最大索引 - 隐含的枢轴最大值 */
+    struct slab_sheaf *sheaf;   /* 本次操作分配的节点集合 */
+    struct maple_node *alloc;   /* 用于快速路径写入的单个已分配节点 */
+    unsigned long node_request; /* 本次操作需要分配的节点数量 */
+    enum maple_status status;   /* 状态标识（活跃、初始、无匹配等） */
+    unsigned char depth;        /* 写操作期间树的遍历深度 */
+    unsigned char offset;       /* 节点内偏移量 */
+    unsigned char mas_flags;    /* ma_state 标志位 */
+    unsigned char end;          /* 节点的结束位置 */
+    enum store_type store_type; /* 本次操作所需的存储类型 */
+};  
+```
+
+* 对于 `state->node`： 
+  * 第 `0` 位（`bit 0`）被置位，则其指向的是树中非节点的位置（例如根节点特殊区域）；
+  * 第 `1` 位（`bit 1`）被置位，则剩余比特位存储的是一个负的错误码（errno）；
+  * 第 `2` 位（即 “未分配槽位（unallocated slots）” 位）始终为 `0`；
+  * 第 `3` 至 `6` 位用于标识节点类型。
+* `state->alloc` 字段要么 **存储申请的节点数量**，要么 **指向一个已分配的节点**：
+  * 若 `state->alloc` 存储的是申请的节点数量，则其第 `1` 位会被置位（值为 `0x1`），剩余比特位为具体数值；
+  * 若 `state->alloc` 指向一个节点，则该节点的类型为 `maple_alloc`。
+* **`maple_alloc`** 类型节点包含以下内容：
+  * 预留 `MAPLE_NODE_SLOTS - 1` 个位置用于存储更多已分配节点；
+  * 记录已分配节点的总数；
+  * 记录当前节点内的 `node_count`（本节点中已分配的节点数量）。
+  * 当需要存储的节点数量超过 `MAPLE_NODE_SLOTS - 1` 时，会将额外节点存入 `state->alloc->slot[0]` 指向的节点中。
+  * 从 `state->alloc` 中 **取用** 节点的逻辑：
+    * 持续从 `state->alloc` 节点中移除节点，直到 `state->alloc->node_count` 变为 `1`；
+    * 此时会返回当前 `state->alloc`，并将 `state->alloc->slot[0]` 升级为新的 `state->alloc`。
+  * 向 `state->alloc` 中 **添加** 节点的逻辑：
+    * 将当前 `state->alloc` 存入待添加节点的 `slot[0]` 中，完成节点入栈。
+* 该状态结构体还包含以下核心字段：
+  * `state->node` 对应的隐含 **最小/最大值（implied min/max）**：
+    * 若节点 **非根节点**，则该值继承自父节点；
+    * 若为 **根节点**，则范围是 `0` 到无穷大（`0-∞`）；
+  * **搜索深度（depth）**：每向下/向上遍历一个节点，深度值相应加 1/减 1；
+  * **偏移量（offset）**：表示当前关注的节点内槽位/枢轴（slot/pivot）位置，用于读写操作。
+  * 返回值时，`maple state` 的 **`index`** 和 **`last`** 字段分别存储条目的区间 **起始值** 和 **结束值**。
+* Maple Tree 中的区间均为 **闭区间（包含边界值）**。
+* 状态的 **`status`** 字段用于决定后续操作如何处理该状态：
+  * 若 `status` 为 `ma_start`，则后续操作需从树根开始向下遍历；
+  * 若 `status` 为 `ma_pause`，则当前节点数据可能已失效，需丢弃；
+  * 若 `status` 为 `ma_overflow`，则上一次操作已触及搜索上限。
+
+```cpp
+struct ma_wr_state {
+    struct ma_state *mas;            /* 指向 ma_state 的指针 */
+    struct maple_node *node;         /* 解码后的 mas->node 节点 */
+    unsigned long r_min;             /* 区间最小值 */
+    unsigned long r_max;             /* 区间最大值 */
+    enum maple_type type;            /* mas->node 的节点类型 */
+    unsigned char offset_end;        /* 写操作结束的偏移位置 */
+    unsigned long *pivots;           /* 指向 mas->node->pivots 的指针 */
+    unsigned long end_piv;           /* 偏移结束位置对应的枢轴值 */
+    void __rcu **slots;              /* 指向 mas->node->slots 的指针 */
+    void *entry;                     /* 待写入的条目 */
+    void *content;                   /* 被覆盖的现有条目 */
+    unsigned char vacant_height;     /* 存在空闲空间的最低节点高度 */
+    unsigned char sufficient_height; /* 满足最小容量 +1 个节点的最低节点高度 */
+};
 ```
 
 ## References
