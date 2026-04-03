@@ -67,7 +67,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
 
 ## 抽象内存访问模型
 * 考虑以下系统抽象模型：
-```
+```c
                :                :
                :                :
                :                :
@@ -246,9 +246,9 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
 ### 内存屏障的种类
 * 内存屏障有四种基本类型：
 1. 写（或 store）内存屏障
-   * 写屏障保证了相对于系统的其他组件而言，屏障之前指定的所有 store 操作都发生在屏障之后指定的所有 store 操作之前。
+   * **写屏障** 保证了相对于系统的其他组件而言，屏障 **之前** 指定的所有 store 操作都发生在 **屏障之后** 指定的所有 store 操作 **之前**。
    * 写屏障仅对 stores 进行部分排序；它不需要对 loads 产生任何影响。
-   * 可以将 CPU 视为随着时间的推移将 stores 操作序列提交给内存系统。写屏障 *之前* 的所有 stores 都将发生在写屏障之后的所有 stores *之前*。
+   * 可以将 CPU 视为随着时间的推移将 stores 操作序列提交给内存系统。写屏障 **之前** 的所有 stores 都将发生在 **写屏障之后** 的所有 stores **之前**。
    * **注意**，写屏障通常应与 *读* 或 *地址依赖* 屏障配对；请参阅“SMP 屏障配对”小节。
 2. 地址依赖屏障（历史）
    * 本节被标记为 *历史*：它涵盖了早已过时的 `smp_read_barrier_depends()` 宏，该宏的语义现在隐含在所有标记的访问中。有关更多最新信息，包括编译器转换有时如何破坏地址依赖关系，请参阅 Documentation/RCU/rcu_dereference.rst。
@@ -261,7 +261,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
    * **注意**，地址依赖屏障通常应与写屏障配对；请参阅“SMP 屏障配对”小节。
    * 内核版本 v5.9 删除了显式地址依赖屏障的内核 API。如今，用于标记来自共享变量的加载的 API（例如 `READ_ONCE()` 和 `rcu_dereference()`）提供了隐式地址依赖屏障。
 3. 读（或 load）内存屏障
-   * 读屏障是地址依赖屏障加上保证，即相对于系统的其他组件，屏障之前指定的所有 load 操作看起来都发生在屏障之后指定的所有 load 操作之前。
+   * **读屏障** 是地址依赖屏障加上保证，即相对于系统的其他组件，屏障 **之前** 指定的所有 load 操作看起来都发生在 **屏障之后** 指定的所有 load 操作 **之前**。
    * 读屏障仅对 loads 进行部分排序；它不需要对 stores 产生任何影响。
    * 读内存屏障意味着地址依赖屏障，因此可以替代它们。
    * **注意**，读屏障通常应与写屏障配对；请参阅“SMP 屏障配对”小节。
@@ -281,7 +281,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
    * `RELEASE` 操作 **之后** 发生的内存操作可能看起来发生在操作完成 **之前**。
    * 使用 `ACQUIRE` 和 `RELEASE` 操作通常可以避免使用其他类型的内存屏障。
      * 此外，`RELEASE+ACQUIRE` 对不能保证充当完整的内存屏障。
-     * 但是，在对给定变量执行 `ACQUIRE` 之后，保证在对该变量执行任何先前的 `RELEASE` 之前的所有内存访问都是可见的。换句话说，在给定变量的临界区内，保证对该变量的所有先前临界区的所有访问都已完成。
+     * 但是，在对给定变量执行 `ACQUIRE` 之后，同一变量上所有 **先前 `RELEASE` 之前** 的内存访问，都保证是可见的。换句话说，在给定变量的临界区内，保证对该变量的所有 **先前临界区的所有访问** 都已完成。
    * 这意味着 `ACQUIRE` 充当最小的“获取”操作，而 `RELEASE` 充当最小的“释放”操作。
 * atomic_t.txt 中描述的原子操作子集除了完全有序和宽松（无屏障语义）定义外，还具有 `ACQUIRE` 和 `RELEASE` 变体。
   * 对于执行 load 和 store 的复合 atomics，`ACQUIRE` 语义仅适用于 load，`RELEASE` 语义仅适用于操作的 store 部分。
@@ -290,7 +290,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
 
 ### 关于内存屏障，哪些是不能假设的？
 * Linux 内核内存屏障不能保证某些事情：
-* 无法保证在内存屏障之前指定的任何内存访问在内存屏障指令完成时会 *完成*；可以认为屏障在该 CPU 的访问队列中划了一条线，相应类型的访问不得越过该线。
+* 无法保证在内存屏障之前指定的 **任何内存访问** 在内存屏障指令完成时会 *完成*；可以认为屏障在该 CPU 的访问队列中划了一条线，**相应类型的访问** 不得越过该线。
 * 无法保证在一个 CPU 上发出内存屏障会对另一个 CPU 或系统中的任何其他硬件产生任何直接影响。间接影响将是第二个 CPU 看到第一个 CPU 访问发生的影响的顺序，但请参见下一点：
 * 无法保证 CPU 会看到第二个 CPU 访问的正确影响顺序，即使 *如果* 第二个 CPU 使用内存屏障，除非第一个 CPU *也* 使用匹配的内存屏障（请参阅“SMP 屏障配对”小节）。
 * 无法保证某些中间的 CPU 外硬件不会重新排序内存访问。CPU 缓存一致性机制应该在 CPU 之间传播内存屏障的间接影响，但可能不会按顺序传播。
@@ -314,7 +314,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
                         Q = READ_ONCE_OLD(P);
                         D = *Q;
   ```
-  `READ_ONCE_OLD()` 对应于 4.15 之前内核的 `READ_ONCE()`，它不暗示地址依赖性障碍。
+  `READ_ONCE_OLD()` 对应于 4.15 之前内核的 `READ_ONCE()`，它不隐含一个地址依赖性屏障。
   这里有明显的地址依赖性，并且似乎在序列结束时，`Q` 必须是 `&A` 或 `&B`，并且：
   ```c
   (Q == &A) implies (D == 1) //CPU2 上的指令先于 CPU1 的执行
@@ -392,8 +392,8 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
   }
   ```
 * 控制依赖关系通常与其他类型的屏障配对。也就是说，请注意 `READ_ONCE()` 和 `WRITE_ONCE()` 都不是可选的！
-  * 如果没有 `READ_ONCE()`，编译器可能会将来自“`a`”的 load 与来自“`a`”的其他 loads 相结合。
-  * 如果没有 `WRITE_ONCE()`，编译器可能会将对“`b`”的 store 与对“`b`”的其他 stores 相结合。
+  * 如果没有 `READ_ONCE()`，编译器可能会将来自“`a`”的 load 与来自“`a`”的其他 loads 合并。
+  * 如果没有 `WRITE_ONCE()`，编译器可能会将对“`b`”的 store 与对“`b`”的其他 stores 合并。
 * 两者都会对排序产生非常违反直觉的影响。
 * 更糟糕的是，如果编译器能够证明（比如说）变量“`a`”的值始终为非零，那么它完全有权通过消除“`if`”语句来优化原始示例，如下所示：
   ```c
@@ -514,7 +514,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
   st r4,b       ;将寄存器 r4 的值 store 到变量 b
   st $1,c       ;将立即数 1 的值 store 到变量 c，但 CPU 可能会将该指令与第一条指令调换
   ```
-* 弱顺序 CPU 在从“`a`” load 和 store 到“`c`”之间没有任何依赖关系。控制依赖关系将仅扩展到 `cmov` 指令对和依赖于它们的 stores。
+* 在一个弱顺序的 CPU 上在从“`a`” load 和 store 到“`c`”之间没有任何依赖关系。控制依赖关系将仅扩展到 `cmov` 指令对和依赖于它们的 stores。
 * 简而言之，控制依赖关系仅适用于相关 `if` 语句的 `then` 子句和 `else` 子句中的 stores（包括这两个子句调用的函数），而不适用于该 `if` 语句后面的代码。
 * **注意**，控制依赖项提供的顺序对于包含它的 CPU 来说是本地的。有关更多信息，请参阅“多副本原子性”部分。
 
@@ -537,9 +537,9 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
 ### SMP 屏障配对
 * 在处理 CPU-CPU 交互时，某些类型的内存屏障应始终成对出现。缺乏适当的配对几乎肯定是错误的。
 * 通用屏障相互配对，但它们也与大多数其他类型的屏障配对，尽管没有多副本原子性。
-* 一个 acquire 屏障与一个 release 屏障配对，但两者都可以与其他屏障配对，当然包括通用屏障。
-* 一个写屏障与一个地址依赖屏障、一个控制依赖屏障、一个 acquire 屏障、一个 realease 屏障、一个读屏障或一个通用屏障配对。
-* 类似地，一个读屏障、控制依赖屏障或一个地址依赖屏障与一个写屏障、一个 acquire 屏障、一个 release 屏障或一个通用屏障配对：
+* 一个 acquire 屏障 *与* 一个 release 屏障配对，但两者都可以与其他屏障配对，当然包括通用屏障。
+* 一个写屏障 *与* 一个地址依赖屏障、一个控制依赖屏障、一个 acquire 屏障、一个 realease 屏障、一个读屏障或一个通用屏障配对。
+* 类似地，一个读屏障、控制依赖屏障或一个地址依赖屏障 *与* 一个写屏障、一个 acquire 屏障、一个 release 屏障或一个通用屏障配对：
   ```c
   CPU 1                 CPU 2
   ===============       ===============
