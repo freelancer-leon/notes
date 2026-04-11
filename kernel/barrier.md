@@ -249,22 +249,22 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
    * **写屏障** 保证了相对于系统的其他组件而言，屏障 **之前** 指定的所有 store 操作都发生在 **屏障之后** 指定的所有 store 操作 **之前**。
    * 写屏障仅对 stores 进行部分排序；它不需要对 loads 产生任何影响。
    * 可以将 CPU 视为随着时间的推移将 stores 操作序列提交给内存系统。写屏障 **之前** 的所有 stores 都将发生在 **写屏障之后** 的所有 stores **之前**。
-   * **注意**，写屏障通常应与 *读* 或 *地址依赖* 屏障配对；请参阅“SMP 屏障配对”小节。
+   * **注意**，写屏障通常应与 *读* 或 *地址依赖* 屏障配对；请参阅“[SMP 屏障配对](#smp-屏障配对)”小节。
 2. 地址依赖屏障（历史）
    * 本节被标记为 *历史*：它涵盖了早已过时的 `smp_read_barrier_depends()` 宏，该宏的语义现在隐含在所有标记的访问中。有关更多最新信息，包括编译器转换有时如何破坏地址依赖关系，请参阅 Documentation/RCU/rcu_dereference.rst。
    * 地址依赖屏障是读屏障的较弱形式。如果执行两次 loads，而第二次 load 依赖于第一次 load 的结果（例如：第一次 load 获取第二次 load 将指向的地址），则需要使用地址依赖屏障来确保在访问第一次 load 获得的地址后更新第二次 load 的目标。
    * 地址依赖屏障仅对相互依赖的 loads 进行部分排序；它不需要对 stores、独立的 loads 或重叠 loads 产生任何影响。
    * 如（1）中所述，系统中的其他 CPU 可以被视为将 stores 序列提交给内存系统，然后所考虑的 CPU 可以感知这些 stores 序列。
      * 所考虑的 CPU 发出的地址依赖屏障保证，对于它之前的任何 loads，如果该 load 接触来自另一个 CPU 的 stores 序列之一，那么在屏障完成时，在 *地址依赖屏障之后发出的任何 loads* 都可以感知到该 loads 接触的 stores 之前的所有 stores 的影响。
-   * 请参阅“内存屏障序列示例”小节，查看显示排序约束的图表。
-   * **注意**，第一次 load 实际上必须具有 *地址* 依赖性，而不是控制依赖性。如果第二次 load 的地址依赖于第一次 load，但依赖性是通过条件而不是实际 load 地址本身，那么它就是 *控制* 依赖性，需要完全读屏障或更好的屏障。有关更多信息，请参阅“控制依赖性”小节。
-   * **注意**，地址依赖屏障通常应与写屏障配对；请参阅“SMP 屏障配对”小节。
+   * 请参阅“[内存屏障序列示例](#内存屏障序列示例)”小节，查看显示排序约束的图表。
+   * **注意**，第一次 load 实际上必须具有 *地址* 依赖性，而不是控制依赖性。如果第二次 load 的地址依赖于第一次 load，但依赖性是通过条件而不是实际 load 地址本身，那么它就是 *控制* 依赖性，需要完全读屏障或更好的屏障。有关更多信息，请参阅“[控制依赖性](#控制依赖)”小节。
+   * **注意**，地址依赖屏障通常应与写屏障配对；请参阅“[SMP 屏障配对](#smp-屏障配对)”小节。
    * 内核版本 v5.9 删除了显式地址依赖屏障的内核 API。如今，用于标记来自共享变量的加载的 API（例如 `READ_ONCE()` 和 `rcu_dereference()`）提供了隐式地址依赖屏障。
 3. 读（或 load）内存屏障
    * **读屏障** 是地址依赖屏障加上保证，即相对于系统的其他组件，屏障 **之前** 指定的所有 load 操作看起来都发生在 **屏障之后** 指定的所有 load 操作 **之前**。
    * 读屏障仅对 loads 进行部分排序；它不需要对 stores 产生任何影响。
    * 读内存屏障意味着地址依赖屏障，因此可以替代它们。
-   * **注意**，读屏障通常应与写屏障配对；请参阅“SMP 屏障配对”小节。
+   * **注意**，读屏障通常应与写屏障配对；请参阅“[SMP 屏障配对](#smp-屏障配对)”小节。
 4. 通用内存屏障
    * 通用内存屏障保证了屏障之前指定的所有 load 和 store 操作相对于系统的其他组件而言，看起来都发生在屏障之后指定的所有 load 和 store 操作之前。
    * 通用内存屏障是对 load 和 store 的部分排序。
@@ -292,7 +292,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
 * Linux 内核内存屏障不能保证某些事情：
 * 无法保证在内存屏障之前指定的 **任何内存访问** 在内存屏障指令完成时会 *完成*；可以认为屏障在该 CPU 的访问队列中划了一条线，**相应类型的访问** 不得越过该线。
 * 无法保证在一个 CPU 上发出内存屏障会对另一个 CPU 或系统中的任何其他硬件产生任何直接影响。间接影响将是第二个 CPU 看到第一个 CPU 访问发生的影响的顺序，但请参见下一点：
-* 无法保证 CPU 会看到第二个 CPU 访问的正确影响顺序，即使 *如果* 第二个 CPU 使用内存屏障，除非第一个 CPU *也* 使用匹配的内存屏障（请参阅“SMP 屏障配对”小节）。
+* 无法保证 CPU 会看到第二个 CPU 访问的正确影响顺序，即使 *如果* 第二个 CPU 使用内存屏障，除非第一个 CPU *也* 使用匹配的内存屏障（请参阅“[SMP 屏障配对](#smp-屏障配对)”小节）。
 * 无法保证某些中间的 CPU 外硬件不会重新排序内存访问。CPU 缓存一致性机制应该在 CPU 之间传播内存屏障的间接影响，但可能不会按顺序传播。
   * 有关总线控制 DMA 和一致性的信息，请阅读：
     - Documentation/driver-api/pci/pci.rst
@@ -362,7 +362,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
 * **注意**，地址依赖性提供的顺序对于包含它的 CPU 来说是本地的。有关更多信息，请参阅“多副本原子性”部分。
 * 例如，地址依赖性屏障对 RCU 系统非常重要。请参阅 include/linux/rcupdate.h 中的 `rcu_assign_pointer()` 和 `rcu_dereference()`。
   * 这允许将 RCU 指针的当前目标替换为新的修改目标，而不会使替换目标看起来未完全初始化。
-* 另请参阅“Cache 一致性”小节以获取更详尽的示例。
+* 另请参阅“[Cache 一致性](#cpu-cache-的效果)”小节以获取更详尽的示例。
 
 ### 控制依赖
 * 控制依赖关系可能有点棘手，因为当前的编译器无法理解它们。本节的目的是帮助您防止编译器的无知破坏您的代码。
@@ -912,7 +912,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
 * **多副本原子性（Multicopy atomicity ）** 是一种关于顺序的极具直觉性的概念，但实际的计算机系统并非总能提供这种特性，即：
   * 某个给定的 store 操作会同时对所有 CPU 可见；
   * 或者说，所有 CPU 对于所有 stores 操作变为可见的顺序持一致看法。
-* 然而，对完全多副本原子性的支持会排除一些有价值的硬件优化，因此一种被称为 “其他多副本原子性（other multicopy atomicity）” 的较弱形式应运而生，它仅保证某个给定的 store 操作会同时对所有其他 CPU 可见。
+* 然而，对完全多副本原子性的支持会排除一些有价值的硬件优化，因此一种被称为 “**其他多副本原子性（other multicopy atomicity）**” 的较弱形式应运而生，它仅保证某个给定的 store 操作会同时对所有其他 CPU 可见。
 * 本文档的其余部分将讨论这种较弱形式的原子性，但为简洁起见，仅称之为 “多副本原子性”。
 * 以下示例将阐释多副本原子性：
   ```c
@@ -941,7 +941,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
                           <data dependency>       <read barrier>
                           STORE Y=r1              LOAD X (读到 0)
    ```
-* 这种替换会让非多副本原子性的问题变得不受控制：在这个示例中，CPU 2 从 `X` load 的值为 `1`、CPU 3 从 `Y` load 的值为 `1`，而 CPU 3 从 `X` load 的值为 `0`，这种情况是完全合法的。
+* 这个替换会让非多副本原子性的问题变得不受控制：在这个示例中，CPU 2 从 `X` load 的值为 `1`、CPU 3 从 `Y` load 的值为 `1`，而 CPU 3 从 `X` load 的值为 `0`，这种情况是完全合法的。
 * 关键在于，尽管 CPU 2 的数据依赖关系对其 load 和 store 操作进行了排序，但它并不能保证对 CPU 1 的 store 操作进行排序。
   * 因此，如果该示例运行在一个非多副本原子性的系统上，且 CPU 1 和 CPU 2 共享一个 store buffer 或某一级 cache，那么 CPU 2 可能会提前访问到 CPU 1 的写入内容。
   * 因此，需要通用屏障来确保所有 CPU 对多个访问操作的组合顺序达成一致。
@@ -988,11 +988,12 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
   ```c
   r1 == 1 && r5 == 0
   ```
-  * **译注**：能看到 `r1 == 1` 说明 `cpu0()` 的 `smp_store_release(&y, 1)` 已经执行过了，在它之前的 `WRITE_ONCE(u, 1)` 更是已经执行过了，因此必然有 `r5 == 0`
+  * **译注**：能看到 `r1 == 1` 说明 `cpu0()` 的 `smp_store_release(&y, 1)` 已经执行过了，在它之前的 `WRITE_ONCE(u, 1)` 更是已经执行过了，因此必然有 `r5 == 1`
 * 然而，release-acquire 链提供的排序对于参与该链的 CPU 来说是本地的，而不适用于 `cpu3()`，至少除了 store 之外。因此，以下结果是可能的：
   ```c
   r0 == 0 && r1 == 1 && r2 == 1 && r3 == 0 && r4 == 0
   ```
+  * **译注**：可以确定的执行顺序是 `cpu0() -> cpu1() -> cpu2()`，但 `cpu3()` 没有参与 release-acquire 链，假如 `u` 和 `v` 在不同的 cache 上，本地的屏障仅能保证 `cpu3()` 的 store `v = 1` 已经在 cache 上可见，然后才去 load `u` 的值，但本地的屏障并不能保证 `cpu0()` 的 store `u = 1` 同步过来了
 * 顺便说一句，以下结果也是可能的：
   ```c
   r0 == 0 && r1 == 1 && r2 == 1 && r3 == 0 && r4 == 0 && r5 == 1
@@ -1004,8 +1005,19 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
   ```c
   r0 == 0 && r1 == 0 && r2 == 0 && r5 == 0
   ```
+  * **译注**：屏障只影响本地 CPU 的顺序性，不能保证原子性！执行顺序可以是这样：
+    ```c
+    //cpu0()                   cpu1()                     cpu2()
+    r0 = smp_load_acquire(&x)
+                               r1 = smp_load_acquire(&y)
+                                                          r2 = smp_load_acquire(&z)
+                               r5 = READ_ONCE(u)
+    WRITE_ONCE(u, 1)
+    smp_store_release(&y, 1)
+                               smp_store_release(&z, 1)
+    ```
 * 需要注意的是，即便在一个不存在任何重排序的假想的顺序一致性系统中，这种结果也可能发生。
-* 再次强调，**如果你的代码要求所有操作都完全有序，请在整个过程中使用通用屏障**。
+* 再次强调，==**如果你的代码要求所有操作都完全有序，请在整个过程中使用通用屏障**==。
 
 ## 显式内核屏障
 * Linux 内核有各种不同的屏障，它们在不同的层次上起作用：
@@ -1031,14 +1043,17 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
   a[1] = x;
   ```
 * 可能会导致存储在 `a[1]` 中的 `x` 值比存储在 `a[0]` 中的 `x` 值更旧。
-  * **译注**：这意味着有其他 CPU 在并发地修改 `x` 的值
-* 可以通过以下方式同时阻止编译器和 CPU 进行此类操作：
+  * **译注**：这意味着有其他 CPU 在并发地修改 `x` 的值，CPU 重排了 loads，`a[0]` load 到的是其他 CPU 更新过后的值
+* 可以通过以下方式 **同时阻止编译器和 CPU** 进行此类操作（Prevent both the compiler and the CPU from doing this as follows）：
   ```c
   a[0] = READ_ONCE(x);
   a[1] = READ_ONCE(x);
   ```
 * 简言之，`READ_ONCE()` 和 `WRITE_ONCE()` 为多个 CPU 对 **单个变量** 的访问提供了 cache 一致性。
 * **译注**：`READ_ONCE()` 和 `WRITE_ONCE()` 本质上是加了 `volatile` 关键字，并没有插入内存屏障指令，如何能阻止 CPU 的重排序？！
+  * 这里的说法不严谨，大部分体系结构都不会对同一地址的 load 乱序，因此在这种情况下阻止了编译器乱序自然也就不会观察到 CPU 的乱序
+  * 除非有某些体系结构的 CPU 的内存模型顺序性特别弱，对同一地址的 load 也会乱序，然而这种情况下仅凭 `READ_ONCE()` 和 `WRITE_ONCE()` 也是无法阻止 CPU 的重排的
+  * 还有一个角度，`a[]` 是数组，这里要 `volatile` 阻止的是编译器对 `a[0]` 和 `a[1]` 赋值的重排序，但即便是这样，CPU 依然可以对 `a[0]` 和 `a[1]` 的 strores 重排序，`READ_ONCE()` 阻止不了。然而通常 CPU 不会对同一地址的 `load-load` 乱序，因此只要保证了编译器没有重排两次 loads，即便 CPU 对 `a[0]` 和 `a[1]` 的 strores 重排序，`a[1]` 依然会比 `a[0]` 的值新
 
 #### 示例 2
 * 编译器有权合并来自同一变量的连续 loads。这样的合并会导致编译器“优化”以下代码：
@@ -1052,7 +1067,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
      for (;;)
         do_something_with(tmp);
   ```
-  * **译注**：注意，这里是“赋值”不是“等于”，如果编译器在编译时认定 `a` 的值恒等于 `true` 就有可能优化成上面的代码，然而 `a` 可能在别的 CPU 通过地址引用的方式修改
+  * **译注**：注意，这里是“赋值”不是“等于”，如果编译器在编译时认定 `a` 的值恒等于 `true` 就有可能优化成上面的代码，然而 `a` 可能在别的 CPU 上被修改
 * 使用 `READ_ONCE()` 来防止编译器对你（的代码）这样做：
   ```c
   while (tmp = READ_ONCE(a))
@@ -1250,9 +1265,9 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
 * 关于这些问题尚未达成共识，但`READ_ONCE()`宏是一个值得着手研究的方向。
 * 在单处理器编译的系统中，SMP 内存屏障会被简化为编译器屏障，因为假设单个 CPU 会呈现出自一致性，并且会相对于自身正确排序重叠的访问操作。不过，请参见下文“[虚拟机 Guest](#虚拟机-guest)”小节。
 * **注意**：在 SMP 系统上，必须使用 SMP 内存屏障来控制对共享内存的引用顺序，不过使用锁机制来替代也足够。
-* 不应使用强制屏障（Mandatory Barriers）来控制 SMP 相关的效果，因为强制屏障会给 SMP 和 UP 系统都带来不必要的开销。
-  * 不过，它们可用于控制通过 relaxed memory I/O 窗口进行的访问所产生的 MMIO 效应。
-  * 即使在非 SMP 系统上，这些屏障也是必需的，因为它们通过禁止编译器和 CPU 对内存操作进行重排序，来控制内存操作呈现给设备的顺序。
+* ==不应使用 *强制屏障（Mandatory Barriers）* 来控制 *SMP* 相关的效果，因为强制屏障会给 SMP 和 UP 系统都带来不必要的开销。==
+  * 不过，它们可用于控制通过 **relaxed memory I/O** 窗口进行的访问所产生的 MMIO 效应。
+  * 即使在非 SMP 系统上，这些屏障也是必需的，因为它们通过禁止编译器和 CPU 对内存操作进行重排序，来控制内存操作呈现 *给设备的顺序*。
 ---
 * 还有一些更高级的屏障函数：
   ```c
@@ -1269,7 +1284,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
   * 包括加法（add）、减法（subtract）、（failed）条件操作、`_relaxed` 函数等，
   * 但不包括 `atomic_read` 或 `atomic_set`。
 * 原子操作用于引用计数时，通常就是需要内存屏障的常见场景。
-* 这些屏障也用于那些不隐含内存屏障的原子 RMW 位操作函数（如 `set_bit` 和 `clear_bit`）。
+* 这些屏障也用于那些不隐含内存屏障的 *原子 RMW 位操作函数*（如 `set_bit` 和 `clear_bit`）。
 * 例如，考虑一段将某个对象标记为“已销毁”，然后递减该对象引用计数的代码：
   ```c
   obj->dead = 1;
@@ -1278,6 +1293,7 @@ barrier() | Prevents the compiler from optimizing stores or loads across the bar
   ```
 * 这能确保该对象的“已销毁”标记被感知为在引用计数递减 **之前** 设置。
 * 更多信息请参见 Documentation/atomic_{t,bitops}.txt。
+* **译注**：在 x86 里这两个屏障是空操作，因为 x86 的原子操作已经序列化了（隐含内存屏障）
 ---
   ```c
   dma_wmb();
@@ -1309,7 +1325,7 @@ if (desc->status != DEVICE_OWN) {
 * `dma_rmb()` 确保我们在从描述符读取数据之前，设备已经释放了所有权；
 * `dma_wmb()` 确保在设备看到自己获得所有权之前，数据已写入描述符。
 * `dma_mb()` 同时具备 `dma_rmb()` 和 `dma_wmb()` 的功能。
-* 请注意，`dma_*()` 屏障不保证对 MMIO（内存映射 I/O）区域访问的顺序。有关 I/O 访问函数和 MMIO 排序的更多信息，请参见后文的“KERNEL I/O BARRIER EFFECTS”小节。
+* 请注意，`dma_*()` 屏障不保证对 MMIO（内存映射 I/O）区域访问的顺序。有关 I/O 访问函数和 MMIO 排序的更多信息，请参见后文的“[KERNEL I/O BARRIER EFFECTS](#内核-io-屏障效果)”小节。
 ---
 ```c
 pmem_wmb();
@@ -1595,11 +1611,11 @@ io_stop_wc();
   struct rw_semaphore {
           ...
           spinlock_t lock;
-          struct list_head waiters;
+          struct list_head waiters; //信号量的等待者链表
   };
 
   struct rwsem_waiter {
-          struct list_head list;
+          struct list_head list; //挂入等待者链表的结点
           struct task_struct *task;
   };
   ```
@@ -1633,7 +1649,7 @@ io_stop_wc();
   STORE waiter->task;
                                   被其他事件唤醒
   <抢占>
-                                  恢复处理 //比如条件是 waiter-> task 为空就恢复处理
+                                  恢复处理 //比如条件是 waiter->task 为空就恢复处理
                                   down_xxx() 返回 //栈指针回到调用前的位置，waiter 的内容还在
                                   调用 foo()
                                   foo() 破坏 *waiter
@@ -1641,7 +1657,7 @@ io_stop_wc();
   LOAD waiter->list.next;
   --- 发生错误 ---
   ```
-* 这可以通过使用信号量锁来解决，但这样一来，`down_xxx()`函数在被唤醒后就不得不不必要地再次获取自旋锁。
+* 这可以通过使用 *信号量锁* 来解决，但这样一来，`down_xxx()`函数在被唤醒后就不得不不必要地再次获取自旋锁。
 * 处理此问题的方法是插入一个通用的 SMP 内存屏障：
   ```c
   LOAD waiter->list.next;
@@ -1706,9 +1722,9 @@ io_stop_wc();
 * 对于使用默认 I/O 属性映射的指针（例如由 `ioremap()` 返回的指针），其排序保证如下：
 1. 对同一外设的所有 `readX()` 和 `writeX()` 访问都相对于彼此有序。这确保了同一 CPU 线程对特定设备的 MMIO 寄存器访问会按程序顺序到达。
 2. 持有自旋锁的 CPU 线程执行的 `writeX()`，会先于另一个 CPU 线程在之后获取同一自旋锁后对同一外设执行的 `writeX()`。这确保了持有自旋锁时对特定设备的 MMIO 寄存器写入，会按与锁的获取顺序一致的顺序到达。
-3. CPU 线程对外设执行的 `writeX()`，会先等待所有先前由该线程发出或传播到该线程的内存写入完成。这确保了当 CPU 写入 DMA 引擎的 MMIO 控制寄存器以触发传输时，CPU 对由 `dma_alloc_coherent()` 分配的出站 DMA 缓冲区的写入，能被 DMA 引擎看到。
-4. CPU 线程从外设执行的 `readX()` 会完成后，同一线程对内存的所有后续读取才能开始。这确保了在从 DMA 引擎的 MMIO 状态寄存器读取以确认 DMA 传输已完成后，CPU 从由 `dma_alloc_coherent()` 分配的入站 DMA 缓冲区读取时，不会看到陈旧数据。
-5. CPU 线程从外设执行的 `readX()` 会完成后，同一线程上的所有后续 `delay()` 循环才能开始执行。这确保了如果 CPU 对外设的两次 MMIO 寄存器写入中，第一次写入后立即用 `readX()` 读回，且在第二次 `writeX()` 之前调用 `udelay(1)`，那么这两次写入到达外设的时间至少间隔 `1` 微秒：
+3. CPU 线程对外设执行的 `writeX()`，会先 **等待所有先前** 由该线程发出或传播到该线程的内存写入完成。这确保了当 CPU 写入 DMA 引擎的 MMIO 控制寄存器以触发传输时，CPU 对由 `dma_alloc_coherent()` 分配的出站 DMA 缓冲区的写入，能被 DMA 引擎看到。
+4. CPU 线程从外设执行的 `readX()` 完成后，同一线程对内存的 **所有后续读取才能开始**。这确保了在从 DMA 引擎的 MMIO 状态寄存器读取以确认 DMA 传输已完成后，CPU 从由 `dma_alloc_coherent()` 分配的入站 DMA 缓冲区读取时，不会看到陈旧数据。
+5. CPU 线程从外设执行的 `readX()` 完成后，同一线程上的所有后续 `delay()` 循环才能开始执行。这确保了如果 CPU 对外设的两次 MMIO 寄存器写入中，第一次写入后立即用 `readX()` 读回，且在第二次 `writeX()` 之前调用 `udelay(1)`，那么这两次写入到达外设的时间至少间隔 `1` 微秒：
    ```c
    writel(42, DEVICE_REGISTER_0); // 到达设备...
    readl(DEVICE_REGISTER_0);
@@ -1797,7 +1813,7 @@ io_stop_wc();
 * 有关缓存管理的更多信息，请参见 Documentation/core-api/cachetlb.rst。
 
 ### Cache 一致性 VS MMIO
-* 内存映射 I/O 通常通过 CPU 内存空间中某个窗口内的内存位置进行，该窗口被分配的属性与常规指向 RAM 的窗口不同。
+* 内存映射 I/O 通常通过 CPU 内存空间中某个窗口内的内存位置进行，该窗口被分配的属性与常规指向 RAM 的窗口不同（译注：类似 x86 通过 PAT 或 MTRR 配置某个内存范围的内存属性）。
 * 这些属性中通常包括这样一个特点：此类访问会完全绕过 cache，直接通往设备总线。这意味着，实际上，MMIO 访问可能会超过（先于）之前发出的对 cache 内存的访问。
 * 在这种情况下，仅靠内存屏障是不够的，相反，如果 cache 内存写入操作与 MMIO 访问之间存在任何依赖关系，则必须在两者之间刷新 cache。
 
