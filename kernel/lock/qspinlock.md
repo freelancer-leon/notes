@@ -544,7 +544,7 @@ pv_queue:
     if ((val = pv_wait_head_or_lock(lock, node)))
         goto locked;
     // 以上两种情况我们都自旋在 (*,*,1) 上，owner 和 pending 都不为 0 时结束自旋，我们有机会拿锁了
-    val = atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_PENDING_MASK)); [自旋点 5]
+    val = atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_PENDING_MASK));// [自旋点 5]
     // [part 4 - 第三个 CPU 成功获取 spinlock]
 locked:
     /*
