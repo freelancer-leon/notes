@@ -55,7 +55,7 @@ struct lock_metadata {
 - **每节点队列表**：`queue_table[MAX_NUMNODES][LOCK_ID_MAX]`，为每个可能的锁在每个 NUMA 节点上预分配一个 `numa_queue`。
 - `numa_queue.handoffs_not_head` 记录当前节点队列在非头部情况下被“交给过”的次数。
   - 它会在远程交接时在远程节点队列间传递。
-  - 每当远程交接到全局节点队列链表时被重置为 `0`。
+  - 每当远程交接到全局节点队列链表头时被重置为 `0`。
   - 当 `handoff_remote()` 交接给其他 NUMA 节点队列的头部线程时，如果 `handoffs_not_head >= nr_online_nodes`，表示其他节点已经至少各获得过一次锁，而当前节点的头部线程仍然没有拿到锁，此时应强制将锁交接给全局链表头部，而不是 `handoff_info` 指定的下一个节点，以防止头部节点饥饿。
 
 ## 3. 动态元数据管理（锁绑定）
@@ -190,7 +190,7 @@ static void __init hqlock_alloc_global_queues(void)
 }
 ```
 
-##### 关键设计要点
+#### 关键设计要点
 
 1. **内存分配时机**  
    * 函数标记为 `__init`，在系统启动早期、SMP 初始化之前通过 `hq_configure_spin_lock_slowpath()` 调用。
@@ -213,6 +213,217 @@ static void __init hqlock_alloc_global_queues(void)
 
 6. **对齐要求**  
    通过 `ALIGN(sizeof(struct numa_queue), L1_CACHE_BYTES)` 将每个 `numa_queue` 对齐到缓存行边界，避免 false sharing。元数据池也按 `L1_CACHE_BYTES` 对齐，提高访问效率。
+
+### HQ Spinlock 的加锁慢速路径 `queued_spin_lock_slowpath()`
+
+HQ Spinlock 引入了新的锁字掩码如下：
+
+![HQ Spinlock 锁字掩码](pic/hqspinlock_q_mask.png)
+
+以下是打过 HQ spinlock 补丁后的 `queued_spin_lock_slowpath()` 函数的详细注释。该函数整合了原生 qspinlock 慢路径和 NUMA 感知的 HQ 模式，根据锁的状态动态选择路径。
+
+```c
+/*
+ * queued_spin_lock_slowpath - 获取排队自旋锁的慢路径
+ * @lock: 锁指针
+ * @val:  锁的当前原子值（由快速路径传入）
+ *
+ * 整体流程：
+ *   1. 处理 pending 位优化路径（如果可能）。
+ *   2. 如果无法直接获取锁，则入队到 MCS 等待队列。
+ *   3. 根据锁是否处于 HQ 模式，选择普通 qspinlock 入队或 NUMA 感知入队。
+ *   4. 当成为队列头部时，等待锁释放，然后获取锁。
+ *   5. 在锁释放时，根据模式选择交接策略（普通 MCS 交接或 HQ 本地/远程交接）。
+ *
+ * HQ 模式特有的改动：
+ *   - 识别锁值中的 _Q_LOCKTYPE_HQ 和 _Q_LOCK_MODE_QSPINLOCK_VAL 标志。
+ *   - 使用 hqlock_xchg_tail() 代替 xchg_tail()，实现动态模式选择。
+ *   - 使用 hqlock_clear_pending() / hqlock_clear_pending_set_locked() 保留模式位。
+ *   - 使用 hqlock_clear_tail_handoff() 处理解锁时的交接。
+ */
+void __lockfunc queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
+{
+    struct mcs_spinlock *prev, *next, *node;
+    u32 old, tail;
+    int idx;
+
+#if defined(_GEN_HQ_SPINLOCK_SLOWPATH) && !defined(_GEN_PV_LOCK_SLOWPATH)
+    /* HQ 模式特有：从锁值中解析是否为 NUMA 锁以及当前是否处于 NUMA 感知状态 */
+    bool is_numa_lock = val & _Q_LOCKTYPE_MASK;
+    bool numa_awareness_on = is_numa_lock && !(val & _Q_LOCK_MODE_QSPINLOCK_VAL);
+#endif
+
+    BUILD_BUG_ON(CONFIG_NR_CPUS >= (1U << _Q_TAIL_CPU_BITS));
+
+    if (pv_enabled())
+        goto pv_queue;
+
+    if (virt_spin_lock(lock))
+        return;
+
+    /*
+     * 等待 pending 位被清除（如果当前是 pending 状态）。
+     * 注意：原生的 _Q_PENDING_VAL 比较现在需要屏蔽 _Q_SERVICE_MASK，
+     * 因为 HQ 模式在锁值中使用了额外的服务位。
+     */
+    if ((val & ~_Q_SERVICE_MASK) == _Q_PENDING_VAL) {
+        int cnt = _Q_PENDING_LOOPS;
+        val = atomic_cond_read_relaxed(&lock->val,
+                        ((VAL & ~_Q_SERVICE_MASK) != _Q_PENDING_VAL) || !cnt--);
+    }
+
+    /* 如果已有任何等待者（tail 非零或 pending 被设置），直接进入队列 */
+    if (val & ~(_Q_LOCKED_MASK | _Q_SERVICE_MASK))
+        goto queue;
+
+    /*
+     * 尝试设置 pending 位（快速路径）。
+     * 使用 queued_fetch_set_pending_acquire()，它返回旧值。
+     */
+    val = queued_fetch_set_pending_acquire(lock);
+
+    /* 如果设置 pending 后发现已有竞争，则撤销 pending 并进入队列 */
+    if (unlikely(val & ~(_Q_LOCKED_MASK | _Q_SERVICE_MASK))) {
+        if (!(val & _Q_PENDING_VAL)) {
+#if defined(_GEN_HQ_SPINLOCK_SLOWPATH) && !defined(_GEN_PV_LOCK_SLOWPATH)
+            /* HQ 模式：清除 pending 时保留模式位 */
+            hqlock_clear_pending(lock, val);
+#else
+            clear_pending(lock);
+#endif
+        }
+        goto queue;
+    }
+
+    /* 如果锁已被持有，等待锁释放（pending 位已设置） */
+    if (val & _Q_LOCKED_MASK)
+        smp_cond_load_acquire(&lock->locked_pending, !(VAL & _Q_LOCKED_MASK));
+
+    /* 获取锁并清除 pending 位 */
+#if defined(_GEN_HQ_SPINLOCK_SLOWPATH) && !defined(_GEN_PV_LOCK_SLOWPATH)
+    hqlock_clear_pending_set_locked(lock, val);
+#else
+    clear_pending_set_locked(lock);
+#endif
+    lockevent_inc(lock_pending);
+    return;
+
+queue:
+    lockevent_inc(lock_slowpath);
+pv_queue:
+    /* 获取当前 CPU 的 MCS 节点 */
+    node = this_cpu_ptr(&qnodes[0].mcs);
+    idx = node->count++;
+    tail = encode_tail(smp_processor_id(), idx);
+
+    trace_contention_begin(lock, LCB_F_SPIN);
+
+    /* 如果节点索引超出预分配数量（通常 4），则自旋重试 */
+    if (unlikely(idx >= _Q_MAX_NODES)) {
+        lockevent_inc(lock_no_node);
+        while (!queued_spin_trylock(lock))
+            cpu_relax();
+        goto release;
+    }
+
+    node = grab_mcs_node(node, idx);
+    barrier();
+    node->locked = 0;
+    node->next = NULL;
+    pv_init_node(node);
+
+    /* 再试一次 trylock，可能锁已被释放 */
+    if (queued_spin_trylock(lock))
+        goto release;
+
+    /* 确保节点初始化完成后再发布 tail */
+    smp_wmb();
+
+    /*
+     * 发布 tail（入队）。
+     * 根据锁模式选择不同的 xchg_tail 实现：
+     *   - 如果是 NUMA 锁，调用 hqlock_xchg_tail()，它会根据锁状态选择普通或 HQ 入队。
+     *   - 否则使用原生 xchg_tail()。
+     */
+#if defined(_GEN_HQ_SPINLOCK_SLOWPATH) && !defined(_GEN_PV_LOCK_SLOWPATH)
+    if (is_numa_lock)
+        old = hqlock_xchg_tail(lock, tail, node, &numa_awareness_on);
+    else
+        old = xchg_tail(lock, tail);
+
+    /* HQ 模式特殊：如果 old == Q_NEW_NODE_QUEUE，表示当前线程是本地队列的第一个，
+       且全局链表已有其他节点，因此需要直接进入 MCS 自旋（跳过再次尝试链接） */
+    if (numa_awareness_on && old == Q_NEW_NODE_QUEUE)
+        goto mcs_spin;
+#else
+    old = xchg_tail(lock, tail);
+#endif
+
+    next = NULL;
+
+    /* 如果旧 tail 非零，说明有前驱节点，需要链接并等待 */
+    if (old & _Q_TAIL_MASK) {
+        prev = decode_tail(old, qnodes);
+        WRITE_ONCE(prev->next, node);
+        pv_wait_node(node, prev);
+#if defined(_GEN_HQ_SPINLOCK_SLOWPATH) && !defined(_GEN_PV_LOCK_SLOWPATH)
+mcs_spin:
+#endif
+        arch_mcs_spin_lock_contended(&node->locked);
+
+        /* 预取下一个节点，为解锁做准备 */
+        next = READ_ONCE(node->next);
+        if (next)
+            prefetchw(next);
+    }
+
+    /* 现在成为队列头部，等待锁释放（locked 和 pending 位清零） */
+    if ((val = pv_wait_head_or_lock(lock, node)))
+        goto locked;
+
+    val = atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_PENDING_MASK));
+
+locked:
+    /*
+     * 获取锁。
+     * 如果锁是 NUMA 模式，则使用 hqlock_clear_tail_handoff() 处理解锁和交接；
+     * 否则使用普通逻辑。
+     */
+#if defined(_GEN_HQ_SPINLOCK_SLOWPATH) && !defined(_GEN_PV_LOCK_SLOWPATH)
+    if (is_numa_lock) {
+        hqlock_clear_tail_handoff(lock, val, tail, node, next, prev, numa_awareness_on);
+        goto release;
+    }
+#endif
+    /* 普通 qspinlock 模式：尝试清除 tail 并设置 locked */
+    if ((val & _Q_TAIL_MASK) == tail) {
+        if (atomic_try_cmpxchg_relaxed(&lock->val, &val, _Q_LOCKED_VAL))
+            goto release;
+    }
+
+    set_locked(lock);
+
+    if (!next)
+        next = smp_cond_load_relaxed(&node->next, (VAL));
+
+    arch_mcs_spin_unlock_contended(&next->locked);
+    pv_kick_node(lock, next);
+
+release:
+    trace_contention_end(lock, 0);
+    __this_cpu_dec(qnodes[0].mcs.count);
+}
+```
+
+#### 主要改动总结
+
+1. **模式识别**：从锁值中读取 `_Q_LOCKTYPE_MASK` 和 `_Q_LOCK_MODE_QSPINLOCK_VAL` 来确定是否使用 HQ 模式。
+2. **pending 操作**：使用 `hqlock_clear_pending()` 和 `hqlock_clear_pending_set_locked()` 替代原生函数，以保留锁值中的模式位。
+3. **入队**：当锁是 NUMA 锁时，调用 `hqlock_xchg_tail()` 实现动态路径选择，并处理 `Q_NEW_NODE_QUEUE` 特殊返回值。
+4. **解锁**：当锁是 NUMA 锁时，调用 `hqlock_clear_tail_handoff()` 处理交接，否则走普通 MCS 交接。
+5. **服务位屏蔽**：所有检查锁值的地方都使用 `~_Q_SERVICE_MASK` 屏蔽掉 HQ 模式使用的额外标志位，避免干扰原有逻辑。
+
+这些修改使得同一个慢路径函数能够在原生 qspinlock 和 NUMA 感知 HQ 模式之间无缝切换，同时保持对 PV 和 virt 锁的兼容性。
 
 ### 加锁慢路径函数
 
@@ -315,14 +526,13 @@ static inline hqlock_mode_t set_lock_mode(struct qspinlock *lock, int __val, u16
    当锁的 pending 位被设置时，表示有一个线程正在通过“pending 快速路径”获取锁（该路径在锁仅有锁持有者而无等待者时使用）。此时如果直接修改锁的 `val`（例如设置模式位），可能会错误地清除 pending 位或导致锁状态不一致。因此必须等待 pending 位被清除后才能安全更新。
 
 2. **_Q_LOCK_INVALID_TAIL 的处理**  
-   当锁要从普通模式切换到 HQ 模式时，之前可能有一些线程在普通模式下已经设置了 `_Q_LOCK_INVALID_TAIL` 标志（该标志表示“tail 无效，请走 HQ 路径”）。因此，若要切换回普通模式时，需要清除该标志，以便后续普通模式的 `xchg_tail` 能够正常工作。
+   当锁要从普通模式切换到 HQ 模式时，之前可能有一些线程在普通模式下已经设置了 `_Q_LOCK_INVALID_TAIL` 标志（该标志表示“tail 无效，请走 HQ 路径”）。因此，若要切换回普通模式时，需要清除该标志，以便后续普通模式的 `xchg_tail()` 能够正常工作。
 
 3. **内存屏障的放置**  
    `smp_wmb()` 仅在启用 HQ 模式时使用，确保 `seq_counter` 的写入（在 `grab_lock_meta` 中完成）在锁的模式位发布之前对其它 CPU 可见。这是因为其他 CPU 在看到锁模式变为 HQ 后，会立即读取元数据中的 `seq_counter` 来验证队列的有效性；如果 `seq_counter` 尚未传播，可能导致错误的验证失败。
 
 4. **CAS 失败处理**  
    `atomic_try_cmpxchg_relaxed()` 在失败时会自动将 `val` 更新为当前锁值，因此循环可以继续。如果循环条件 `!(val & _Q_LOCK_MODE_MASK)` 不满足（即锁模式已经被其他 CPU 设置），则函数返回 `LOCK_NO_MODE`，让调用者（`setup_lock_mode`）重试或回退。
-
 
 #### `setup_lock_mode()` - 设置锁模式
 
