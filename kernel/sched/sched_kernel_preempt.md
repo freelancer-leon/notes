@@ -1,16 +1,30 @@
 # 内核抢占
 
-# 目录
+## 目录
 
-- [内核抢占发生的时机](#内核抢占发生的时机)
-- [是否能被抢占？](#是否能被抢占？)
-- [抢占计数preempt_count](#抢占计数preempt_count)
-	- [x86的preempt_count](#x86的preempt_count)
-	- [ARM的preempt_count](#ARM的preempt_count)
-- [中断返回时的内核抢占](#中断返回时的内核抢占)
-	- [x86-64的实现](#x86-64的实现)
-	- [PowerPC-32的实现](#PowerPC-32的实现)
-	- [preempt_schedule_irq()函数](#preempt_schedule_irq()函数)
+- [内核抢占](#内核抢占)
+  - [目录](#目录)
+  - [用户抢占发生的时机](#用户抢占发生的时机)
+  - [非内核抢占](#非内核抢占)
+  - [内核抢占发生的时机](#内核抢占发生的时机)
+  - [是否能被抢占？](#是否能被抢占)
+  - [抢占计数 preempt\_count](#抢占计数-preempt_count)
+    - [增减抢占计数](#增减抢占计数)
+    - [x86 的 preempt\_count](#x86-的-preempt_count)
+      - [`PREEMPT_NEED_RESCHED` 标志位](#preempt_need_resched-标志位)
+    - [ARM 的 preempt\_count](#arm-的-preempt_count)
+  - [中断返回时的内核抢占](#中断返回时的内核抢占)
+    - [x86-64的实现](#x86-64的实现)
+    - [PowerPC-32的实现](#powerpc-32的实现)
+    - [preempt\_schedule\_irq()函数](#preempt_schedule_irq函数)
+  - [延迟抢占模式（PREEMPT\_LAZY）](#延迟抢占模式preempt_lazy)
+    - [设置 `TIF_NEED_RESCHED_LAZY` 标志](#设置-tif_need_resched_lazy-标志)
+    - [`PREEMPT_LAZY` 所谓的 lazy 体现在哪些方面？](#preempt_lazy-所谓的-lazy-体现在哪些方面)
+    - [处于 lazy 状态的进程什么时候会获得调度的机会？](#处于-lazy-状态的进程什么时候会获得调度的机会)
+  - [动态调节抢占模式](#动态调节抢占模式)
+    - [如果不开启动态调节抢占模式，`PREEMPT_NONE` 如何禁止 *抢占启用* 和 *中断返回内核态时的调度点*？](#如果不开启动态调节抢占模式preempt_none-如何禁止-抢占启用-和-中断返回内核态时的调度点)
+    - [`__cond_resched` 的生效与否](#__cond_resched-的生效与否)
+  - [References](#references)
 
 ## 用户抢占发生的时机
 * 从系统调用返回用户空间时（在执行系统调用期间被抢占属于内核抢占，这里说的是执行用户态的代码时发生的抢占，比如说用户态的程序 A 切换到了用户态程序 B）
@@ -41,7 +55,7 @@
 	...
 	#define preemptible()   (preempt_count() == 0 && !irqs_disabled())
 
-	#ifdef CONFIG_PREEMPT
+	#ifdef CONFIG_PREEMPTION
 	#define preempt_enable() \
 	do { \
 	    barrier(); \
@@ -50,7 +64,7 @@
 	} while (0)
 
 	...
-	#else /* !CONFIG_PREEMPT */
+	#else /* !CONFIG_PREEMPTION */
 	#define preempt_enable() \
 	do { \
 	    barrier(); \
@@ -58,7 +72,7 @@
 	} while (0)
 
 	...
-	#endif /* CONFIG_PREEMPT */
+	#endif /* CONFIG_PREEMPTION */
 	...
 	#else /* !CONFIG_PREEMPT_COUNT */
 	/*
@@ -553,5 +567,303 @@ resume_kernel:
 	}
 	```
 
-# References
+## 延迟抢占模式（PREEMPT_LAZY）
+
+* **延迟抢占模式（`PREEMPT_LAZY`）** 的设计兼顾了对延迟敏感和追求吞吐量的工作负载的需求。
+  * 与完全抢占 (full-preemption) 或实时 (realtime) 模式不同，延迟抢占通常会在检测到抢占需求后，仍允许任务运行一段时间。
+  * 这种抢占将被推迟到任务耗尽其时间片 (time slice)、因其他原因阻塞或下一次调度器滴答 (scheduler tick) 发生为止。
+  * 这比 `PREEMPT_NONE` 模式（仅在时间片结束时抢占进程）能产生更快的抢占，但在抢占发生之前仍允许任务运行一会儿。
+
+### 设置 `TIF_NEED_RESCHED_LAZY` 标志
+* 设置 `TIF_NEED_RESCHED_LAZY` 的接口 `resched_curr_lazy()` 如下：
+  * kernel/sched/core.c
+```cpp
+#ifdef CONFIG_PREEMPT_DYNAMIC
+static DEFINE_STATIC_KEY_FALSE(sk_dynamic_preempt_lazy);
+static __always_inline bool dynamic_preempt_lazy(void)
+{       //如果开启了动态调整抢占模式特性，返回动态设置的 static key - sk_dynamic_preempt_lazy 的值
+        return static_branch_unlikely(&sk_dynamic_preempt_lazy);
+}
+#else
+static __always_inline bool dynamic_preempt_lazy(void)
+{       //如果未开启了动态调整抢占模式特性，由 config 决定
+        return IS_ENABLED(CONFIG_PREEMPT_LAZY);
+}
+#endif
+
+static __always_inline int get_lazy_tif_bit(void)
+{
+        if (dynamic_preempt_lazy())
+                return TIF_NEED_RESCHED_LAZY;
+
+        return TIF_NEED_RESCHED;
+}
+
+void resched_curr_lazy(struct rq *rq)
+{
+        __resched_curr(rq, get_lazy_tif_bit());
+}
+```
+* 调用 `resched_curr_lazy()` 设置该标志目前只有两处
+```cpp
+1 kernel/sched/fair.c|1421| <<update_curr>> resched_curr_lazy(rq);                                                                                  
+2 kernel/sched/fair.c|9164| <<wakeup_preempt_fair>> resched_curr_lazy(rq);
+```
+1. 发现时间片用完需要被调度的时候
+2. 任务唤醒的时候
+
+### `PREEMPT_LAZY` 所谓的 lazy 体现在哪些方面？
+* lazy 标志有两个关键的"盲区" -- 在以下这两个检查点上被完全忽略：
+1. **自愿抢占点**：`cond_resched()`、`might_sleep()` 等只检查 `TIF_NEED_RESCHED`
+   * 也就是说，原本 `PREEMPT_NONE` 下会发生调度的点在 `PREEMPT_LAZY` 下失效了
+   * 这是 `PREEMPT_NONE` 下唯一的内核态调度手段，如果没有它，长循环可以独占 CPU 数百毫秒
+   * 这也是引入延迟抢占的动机：==让调度器做调度决策，消灭在内核各处散布 `cond_resched()` 来人工补偿==
+2. **中断返回内核空间时**：`irqentry_exit_cond_resched()` 只检查 `TIF_NEED_RESCHED`
+
+### 处于 lazy 状态的进程什么时候会获得调度的机会？
+1. 在 tick 中断时，如果检测到 `TIF_NEED_RESCHED_LAZY` 标志则会将其升级为 `TIF_NEED_RESCHED`，这样遇到下一个调度点时就会发生抢占了
+```cpp
+void sched_tick(void)
+{
+...
+        if (dynamic_preempt_lazy() && tif_test_bit(TIF_NEED_RESCHED_LAZY))
+                resched_curr(rq);
+
+        donor->sched_class->task_tick(rq, donor, 0);
+...
+}
+```
+2. 进程返回用户态时，如果已设置了该标志则会发生调度，比如：
+```c
+1 include/linux/irq-entry-common.h|224| <<exit_to_user_mode_prepare_legacy>> __exit_to_user_mode_prepare(regs, EXIT_TO_USER_MODE_WORK);         
+2 include/linux/irq-entry-common.h|238| <<syscall_exit_to_user_mode_prepare>> __exit_to_user_mode_prepare(regs, EXIT_TO_USER_MODE_WORK_SYSCALL);
+3 include/linux/irq-entry-common.h|252| <<irqentry_exit_to_user_mode_prepare>> __exit_to_user_mode_prepare(regs, EXIT_TO_USER_MODE_WORK_IRQ);
+```
+* 典型地，系统调用返回时的调度点
+```c
+//arch/x86/entry/syscall_64.c
+do_syscall_64()
+-> !do_syscall_x64(regs, nr) && !do_syscall_x32(regs, nr)
+   //include/linux/entry-common.h
+-> syscall_exit_to_user_mode(regs)
+   -> syscall_exit_to_user_mode_prepare(regs)
+      -> __exit_to_user_mode_prepare(regs, EXIT_TO_USER_MODE_WORK_SYSCALL)
+            //kernel/entry/common.c
+         -> exit_to_user_mode_loop(regs, ti_work)
+            -> __exit_to_user_mode_loop(regs, ti_work)
+   -> exit_to_user_mode()
+```
+* 返回用户态前，如果有 `_TIF_NEED_RESCHED` 或 `_TIF_NEED_RESCHED_LAZY` 标志则立即调度
+```cpp
+static __always_inline unsigned long __exit_to_user_mode_loop(struct pt_regs *regs,
+                                                              unsigned long ti_work)
+{
+        /*
+         * Before returning to user space ensure that all pending work
+         * items have been completed.
+         */
+        while (ti_work & EXIT_TO_USER_MODE_WORK_LOOP) {
+
+                local_irq_enable();
+
+                if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY)) {
+                        if (!rseq_grant_slice_extension(ti_work, TIF_SLICE_EXT_DENY))
+                                schedule();
+                }
+...
+        }
+        /* Return the latest work state for arch_exit_to_user_mode() */
+        return ti_work;
+}
+```
+
+## 动态调节抢占模式
+* 开启 `CONFIG_PREEMPT_DYNAMIC` 可以动态调节抢占模式的能力
+  * 通过 kernel command line `preempt= none | voluntary |full | lazy` 在启动时选择
+  * 通过往 debugfs `/sys/kernel/debug/sched/preempt` 接口写入 `none | voluntary |full | lazy` 来设置
+* 这里的核心函数是 `__sched_dynamic_update()`，它通过动态调节一系列和抢占相关的 static key 和 static call 来控制抢占点的生效与否
+  * kernel/sched/core.c
+```cpp
+static void __sched_dynamic_update(int mode) 
+{
+        /*
+         * Avoid {NONE,VOLUNTARY} -> FULL transitions from ever ending up in
+         * the ZERO state, which is invalid.
+         */
+        preempt_dynamic_enable(cond_resched);
+        preempt_dynamic_enable(might_resched);
+        preempt_dynamic_enable(preempt_schedule);
+        preempt_dynamic_enable(preempt_schedule_notrace);
+        preempt_dynamic_enable(irqentry_exit_cond_resched);
+        preempt_dynamic_key_disable(preempt_lazy);
+
+        switch (mode) {
+        case preempt_dynamic_none:
+                preempt_dynamic_enable(cond_resched);
+                preempt_dynamic_disable(might_resched);
+                preempt_dynamic_disable(preempt_schedule);
+                preempt_dynamic_disable(preempt_schedule_notrace);
+                preempt_dynamic_disable(irqentry_exit_cond_resched);
+                preempt_dynamic_key_disable(preempt_lazy);
+                if (mode != preempt_dynamic_mode)
+                        pr_info("Dynamic Preempt: none\n");
+                break;
+
+        case preempt_dynamic_voluntary:
+                preempt_dynamic_enable(cond_resched);
+                preempt_dynamic_enable(might_resched);
+                preempt_dynamic_disable(preempt_schedule);
+                preempt_dynamic_disable(preempt_schedule_notrace);
+                preempt_dynamic_disable(irqentry_exit_cond_resched);
+                preempt_dynamic_key_disable(preempt_lazy);
+                if (mode != preempt_dynamic_mode)
+                       pr_info("Dynamic Preempt: voluntary\n");
+                break;
+
+        case preempt_dynamic_full:
+                preempt_dynamic_disable(cond_resched);
+                preempt_dynamic_disable(might_resched);
+                preempt_dynamic_enable(preempt_schedule);
+                preempt_dynamic_enable(preempt_schedule_notrace);
+                preempt_dynamic_enable(irqentry_exit_cond_resched);
+                preempt_dynamic_key_disable(preempt_lazy);
+                if (mode != preempt_dynamic_mode)
+                        pr_info("Dynamic Preempt: full\n");
+                break;
+
+        case preempt_dynamic_lazy:
+                preempt_dynamic_disable(cond_resched);
+                preempt_dynamic_disable(might_resched);
+                preempt_dynamic_enable(preempt_schedule);
+                preempt_dynamic_enable(preempt_schedule_notrace);
+                preempt_dynamic_enable(irqentry_exit_cond_resched);
+                preempt_dynamic_key_enable(preempt_lazy);
+                if (mode != preempt_dynamic_mode)
+                        pr_info("Dynamic Preempt: lazy\n");
+                break;
+        }
+
+        preempt_dynamic_mode = mode;
+}
+```
+
+* 总结下来就是下面这张表
+
+Preemption Mode              | NONE             | VOLUNTARY        | FULL                         | LAZY
+-----------------------------|------------------|------------------|------------------------------|-----------------------------
+`cond_resched`               | `__cond_resched` | `__cond_resched` | RET0                         | RET0
+`might_resched`              | RET0             | `__cond_resched` | RET0                         | RET0
+`preempt_schedule`           | NOP              | NOP              | `preempt_schedule`           | `preempt_schedule`
+`preempt_schedule_notrace`   | NOP              | NOP              | `preempt_schedule_notrace`   | `preempt_schedule_notrace`
+`irqentry_exit_cond_resched` | NOP              | NOP              | `irqentry_exit_cond_resched` | `irqentry_exit_cond_resched`
+`dynamic_preempt_lazy`       | false            | false            | false                        | true
+
+* `cond_resched`：人为插入的抢占点，在 `PREEMPT_NONE` 和 `PREEMPT_VOLUNTARY` 模式下生效，是调度器大佬们极力要消除的点😀
+* `might_resched`：人为插入的抢占点，在 `PREEMPT_VOLUNTARY` 模式下生效，被定义为 `__cond_resched`
+* `preempt_schedule`：开启抢占时会调度的点
+* `preempt_schedule_notrace`：同上，提供给跟踪插桩函数使用，为了防止插桩函数开启抢占时递归
+* `irqentry_exit_cond_resched`：中断返回内核态时的调度点
+* `dynamic_preempt_lazy`：`dynamic_preempt_lazy()` 函数的返回值。如果开启了动态调整抢占模式特性，返回动态设置的 static key - `sk_dynamic_preempt_lazy` 的值；否则根据配置的 `CONFIG_PREEMPT_LAZY` 决定
+
+### 如果不开启动态调节抢占模式，`PREEMPT_NONE` 如何禁止 *抢占启用* 和 *中断返回内核态时的调度点*？
+* 在 kernel/Kconfig.preempt 中，可以看到
+  * 如果未开启 `PREEMPT_DYNAMIC` 又开启 `PREEMPT_NONE` 则选择 `PREEMPT_NONE_BUILD`，这个选项是个空选项，不会选择 `PREEMPTION`
+    * `PREEMPT_VOLUNTARY` 的情况类似
+  * 如果未开启 `PREEMPT_DYNAMIC` 又开启 `PREEMPT` 则选择 `PREEMPT_BUILD`，这个选项会选择 `PREEMPTION`
+  * 开启 `PREEMPT_DYNAMIC` 必然会选择 `PREEMPTION`
+```sh
+config PREEMPT_NONE_BUILD
+        bool
+
+config PREEMPT_VOLUNTARY_BUILD
+        bool
+
+config PREEMPT_BUILD
+        bool
+        select PREEMPTION
+        select UNINLINE_SPIN_UNLOCK if !ARCH_INLINE_SPIN_UNLOCK
+...
+config PREEMPT_NONE
+        bool "No Forced Preemption (Server)"
+        depends on !PREEMPT_RT
+        depends on ARCH_NO_PREEMPT
+        select PREEMPT_NONE_BUILD if !PREEMPT_DYNAMIC
+...
+config PREEMPT_VOLUNTARY
+        bool "Voluntary Kernel Preemption (Desktop)"
+        depends on !ARCH_HAS_PREEMPT_LAZY
+        depends on !ARCH_NO_PREEMPT
+        depends on !PREEMPT_RT
+        select PREEMPT_VOLUNTARY_BUILD if !PREEMPT_DYNAMIC
+...
+config PREEMPT
+        bool "Preemptible Kernel (Low-Latency Desktop)"
+        depends on !ARCH_NO_PREEMPT
+        select PREEMPT_BUILD if !PREEMPT_DYNAMIC
+...
+config PREEMPT_LAZY
+        bool "Scheduler controlled preemption model"
+        depends on !ARCH_NO_PREEMPT
+        depends on ARCH_HAS_PREEMPT_LAZY
+        select PREEMPT_BUILD if !PREEMPT_DYNAMIC
+...
+config PREEMPTION
+       bool
+       select PREEMPT_COUNT
+
+config PREEMPT_DYNAMIC
+        bool "Preemption behaviour defined on boot"
+        depends on HAVE_PREEMPT_DYNAMIC
+        select JUMP_LABEL if HAVE_PREEMPT_DYNAMIC_KEY
+        select PREEMPT_BUILD
+        default y if HAVE_PREEMPT_DYNAMIC_CALL
+...
+```
+* `CONFIG_PREEMPTION` 的启用与否直接决定了这两个调度点是否生效。由于这个条件下 `PREEMPT_NONE` 选择 `PREEMPT_NONE_BUILD` 这个空选项，**因此不会开启 `CONFIG_PREEMPTION`**
+* 对于 *抢占启用时的调度点*，`preempt_enable()` 不会调用 `__preempt_schedule()`（代码见前文）
+  * 而 `preempt_schedule()` 也被 `#ifdef CONFIG_PREEMPTION` 条件编译宏包围，因此就不会有定义
+* 对于 *中断返回内核态时的调度点*，如果 `CONFIG_PREEMPTION` 未定义，这个调度点不生效：
+  * include/linux/irq-entry-common.h
+```cpp
+static inline void irqentry_exit_to_kernel_mode_preempt(struct pt_regs *regs,
+                                                        irqentry_state_t state)
+{               
+        if (regs_irqs_disabled(regs) || state.exit_rcu)
+                return;
+
+        if (IS_ENABLED(CONFIG_PREEMPTION))
+                irqentry_exit_cond_resched();
+}
+```
+
+### `__cond_resched` 的生效与否
+* `__cond_resched()` 仅为 `PREEMPT_NONE` 和 `PREEMPT_VOLUNTARY` 模式服务，它实现被 `#if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)` 条件编译包围
+* 当未开启 `PREEMPT_DYNAMIC` 又开启 `PREEMPT_NONE`，`CONFIG_PREEMPTION` 未定义，此时 `__cond_resched()` 有实现
+  * 此外，`_cond_resched()` 也有实现
+```cpp
+#else /* !CONFIG_PREEMPTION */
+
+static inline int _cond_resched(void)
+{
+        return __cond_resched();
+}
+
+#endif /* PREEMPT_DYNAMIC && CONFIG_HAVE_PREEMPT_DYNAMIC_CALL */
+```
+* 当开启 `PREEMPT_DYNAMIC`，因为抢占模式可以动态调节，`none` 或 `voluntary` 可能会被选择到，因此不管 `PREEMPT_NONE` 和 `PREEMPT_VOLUNTARY` 是否开启都需要有实现
+* 当仅选择 `PREEMPT` 或 `PREEMPT_LAZY` 又不选择 `PREEMPT_DYNAMIC` 时，`_cond_resched()` 返回 `0`，符合大佬们对调度器代码的品味
+```c
+#else /* CONFIG_PREEMPTION && !CONFIG_PREEMPT_DYNAMIC */
+
+static inline int _cond_resched(void)
+{
+        return 0;
+}
+
+#endif /* !CONFIG_PREEMPTION || CONFIG_PREEMPT_DYNAMIC */
+```
+
+## References
 * [Revisiting the kernel's preemption model, part 2 - LWN](https://lwn.net/Articles/945422/)
+* [内核江湖·翻车现场（八）：PREEMPT_NONE 之死——当架构洁癖撞上生产负载](https://mp.weixin.qq.com/s/bMElxAAksEY20ZQTyGWMOA)
+* [LWN：虚惊一场的 7.0 调度器性能回归](https://mp.weixin.qq.com/s/sBdK1r_T35KM5M2VxlCS5Q)
