@@ -493,15 +493,18 @@ start_kernel()
   }
   ```
 
-## x86 的中断入口的实现
+## 中断的分配与注册
+
 ### 几个相关的数组
-#### irq_desc数组/radix tree
-* 中断请求描述符`struct irq_desc`用于记录各个中断事件的处理方法和未处理事件
+#### irq_desc 数组/maple tree
+* 中断描述符 `struct irq_desc` 用于记录各个中断事件的处理方法和未处理事件
+  * 包含了该中断的所有信息（处理函数、标志、芯片数据等）。
+* 对于启用了 `CONFIG_SPARSE_IRQ` 的系统（绝大多数现代内核），`irq_desc` 被存储在一个名为 `sparse_irqs` 的全局数据结构中（早期是基数树，现在使用 Maple Tree），并通过中断号（`virq`）进行索引。
 * 注意：不要与硬件分发中用到的“中断描述符表”（IDT）相混淆 —— 那是与不同中断向量入口地址相关的
-* `struct irq_desc`定义见 include/linux/irqdesc.h
-* `struct irq_desc irq_desc[NR_IRQS]`数组的初值
-  - 索引是中断向量，值是`struct irq_desc`实例
-  - kernel/irq/irqdesc.c
+* `struct irq_desc` 定义见 include/linux/irqdesc.h
+* 对于旧的系统用 `struct irq_desc irq_desc[NR_IRQS]` 数组存储
+  * 索引是中断向量，值是 `struct irq_desc` 实例
+  * kernel/irq/irqdesc.c
   ```cpp
   struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
           [0 ... NR_IRQS-1] = {
@@ -511,21 +514,104 @@ start_kernel()
           }
   };
   ```
+
 #### vector_irq
-* `vector_irq`则是 per-CPU 的存储指向`struct irq_desc`实例的指针
-* 声明
-  - arch/x86/include/asm/hw_irq.h
+* `vector_irq` 则是 per-CPU 的存储指向 `struct irq_desc` 实例的指针
+* 声明在 arch/x86/include/asm/hw_irq.h
   ```cpp
   typedef struct irq_desc* vector_irq_t[NR_VECTORS];
   DECLARE_PER_CPU(vector_irq_t, vector_irq);
   ```
-* 初值
-  - arch/x86/kernel/irqinit.c
+* 初值在 arch/x86/kernel/irqinit.c
   ```cpp
   DEFINE_PER_CPU(vector_irq_t, vector_irq) = {
           [0 ... NR_VECTORS - 1] = VECTOR_UNUSED,
   };
   ```
+
+### 中断的分配
+* 举 ixgbe 网卡的例子来说
+```cpp
+//drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
+ixgbe_probe()
+   //drivers/net/ethernet/intel/ixgbe/ixgbe_lib.c
+-> ixgbe_init_interrupt_scheme()
+   -> ixgbe_set_interrupt_capability()
+      -> ixgbe_acquire_msix_vectors()
+         -> vectors = pci_enable_msix_range(adapter->pdev, adapter->msix_entries, vector_threshold, vectors)
+               //drivers/pci/msi/msi.c
+            -> __pci_enable_msix_range(dev, entries, minvec, maxvec, NULL, 0)
+               -> nvec = irq_calc_affinity_vectors(minvec, nvec, affd)
+               -> msix_capability_init(dev, entries, nvec, affd)
+                  -> msix_setup_interrupts(dev, entries, nvec, affd)
+                     -> __msix_setup_interrupts(dev, entries, nvec, masks)
+                        -> msix_setup_msi_descs(dev, entries, nvec, masks)
+                              //include/linux/msi.h
+                           -> msi_insert_msi_desc(&dev->dev, &desc)
+                                 //drivers/pci/msi/msi.c
+                              -> msi_domain_insert_msi_desc(dev, MSI_DEFAULT_DOMAIN, init_desc)
+                                 -> msi_alloc_desc(dev, init_desc->nvec_used, init_desc->affinity)
+                                 -> msi_insert_desc(dev, desc, domid, init_desc->msi_index)
+                           //drivers/pci/msi/irqdomain.c
+                        -> pci_msi_setup_msi_irqs(dev, nvec, PCI_CAP_ID_MSIX)
+                           -> domain = dev_get_msi_domain(&dev->dev)
+                              //kernel/irq/msi.c
+                           -> msi_domain_alloc_irqs_all_locked(&dev->dev, MSI_DEFAULT_DOMAIN, nvec)
+                              -> msi_domain_alloc_locked(dev, &ctrl)
+                                 -> __msi_domain_alloc_locked(dev, ctrl)
+                                    -> domain = msi_get_device_domain(dev, ctrl->domid)
+                                    -> msi_domain_alloc_simple_msi_descs(dev, info, ctrl)
+                                       if (ops->domain_alloc_irqs)
+                                       -> ops->domain_alloc_irqs(domain, dev, ctrl->nirqs)
+                                    -> __msi_domain_alloc_irqs(dev, domain, ctrl)
+                                          //kernel/irq/irqdomain.c
+                                       -> virq = __irq_domain_alloc_irqs(domain, -1, desc->nvec_used, dev_to_node(dev), &arg, false, desc->affinity)
+                                       -> irq_domain_alloc_irqs_locked(domain, irq_base, nr_irqs, node, arg, realloc, affinity)
+                                          +-> virq = irq_domain_alloc_descs(irq_base, nr_irqs, 0, node, affinity)
+                                          |   -> virq = __irq_alloc_descs(virq, virq, cnt, node, THIS_MODULE, affinity)
+                                          |         //kernel/irq/irqdesc.c
+                                          |      -> start = irq_find_free_area(from, cnt) //在 sparse_irqs maple tree 中寻找一个空的 virq 范围
+                                          |         -> MA_STATE(mas, &sparse_irqs, 0, 0)
+                                          |         -> mas_empty_area(&mas, from, MAX_SPARSE_IRQS, cnt)
+                                          |      -> return alloc_descs(start, cnt, node, affinity, owner)
+                                          |         -> desc = alloc_desc(start + i, node, flags, mask, owner) //分配中断描述符
+                                          |            -> desc = kzalloc_node(sizeof(*desc), GFP_KERNEL, node)
+                                          |            -> init_desc(desc, irq, node, flags, affinity, owner) //初始化中断描述符
+                                          |         -> irq_insert_desc(start + i, desc) //将中断描述符分配成功的 virq 插入 sparse_irqs maple |tree
+                                          |            -> MA_STATE(mas, &sparse_irqs, irq, irq)
+                                          |            -> WARN_ON(mas_store_gfp(&mas, desc, GFP_KERNEL) != 0)
+                                          +-> irq_domain_alloc_irq_data(domain, virq, nr_irqs)
+                                          +-> irq_domain_insert_irq(virq + i)
+                                                 for (data = irq_get_irq_data(virq); data; data = data->parent_data)
+                                                 -> irq_domain_set_mapping(domain, data->hwirq, data) //设置 hwirq 与 irq_data 的映射关系
+                                                    
+```
+
+### 中断的注册
+* 同样以 ixgbe 网卡驱动为例
+```cpp
+//drivers/net/ethernet/intel/ixgbe/ixgbe_main.c
+ixgbe_open()
+-> ixgbe_request_irq()
+   -> ixgbe_request_msix_irqs()
+      for (vector = 0; vector < adapter->num_q_vectors; vector++) {
+      -> snprintf(q_vector->name, sizeof(q_vector->name), "%s-TxRx-%u", netdev->name, ri++)
+      -> request_irq(entry->vector, &ixgbe_msix_clean_rings, 0, q_vector->name, q_vector)
+      -> irq_update_affinity_hint(entry->vector, &q_vector->affinity_mask)
+      }
+      //include/linux/interrupt.h
+   -> request_irq(adapter->msix_entries[vector].vector, ixgbe_msix_other, 0, netdev->name, adapter)
+         //kernel/irq/manage.c
+      -> request_threaded_irq(irq, handler, NULL, flags | IRQF_COND_ONESHOT, name, dev)
+         -> desc = irq_to_desc(irq) //根据 virq 找到中断描述符
+            -> mtree_load(&sparse_irqs, irq) //之前分配 virq 时就已经存入 sparse_irqs maple tree 了
+         -> action = kzalloc_obj(struct irqaction) //分配 struct irqaction 实例
+         -> __setup_irq(irq, desc, action)
+            -> register_irq_proc(irq, desc) //创建 /proc/irq/<virq> 接口
+            -> register_handler_proc(irq, new) //创建 /proc/irq/<virq>/<handler> 目录
+```
+
+## x86 的中断入口的实现
 
 ### 旧的到中断通用入口 `common_interrupt` 的实现
 #### Call Trace
