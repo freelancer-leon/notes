@@ -496,6 +496,7 @@ start_kernel()
 ## 中断的分配与注册
 
 ### 几个相关的数组
+
 #### irq_desc 数组/maple tree
 * 中断描述符 `struct irq_desc` 用于记录各个中断事件的处理方法和未处理事件
   * 包含了该中断的所有信息（处理函数、标志、芯片数据等）。
@@ -515,8 +516,8 @@ start_kernel()
   };
   ```
 
-#### vector_irq
-* `vector_irq` 则是 per-CPU 的存储指向 `struct irq_desc` 实例的指针
+#### `vector_irq[]`
+* `vector_irq[]` 则是 per-CPU 的存储指向 `struct irq_desc` 实例的指针，索引是 vector（向量）
 * 声明在 arch/x86/include/asm/hw_irq.h
   ```cpp
   typedef struct irq_desc* vector_irq_t[NR_VECTORS];
@@ -577,14 +578,33 @@ ixgbe_probe()
                                           |         -> desc = alloc_desc(start + i, node, flags, mask, owner) //分配中断描述符
                                           |            -> desc = kzalloc_node(sizeof(*desc), GFP_KERNEL, node)
                                           |            -> init_desc(desc, irq, node, flags, affinity, owner) //初始化中断描述符
-                                          |         -> irq_insert_desc(start + i, desc) //将中断描述符分配成功的 virq 插入 sparse_irqs maple |tree
+                                          |         -> irq_insert_desc(start + i, desc) //将中断描述符分配成功的 virq 插入 sparse_irqs maple tree
                                           |            -> MA_STATE(mas, &sparse_irqs, irq, irq)
                                           |            -> WARN_ON(mas_store_gfp(&mas, desc, GFP_KERNEL) != 0)
-                                          +-> irq_domain_alloc_irq_data(domain, virq, nr_irqs)
+                                          +-> irq_domain_alloc_irq_data(domain, virq, nr_irqs)//irq_data 是嵌在 struct irq_desc 里的，这里无需分配，只是逐级分配父 irq domain 的 irq_data
+                                          +-> irq_domain_alloc_irqs_hierarchy(domain, virq, nr_irqs, arg)
+                                          |   -> domain->ops->alloc(domain, irq_base, nr_irqs, arg)
+                                          |   -> //arch/x86/kernel/apic/vector.c
+                                          |   -> x86_vector_alloc_irqs()
+                                          |   -> assign_irq_vector_policy(irqd, info)
+                                          |      -> assign_irq_vector(irqd, info->mask)
+                                          |         -> assign_vector_locked(irqd, vector_searchmask)
+                                          |               //kernel/irq/matrix.c
+                                          |            -> vector = irq_matrix_alloc(vector_matrix, dest, resvd, &cpu)
+                                          |               -> cpu = matrix_find_best_cpu(m, msk) //找到最低 vector 分配计数的 CPU 作为最佳 CPU
+                                          |               -> trace_irq_matrix_alloc(bit, cpu, m, cm) //irq matrix 分配成功的跟踪点
+                                          |            -> trace_vector_alloc(irqd->irq, vector, resvd, vector) //分配 vector 的跟踪点
+                                          |            -> chip_data_update(irqd, vector, cpu)
+                                          |               -> trace_vector_update(irqd->irq, newvec, newcpu, apicd->vector, apicd->cpu) //准备更新 vector_irq[] 的跟踪点
+                                          |               -> per_cpu(vector_irq, newcpu)[newvec] = desc; //更新新 CPU 的 vector_irq[] 新向量
+                                          |               -> apic_update_irq_cfg(irqd, newvec, newcpu)
+                                          |                  -> apic_update_vector(cpu, vector, true)
+                                          |                  -> irq_data_update_effective_affinity(irqd, cpumask_of(cpu)) //更新 IRQ 亲和性
+                                          |                  -> trace_vector_config(irqd->irq, vector, cpu, apicd->hw_irq_cfg.dest_apicid) //配置了 vector 跟踪点
+                                          |   -> trace_vector_setup(virq + i, false, err) //设置了 vector_irq[] 的跟踪点
                                           +-> irq_domain_insert_irq(virq + i)
                                                  for (data = irq_get_irq_data(virq); data; data = data->parent_data)
                                                  -> irq_domain_set_mapping(domain, data->hwirq, data) //设置 hwirq 与 irq_data 的映射关系
-                                                    
 ```
 
 ### 中断的注册
@@ -1110,5 +1130,67 @@ register unsigned long current_stack_pointer asm(_ASM_SP);
                                     \
     call_on_irqstack_cond(func, regs, ASM_CALL_IRQ,         \
                   IRQ_CONSTRAINTS, regs, vector);       \
+}
+```
+
+## 中断线程化
+* 确保 `CONFIG_IRQ_FORCED_THREADING=y`，x86 应该是默认打开的，然后 kernel cmdline 加上 `threadirqs`，即可开启中断线程化
+  * kernel/irq/manage.c
+```cpp
+#if defined(CONFIG_IRQ_FORCED_THREADING) && !defined(CONFIG_PREEMPT_RT)
+DEFINE_STATIC_KEY_FALSE(force_irqthreads_key);
+
+static int __init setup_forced_irqthreads(char *arg)
+{
+        static_branch_enable(&force_irqthreads_key);
+        return 0;
+}
+early_param("threadirqs", setup_forced_irqthreads);
+#endif
+```
+* 对于开启实时抢占的内核（`CONFIG_PREEMPT_RT`），中断线程化强制开启
+  * include/linux/interrupt.h
+```cpp
+#ifdef CONFIG_IRQ_FORCED_THREADING
+# ifdef CONFIG_PREEMPT_RT
+#  define force_irqthreads()    (true)
+# else
+DECLARE_STATIC_KEY_FALSE(force_irqthreads_key);
+#  define force_irqthreads()    (static_branch_unlikely(&force_irqthreads_key))
+# endif
+#else
+#define force_irqthreads()      (false)
+#endif
+```
+
+* kernel/irq/manage.c
+```cpp
+static int
+__setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
+{
+...
+                if (irq_settings_can_thread(desc)) {
+                        ret = irq_setup_forced_threading(new);
+                        if (ret)
+                                goto out_mput;
+                }
+...
+
+        /*
+         * Create a handler thread when a thread function is supplied
+         * and the interrupt does not nest into another interrupt
+         * thread.
+         */
+        if (new->thread_fn && !nested) {
+                ret = setup_irq_thread(new, irq, false);
+                if (ret)
+                        goto out_mput;
+                if (new->secondary) {
+                        ret = setup_irq_thread(new->secondary, irq, true);
+                        if (ret)
+                                goto out_thread;
+                }
+        }
+...
 }
 ```

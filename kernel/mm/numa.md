@@ -4,7 +4,7 @@
 * `numastat` 数据来自 `/sys/devices/system/node/node*/numastat`
 
 ```sh
-# numastat 
+# numastat
                            node0           node1
 numa_hit                17069127         2721282
 numa_miss                      0         2947026

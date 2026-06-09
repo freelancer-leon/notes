@@ -1,6 +1,6 @@
 # Block I/O 层
 
-![https://www.thomas-krenn.com/en/wiki/Linux_Storage_Stack_Diagram](pic/Linux-storage-stack-diagram_v4.0.svg)
+![https://www.thomas-krenn.com/en/wiki/Linux_Storage_Stack_Diagram](pic/Linux-storage-stack-diagram_v6.18.svg)
 
 # 基本概念
 
