@@ -2,22 +2,22 @@
 
 ```c
 start_kernel()
-  -> rest_init()
-       -> kernel_thread(kernel_init, NULL, CLONE_FS | CLONE_SIGHAND);
+-> rest_init()
+   -> kernel_thread(kernel_init, NULL, CLONE_FS | CLONE_SIGHAND);
 
 kernel_init()
-  -> kernel_init_freeable()
-     -> smp_init()
-        -> idle_threads_init()
-     -> sched_init_smp()
-        -> sched_init_numa()
-        -> init_sched_domains(cpu_active_mask)
-           -> alloc_sched_domains(ndoms_cur = 1)
-           -> build_sched_domains(doms_cur[0], NULL)
-              -> __visit_domain_allocation_hell()
-                 -> __sdt_alloc(cpu_map)
-           -> register_sched_domain_sysctl()
-  -> run_init_process()
+-> kernel_init_freeable()
+   -> smp_init()
+      -> idle_threads_init()
+   -> sched_init_smp()
+      -> sched_init_numa()
+      -> init_sched_domains(cpu_active_mask)
+         -> alloc_sched_domains(ndoms_cur = 1)
+         -> build_sched_domains(doms_cur[0], NULL)
+            -> __visit_domain_allocation_hell()
+               -> __sdt_alloc(cpu_map)
+         -> register_sched_domain_sysctl()
+-> run_init_process()
 ```
 * arch/x86/include/asm/topology.h
 ```cpp
@@ -75,7 +75,7 @@ static struct sched_domain_topology_level default_topology[] = {
         SDTL_INIT(tl_pkg_mask, NULL, PKG),
         { NULL, },
 };
-
+//默认调度域拓扑指向缺省 domain level 数组
 static struct sched_domain_topology_level *sched_domain_topology =
         default_topology;
 static struct sched_domain_topology_level *sched_domain_topology_saved;
@@ -86,6 +86,23 @@ static struct sched_domain_topology_level *sched_domain_topology_saved;
 * 每个级别的调度域和调度组会在 `__sdt_alloc()` 用 `kzalloc_node()` 分配出来
 
 ### 调度级别
+
+层级 | 内核调度域  | Intel                   | AMD                     | Hygon
+-----|------------|-------------------------|-------------------------|---------
+0    | SMT        | 超线程（Hyper-Threading）| SMT                     | SMT
+1    | MC         | Tile（在特定架构）       | CCX                     | CCX
+2    | PKG        | Die                     | CCD                     | CDD / NODE / NUMA[0]
+3    | NODE       | Package                 | Package / NUMA[0]       | Package / NUMA / NUMA[1]
+4    | NUMA       | Package hop 1           | Package hop 1 / NUMA[1] | Package hop 1 / NUMA[2]
+5    | NUMA       | Package hop 2           | Package hop 2 / NUMA[2] | Package hop 2 / NUMA[3]
+
+* **AMD**
+  * 在 EPYC 2 之前，内存控制器在 CCD 上，CCD 也就成了 NUMA 的边界，因此这一级会因为 CPU mask 和 NODE/NUMA[0] 一级相同而被压缩
+  * 在 EPYC 2 开始，内存控制器移到了 I/O Die 上，采用了中心架构，因此应该是能看到 `PKG` 这一级的（待求证）？
+* **Hygon**
+  * Hygon 沿用 Zen1 的架构，内存控制器在 CDD 上，CDD 也就成了 NUMA 的边界，因此 Hygon 的调度级别中没有 `PKG` 这一级，`MC` 之后就到 `NODE`，之后到 `NUMA`
+  * CDD 之间可能会由于需要经过多个 hop 导致 NUMA 距离不同，在 package 内有多个 NUMA 层级
+
 #### SMT
 * `SMT` 对应到 **Core** 一级的调度
 ```cpp
@@ -137,11 +154,15 @@ const struct cpumask *tl_mc_mask(struct sched_domain_topology_level *tl, int cpu
 }
 ```
 
-#### Node
-
-#### NUMA
-
 #### Package
+* 在 AMD 平台的术语中，`node` 指代的是 Die
+* 见 APM，CPUID `Fn8000_001E_ECX` Node Identifiers
+
+Bits | Field Name        | Description
+-----|-------------------|-------------------
+31:0 | —                 | Reserved
+10:8 | NodesPerProcessor | Specifies the number of nodes in the package/socket in which this logical processor resides. Node in this context corresponds to a processor die. Encoding is N-1, where N is the number of nodes present in the socket.
+7:0  | NodeId            | Specifies the ID of the node containing the current logical processor. NodeId values are unique across the system.
 
 ```cpp
 //include/linux/topology.h
@@ -156,13 +177,16 @@ const struct cpumask *tl_pkg_mask(struct sched_domain_topology_level *tl, int cp
 }
 ```
 
+## 构建调度器所需 NUMA 拓扑
+
+### NUMA 节点间距离数组 `numa_distance[]`
 * `numa_distance[i, j]` 是记录 NUMA 节点距离的二维数组
   * `numa_distance_cnt` 是第一维和第二维的最大索引数
 * `numa_node_dist()` 函数给出一、二维的索引 `i` 和 `j`，返回这两个节点间的距离
   * 当创建 NUMA 级别调度域时，一些特定的体系结构可以修改它的 NUMA 距离，修改 NUMA 节点组和 NUMA 的级别
 ```cpp
 //mm/numa_memblks.c
-int __node_distance(int from, int to) 
+int __node_distance(int from, int to)
 {
         if (from >= numa_distance_cnt || to >= numa_distance_cnt)
                 return from == to ? LOCAL_DISTANCE : REMOTE_DISTANCE;
@@ -178,12 +202,13 @@ int __node_distance(int from, int to)
  *
  * A NUMA level is created for each unique
  * arch_sched_node_distance.
- */     
+ */
 static int numa_node_dist(int i, int j)
 {
         return node_distance(i, j);
 }
 ```
+### 验证 SLIT 表的 NUMA 距离
 * `slit_cluster_symmetric()` 测试以节点 N 起始的 on-trace cluster 是否对称
   * 使用上三角迭代避免明显重复的比较
 ```cpp
@@ -283,9 +308,13 @@ static bool slit_validate(void)
                 prev_pkg_id = pkg_id;
         }
         //所有验证通过
-        return true; 
+        return true;
 }
 ```
+
+### 架构相关的 NUMA 距离计算
+![NUMA arch specific topo](pic/numa_arch_spec.png)
+
 * 当启用 SNC（如 Intel 的 Sub-NUMA Clustering）时，一个物理 CPU 封装内会被划分为多个 NUMA 节点组（cluster）
 * 为了保证调度器的正确性，SLIT 表需要满足特定条件：
   * 每个 cluster 内部的 NUMA 节点之间的访问距离必须对称（即 `distance[i][j] == distance[j][i]）`
@@ -364,8 +393,8 @@ static int slit_cluster_distance(int i, int j)
 }
 ```
 
-* `arch_sched_node_distance()`是 架构相关的 NUMA 节点距离计算函数，供调度器使用
-  * 该函数主要用于处理特定 Intel CPU 上 SNC（Sub-NUMA Clustering）导致的不对称距离问题 
+* `arch_sched_node_distance()` 是架构相关的 NUMA 节点距离计算函数，供调度器使用
+  * 该函数主要用于处理特定 Intel CPU 上 SNC（Sub-NUMA Clustering）导致的不对称距离问题
   * 对于普通系统，直接返回 ACPI SLIT 表中的原始距离
 ```cpp
 /*
@@ -384,8 +413,8 @@ int arch_sched_node_distance(int from, int to)
         case INTEL_ATOM_DARKMONT_X:   //Intel Atom Darkmont X 系列
                 //如果系统只有一个物理封装，或者每个封装内的节点数小于 3（即 SNC-2 或未启用 SNC-3），
                 //则直接返回原始距离，因为不存在需要修正的非对称性。
-                if (topology_max_packages() == 1 || 
-                    topology_num_nodes_per_package() < 3) 
+                if (topology_max_packages() == 1 ||
+                    topology_num_nodes_per_package() < 3)
                         return d;
                 /*
                  * Handle SNC-3 asymmetries.
@@ -396,7 +425,7 @@ int arch_sched_node_distance(int from, int to)
         return d; // 其他 CPU 型号不做修正
 }
 ```
-
+### 记录并提取 NUMA 节点间的所有唯一距离值
 * `sched_record_numa_dist()` 记录并提取 NUMA 节点间的所有 **唯一距离值**
   * 遍历所有在线 NUMA 节点对，收集节点间距离值，利用 bitmap 去重，最终得到一组从小到大排列的、不重复的距离值，用于构建 NUMA 调度层级。
   * 例如，典型值可能为 `[10, 20, 30]` 分别代表本地、同一 NUMA 域、跨域等。
@@ -471,63 +500,85 @@ static int sched_record_numa_dist(int offline_node, int (*n_dist)(int, int),
         return 0;
 }
 ```
+### 调度器所需 NUMA 拓扑初始化
 
 * `sched_init_numa()` 初始化调度器所需的 NUMA 拓扑信息，该函数完成以下主要工作：
   1. 从 SLIT 表中记录节点间的原始 NUMA 距离，并存储唯一距离值；
   2. 若架构提供了修正后的距离函数（如 SNC 场景），则记录修正后的距离；
   3. 为每个 NUMA 距离等级构建对应的 CPU 掩码（表示距当前节点该跳数以内的所有 CPU）；
-  4. 扩展默认的调度域拓扑，追加 NODE 层和 NUMA 层；
+  4. 扩展默认的调度域拓扑，追加 `NODE` 层和 `NUMA` 层；
   5. 更新全局的调度域拓扑指针，使调度器能够使用 NUMA 感知的负载均衡。
+
+* 例如，根据之前代码中举例的架构相关的 NUMA 层级可以构造出 `sched_domains_numa_masks[]` 如下：
+  * 经过修正后，`nr_levels` 压缩成 4 个 NUMA 层级（10、15、17、24）
+  * 然而，NUMA 节点的实际个数 `nr_node_ids` 不会因此而改变，仍然是 6 个
+  * 假设每个 NUMA 节点上有 4 个逻辑 CPU，每个 CPU 在 `cpumask` 中用 1 个 bit 表示
+
+![sched_domains_numa_masks](pic/numa_masks.svg)
+
 ```cpp
+#ifdef CONFIG_NUMA
+enum numa_topology_type sched_numa_topology_type;
+
+/*
+ * sched_domains_numa_distance is derived from sched_numa_node_distance
+ * and provides a simplified view of NUMA distances used specifically
+ * for building NUMA scheduling domains.
+ */
+static int          sched_domains_numa_levels;    //修正后的距离的唯一层级数量
+static int          sched_numa_node_levels;       //原始的距离的唯一层级数量
+
+int             sched_max_numa_distance;          //最大（即最远的层级）的 NUMA 距离值
+//由 sched_numa_node_distance[] 衍生而来，提供 NUMA 距离的简化视图，用于构建特定的 NUMA 调度域
+static int          *sched_domains_numa_distance;
+static int          *sched_numa_node_distance;    //原始距离数组，来自 SLIT 表
+static struct cpumask       ***sched_domains_numa_masks;
+#endif /* CONFIG_NUMA */
+...
 /*
  * @offline_node: 需要排除的离线节点（通常为 NUMA_NO_NODE）
  */
 void sched_init_numa(int offline_node)
 {
-        struct sched_domain_topology_level *tl; 
+        struct sched_domain_topology_level *tl;
         int nr_levels, nr_node_levels;
         int i, j;
-        int *distances, *domain_distances;
+        int *distances, *domain_distances; //前者记录原始距离。后者记录修正距离，无修正则共享原始距离数组
         struct cpumask ***masks;
         //从 SLIT 表中记录原始的 NUMA 距离（使用 node_distance 函数）
         /* Record the NUMA distances from SLIT table */
         if (sched_record_numa_dist(offline_node, numa_node_dist, &distances,
                                    &nr_node_levels))
                 return;  //记录失败（内存不足或距离值非法），直接返回
-
+       //若架构提供了修正后的距离函数（例如处理 SNC 不对称），则重新记录修正后的距离值，否则直接使用原始距离
         /* Record modified NUMA distances for building sched domains */
-        /* 
-         * 若架构提供了修正后的距离函数（例如处理 SNC 不对称），
-         * 则重新记录修正后的距离值，否则直接使用原始距离。
-         */
         if (modified_sched_node_distance()) {
                 if (sched_record_numa_dist(offline_node, arch_sched_node_distance,
                                            &domain_distances, &nr_levels)) {
-                        kfree(distances);  // 修正距离记录失败，释放已分配的原始距离数组
+                        kfree(distances);  //修正距离记录失败，释放已分配的原始距离数组
                         return;
                 }
         } else {
-                domain_distances = distances;   // 无修正，直接共享原始距离数组
-                nr_levels = nr_node_levels;
+                domain_distances = distances; //无修正，直接共享原始距离数组
+                nr_levels = nr_node_levels;   //无修正，用原始 NUMA 层级数
         }
-
-        /* 将原始距离数组暴露给全局（供调试或其它模块使用） */
+        //将原始距离数组暴露给全局（供调试或其它模块使用）
         rcu_assign_pointer(sched_numa_node_distance, distances);
-        /* 记录最大的 NUMA 距离值（即最远的等级） */
-        WRITE_ONCE(sched_max_numa_distance, distances[nr_node_levels - 1]); 
-        /* 记录原始距离的唯一等级数量 */
+        //记录最大的 NUMA 距离值（即最远的层级）
+        WRITE_ONCE(sched_max_numa_distance, distances[nr_node_levels - 1]);
+        //记录原始的距离的唯一等级数量
         WRITE_ONCE(sched_numa_node_levels, nr_node_levels);
-
+        //nr_levels 存储了唯一距离值的个数（即 NUMA 层级数，有可能被修正过）
+        //sched_domains_numa_distance[] 数组存放具体的距离数值
         /*
          * 'nr_levels' contains the number of unique distances
          *
          * The sched_domains_numa_distance[] array includes the actual distance
-         * numbers.
-         *
-         * nr_levels 存储了唯一距离值的个数（即 NUMA 层级数）
-         * sched_domains_numa_distance[] 数组存放具体的距离数值
+         * numbers. 
          */
-
+        //这里先将 sched_domains_numa_levels 临时置为 0，以避免在后续分配 sched_domains_numa_masks[][]
+        //失败时其他函数遍历未完全初始化的 masks 数组 sched_domains_numa_masks[][] 造成危险。
+        //在函数末尾会将其恢复为 nr_levels。
         /*
          * Here, we should temporarily reset sched_domains_numa_levels to 0.
          * If it fails to allocate memory for array sched_domains_numa_masks[][],
@@ -536,14 +587,10 @@ void sched_init_numa(int offline_node)
          * in other functions.
          *
          * We reset it to 'nr_levels' at the end of this function.
-         *
-         * 这里先将 sched_domains_numa_levels 临时置为 0，以避免在后续分配失败时
-         * 其他函数遍历未完全初始化的 masks 数组造成危险。在函数末尾会将其恢复为 nr_levels。
          */
         rcu_assign_pointer(sched_domains_numa_distance, domain_distances);
         sched_domains_numa_levels = 0;
-
-        /* 为每个 NUMA 等级分配一级指针数组（每个等级对应一个节点的掩码列表） */
+        //为每个 NUMA 层级分配一级指针数组（每个等级对应一个节点的掩码列表）
         masks = kzalloc(sizeof(void *) * nr_levels, GFP_KERNEL);
         if (!masks)
                 return;
@@ -552,8 +599,8 @@ void sched_init_numa(int offline_node)
          * Now for each level, construct a mask per node which contains all
          * CPUs of nodes that are that many hops away from us.
          *
-         * 对于每一个 NUMA 距离等级，为每个节点构造一个 cpumask，
-         * 该 mask 包含所有距离当前节点 <= 该等级距离的节点上的所有 CPU。
+         * 对于每一个 NUMA 距离层级，为每个节点构造一个 cpumask，
+         * 该 mask 包含所有距离当前节点 <= 该层级距离的节点上的所有 CPU。
          * 即：对于节点 j，等级 i 的 mask 包含所有满足
          *   arch_sched_node_distance(j, k) <= sched_domains_numa_distance[i]
          * 的节点 k 上的全部 CPU。
@@ -563,82 +610,77 @@ void sched_init_numa(int offline_node)
                 masks[i] = kzalloc(nr_node_ids * sizeof(void *), GFP_KERNEL);
                 if (!masks[i])
                         return;
-
-                /* 遍历每一个在线节点（跳过 offline_node） */
+                //遍历每一个在线节点（跳过 offline_node）
                 for_each_cpu_node_but(j, offline_node) {
                         struct cpumask *mask = kzalloc(cpumask_size(), GFP_KERNEL);
                         int k;
 
                         if (!mask)
                                 return;
-
-                        masks[i][j] = mask;   // 存储该节点 j 在第 i 级的 cpumask
-
-                        /* 遍历所有可能的其他节点 k，将符合条件的节点 CPU 加入 mask */
+                       //存储该节点 j 在第 i 级的 cpumask
+                        masks[i][j] = mask;
+                        //遍历所有可能的其他节点 k，将符合条件的节点 CPU 加入 mask
                         for_each_cpu_node_but(k, offline_node) {
-                                /* 调试模式：检查距离对称性（若不对称则告警） */
+                                //调试模式：检查距离对称性（若不对称则告警）
                                 if (sched_debug() &&
                                     (arch_sched_node_distance(j, k) !=
                                      arch_sched_node_distance(k, j)))
                                         sched_numa_warn("Node-distance not symmetric");
-
-                                /* 若节点 k 到节点 j 的距离大于当前等级的距离阈值，则跳过 */
+                                //若节点 k 到节点 j 的距离大于当前等级的距离阈值，则跳过
                                 if (arch_sched_node_distance(j, k) >
                                     sched_domains_numa_distance[i])
                                         continue;
-
-                                /* 将节点 k 上的所有 CPU 并入当前 mask */
+                                //将节点 k 上的所有 CPU 并入当前 mask
                                 cpumask_or(mask, mask, cpumask_of_node(k));
                         }
                 }
         }
-        /* 将构造好的 masks 数组发布到全局 */
+        //将构造好的 masks 数组发布到全局
         rcu_assign_pointer(sched_domains_numa_masks, masks);
-
+        //计算默认调度域拓扑的条目数（以空 mask 为终止标记）
         /* Compute default topology size */
-        /* 计算默认调度域拓扑的条目数（以空 mask 为终止标记） */
         for (i = 0; sched_domain_topology[i].mask; i++);
-
         /* 分配新的拓扑数组：原有默认条目 + NUMA 增加的 NODE 层 + (nr_levels-1) 个 NUMA 层 + 终止符 */
         tl = kzalloc((i + nr_levels + 1) *
                         sizeof(struct sched_domain_topology_level), GFP_KERNEL);
         if (!tl)
                 return;
-
+        //复制默认的拓扑层级（如 SMT，MC，PKG 等）
         /*
          * Copy the default topology bits..
-         * 复制默认的拓扑层级（如 SMT, MC, PKG 等）
          */
         for (i = 0; sched_domain_topology[i].mask; i++)
                 tl[i] = sched_domain_topology[i];
-
+        //添加 NUMA 身份距离层，即一个 NUMA 节点自身（对应距离为 LOCAL_DISTANCE）
         /*
          * Add the NUMA identity distance, aka single NODE.
-         * 添加 NUMA 身份距离层，即一个节点自身（对应距离为 LOCAL_DISTANCE）
          */
         tl[i++] = SDTL_INIT(sd_numa_mask, NULL, NODE);
-
+        //追加剩余的 NUMA 层级（从第 1 级到第 nr_levels-1 级）
+        //注意：第 0 级（LOCAL_DISTANCE）已经由 NODE 层覆盖，所以从 j=1 开始。
         /*
          * .. and append 'j' levels of NUMA goodness.
-         * 追加剩余的 NUMA 层级（从第 1 级到第 nr_levels-1 级）
-         * 注意：第 0 级（本地距离）已经由 NODE 层覆盖，所以从 j=1 开始。
          */
         for (j = 1; j < nr_levels; i++, j++) {
                 tl[i] = SDTL_INIT(sd_numa_mask, cpu_numa_flags, NUMA);
-                tl[i].numa_level = j;   // 记录该层对应的 NUMA 距离等级索引
+                tl[i].numa_level = j;   //记录该层对应的 NUMA 距离等级索引
         }
-        /* 此时 tl 数组最后一个元素由 kzalloc 隐式填充为 { NULL, } */
-
-        /* 保存原有的拓扑指针，以便恢复（目前仅用于调试或热插拔重置） */
+        //此时 tl 数组最后一个元素由 kzalloc 隐式填充为 { NULL, }
+        //保存原有的拓扑指针，以便恢复（目前仅用于调试或热插拔重置）
         sched_domain_topology_saved = sched_domain_topology;
-        /* 将新的拓扑指针发布到全局，后续调度域构建将使用此拓扑 */
+        //将新的拓扑指针发布到全局，后续调度域构建将使用此拓扑
         sched_domain_topology = tl;
-
-        /* 最后将 sched_domains_numa_levels 恢复为真实的 NUMA 层级数 */
+        //最后将 sched_domains_numa_levels 恢复为真实的 NUMA 层级数
         sched_domains_numa_levels = nr_levels;
-
-        /* 根据 NUMA 拓扑类型（如扁平、分层等）设置全局 numa_topology_type */
+        //根据 NUMA 拓扑类型（如扁平、分层等）设置全局 numa_topology_type
         init_numa_topology_type(offline_node);
+}
+```
+* 理解了调度域 NUMA 层级 masks 数组 `sched_domains_numa_masks[i][j]` 的构建过程，就不难理解返回调度域 CPU 掩码的函数 `sd_numa_mask()`
+```cpp
+static const struct cpumask *sd_numa_mask(struct sched_domain_topology_level *tl, int cpu) 
+{
+    return sched_domains_numa_masks[tl->numa_level][cpu_to_node(cpu)];
 }
 ```
 

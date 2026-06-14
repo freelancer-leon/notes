@@ -345,8 +345,8 @@ static void __dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 ```c   
 struct sched_entity {
 ...
-    struct rb_node rb_node;
-    u64 min_vruntime;   // 该节点子树的min_vruntime（包括自身）
+    struct rb_node run_node;
+    u64 min_vruntime;   //该节点子树的 min_vruntime（包括自身）
 ...
 };
 ```
@@ -393,21 +393,27 @@ static inline bool min_vruntime_update(struct sched_entity *se, bool exit)
 {
     u64 old_min_vruntime = se->min_vruntime; //记录下旧的最小虚拟运行时间
     u64 old_min_slice = se->min_slice;       //记录下旧的最小时间片
+    u64 old_max_slice = se->max_slice;       //记录下旧的最大时间片
     struct rb_node *node = &se->run_node;
 
     se->min_vruntime = se->vruntime; //更新本节点的最小虚拟运行时间为当前的虚拟运行时间
-    //如果本节点的最小虚拟运行时间大于左子树的，用左子树的最小虚拟运行时间作为本 se 的最小虚拟运行时间
+    //如果本节点的最小虚拟运行时间大于右子树的，用右子树的最小虚拟运行时间作为本 se 的最小虚拟运行时间
     __min_vruntime_update(se, node->rb_right);
-    //如果本节点此时的最小虚拟运行时间（包含左子树的）大于右子树的，
-    //用右子树的最小虚拟运行时间作为本 se 的最小虚拟运行时间
+    //如果本节点此时的最小虚拟运行时间（包含右子树的）大于左子树的，
+    //用左子树的最小虚拟运行时间作为本 se 的最小虚拟运行时间
     __min_vruntime_update(se, node->rb_left);
     //这就实现了 se->min_vruntime = min(se->vruntime, {left,right}->min_vruntime)
     se->min_slice = se->slice;
     __min_slice_update(se, node->rb_right);
     __min_slice_update(se, node->rb_left);
     //最小时间片同理
+    se->max_slice = se->slice;
+    __max_slice_update(se, node->rb_right);
+    __max_slice_update(se, node->rb_left);
+    //最大时间片同理
     return se->min_vruntime == old_min_vruntime &&
-           se->min_slice == old_min_slice; //发生变化返回 true，向上传播更新
+           se->min_slice == old_min_slice &&
+           se->max_slice == old_max_slice;  //发生变化返回 true，向上传播更新
 }
 ```
    * 内核的红黑树增强框架会自动在插入、删除等操作后调用这个计算函数来更新路径上的节点
