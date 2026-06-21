@@ -879,14 +879,14 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
         int i, ret = -ENOMEM;                 //循环变量与返回值
         bool has_asym = false;                //是否存在非对称 CPU 容量（如 big.LITTLE）
         bool has_cluster = false;             //是否存在 CLUSTER 域层级
-        // 如果 cpu_map 为空，则无法构建，直接跳转到错误处理
+        //如果 cpu_map 为空，则无法构建，直接跳转到错误处理
         if (WARN_ON(cpumask_empty(cpu_map)))
                 goto error;
-        //分配所有需要的数据结构（根域、调度域指针数组、调度组等），该函数名带“hell”是调侃其分配过程复杂
+        //1. 分配所有需要的数据结构（根域、调度域指针数组、调度组等），该函数名带“hell”是调侃其分配过程复杂
         alloc_state = __visit_domain_allocation_hell(&d, cpu_map);
         if (alloc_state != sa_rootdomain)      //分配失败（未达到根域分配阶段）
                 goto error;
-        //为 cpu_map 中指定的每个 CPU 建立调度域层级
+        //2. 为 cpu_map 中指定的每个 CPU 建立调度域层级
         /* Set up domains for CPUs specified by the cpu_map: */
         for_each_cpu(i, cpu_map) {
                 struct sched_domain_topology_level *tl;
@@ -901,26 +901,20 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
                         //如果是第一个层级（通常是最底层），保存到 per-CPU 指针中
                         if (tl == sched_domain_topology)
                                 *per_cpu_ptr(d.sd, i) = sd;
-                        // 如果当前域的 CPU 集合已经等于 cpu_map（到达顶层），则停止构建
+                        //如果当前域的 CPU 集合已经等于 cpu_map（到达顶层），则停止构建
                         if (cpumask_equal(cpu_map, sched_domain_span(sd)))
                                 break;
                 }
         }
-
-        // 检查构建的拓扑是否合理（例如没有重叠或空洞）
+        //检查构建的拓扑是否合理（例如没有重叠或空洞）
         if (WARN_ON(!topology_span_sane(cpu_map)))
                 goto error;
-
-        /* Build the groups for the domains
-         * 为每个域构建调度组（用于负载均衡）
-         */
-        for_each_cpu(i, cpu_map) {
-                // 从最底层域开始向上遍历
+        //3. 为每个域构建调度组（用于负载均衡）
+        /* Build the groups for the domains */
+        for_each_cpu(i, cpu_map) { //最底层域开始向上遍历
                 for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
-                        // 计算域包含的 CPU 数量
-                        sd->span_weight = cpumask_weight(sched_domain_span(sd));
-                        // NUMA 域的组可能重叠，使用专门函数构建
-                        if (sd->flags & SD_NUMA) {
+                        sd->span_weight = cpumask_weight(sched_domain_span(sd));//计算域包含的 CPU 数量
+                        if (sd->flags & SD_NUMA) { //NUMA 域的组可能重叠，使用专门函数构建
                                 if (build_overlap_sched_groups(sd, i))
                                         goto error;
                         } else {
@@ -929,83 +923,69 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
                         }
                 }
         }
-
-        // 处理共享 LLC 的域（通常为 MC 或 CLS 层级）
+        //4. 处理共享 LLC 的域（通常为 MC 或 CLS 层级）
         for_each_cpu(i, cpu_map) {
-                sd = *per_cpu_ptr(d.sd, i);
+                sd = *per_cpu_ptr(d.sd, i); //从最底层开始找起
                 if (!sd)
                         continue;
-
-                /* First, find the topmost SD_SHARE_LLC domain
-                 * 首先找到最顶层的具有 SD_SHARE_LLC 标志的域（即共享最后一级缓存的最高层级域）
-                 */
+                //首先找到最顶层的具有 SD_SHARE_LLC 标志的域（即共享最后一级缓存的最高层级域）
+                /* First, find the topmost SD_SHARE_LLC domain */
                 while (sd->parent && (sd->parent->flags & SD_SHARE_LLC))
                         sd = sd->parent;
 
                 if (sd->flags & SD_SHARE_LLC) {
-                        // 使用该域中第一个 CPU 的共享数据结构（每个 LLC 域共享一个）
+                        //使用该域中第一个 CPU 的共享数据结构（每个 LLC 域共享一个）
                         int sd_id = cpumask_first(sched_domain_span(sd));
 
                         sd->shared = *per_cpu_ptr(d.sds, sd_id);
-                        // 初始化活跃 CPU 计数为该域包含的 CPU 数
+                        //初始化活跃 CPU 计数为该域包含的 CPU 数
                         atomic_set(&sd->shared->nr_busy_cpus, sd->span_weight);
-                        atomic_inc(&sd->shared->ref);   // 引用计数增加
-
+                        atomic_inc(&sd->shared->ref);  //引用计数增加
+                        //如果存在更高层域（如 NUMA），调整该层的 NUMA 不平衡统计参数
                         /*
                          * In presence of higher domains, adjust the
                          * NUMA imbalance stats for the hierarchy.
-                         * 如果存在更高层域（如 NUMA），调整该层的 NUMA 不平衡统计参数
                          */
                         if (IS_ENABLED(CONFIG_NUMA) && sd->parent)
                                 adjust_numa_imbalance(sd);
                 }
         }
-
-        /* Calculate CPU capacity for physical packages and nodes
-         * 计算物理封装和节点级别的 CPU 容量（用于负载均衡的算力值）
-         */
+        //5. 计算物理封装和节点级别的 CPU 容量（用于负载均衡的算力值）
+        /* Calculate CPU capacity for physical packages and nodes */
         for (i = nr_cpumask_bits-1; i >= 0; i--) {
                 if (!cpumask_test_cpu(i, cpu_map))
                         continue;
-
-                claim_allocations(i, &d);   // 确保 per-CPU 的数据已分配
-
-                // 从最底层域到顶层域，初始化每个域内调度组的容量信息
+                //确保 per-CPU 的数据已分配
+                claim_allocations(i, &d);
+                //从最底层域到顶层域，初始化每个域内调度组的容量信息
                 for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent)
                         init_sched_groups_capacity(i, sd);
         }
-
-        /* Attach the domains
-         * 将构建好的调度域挂载到每个 CPU 的运行队列上，并切换使用新域
-         */
-        rcu_read_lock();  // RCU 保护，防止并发访问
+        //6. 将构建好的调度域挂载到每个 CPU 的运行队列上，并切换使用新域
+        /* Attach the domains */
+        rcu_read_lock();  //RCU 保护，防止并发访问
         for_each_cpu(i, cpu_map) {
                 rq = cpu_rq(i);
                 sd = *per_cpu_ptr(d.sd, i);
-
-                cpu_attach_domain(sd, d.rd, i);  // 将域附加到 CPU 运行队列
-
-                // 检查该 CPU 是否拥有 CLUSTER 层级域（用于后续启用静态分支）
+                //将域附加到 CPU 运行队列
+                cpu_attach_domain(sd, d.rd, i);
+                //检查该 CPU 是否拥有 CLUSTER 层级域（用于后续启用静态分支）
                 if (lowest_flag_domain(i, SD_CLUSTER))
                         has_cluster = true;
         }
         rcu_read_unlock();
-
-        // 如果存在非对称 CPU 容量，启用对应的静态分支（优化调度快速路径）
+        //7. 如果存在非对称 CPU 容量，启用对应的静态分支（优化调度快速路径）
         if (has_asym)
                 static_branch_inc_cpuslocked(&sched_asym_cpucapacity);
-
-        // 如果存在集群域，启用集群调度相关静态分支
+        //如果存在 cluster 域，启用 cluster 调度相关静态分支
         if (has_cluster)
                 static_branch_inc_cpuslocked(&sched_cluster_active);
-
-        // 调试模式下打印根域覆盖的 CPU 范围
+        //调试模式下打印根域覆盖的 CPU 范围
         if (rq && sched_debug_verbose)
                 pr_info("root domain span: %*pbl\n", cpumask_pr_args(cpu_map));
-
-        ret = 0;  // 成功
-error:
-        // 释放所有分配的内存（根据 alloc_state 决定释放哪些部分）
+        //成功
+        ret = 0;
+error:  // 释放所有分配的内存（根据 alloc_state 决定释放哪些部分）
         __free_domain_allocs(&d, alloc_state, cpu_map);
 
         return ret;
