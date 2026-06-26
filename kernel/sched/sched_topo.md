@@ -39,6 +39,9 @@ enum x86_topology_domains {
 
 * include/linux/sched/topology.h
 ```cpp
+typedef const struct cpumask *(*sched_domain_mask_f)(struct sched_domain_topology_level *tl, int cpu);
+typedef int (*sched_domain_flags_f)(void);
+
 struct sd_data {
         struct sched_domain *__percpu *sd;
         struct sched_group *__percpu *sg;
@@ -755,7 +758,7 @@ static void init_numa_topology_type(int offline_node)
 
 ## 构建调度域
 
-### 数据结构
+### 数据结构 `struct s_data`
 * 调度域数据结构 `struct sched_domain`
   * include/linux/sched/topology.h
 ```cpp
@@ -837,20 +840,12 @@ struct sched_domain {
          */
 };
 ```
-* `enum s_alloc` 为内存分配阶段状态，用于错误回滚
+* 本地变量 `struct s_data d` 保存所有分配的数据（域、组、根域等）
 ```cpp
 struct s_data {
         struct sched_domain_shared * __percpu *sds;
         struct sched_domain * __percpu *sd;
         struct root_domain      *rd;
-};
-
-enum s_alloc {
-        sa_rootdomain,
-        sa_sd,
-        sa_sd_shared,
-        sa_sd_storage,
-        sa_none,
 };
 ```
 
@@ -985,9 +980,150 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
                 pr_info("root domain span: %*pbl\n", cpumask_pr_args(cpu_map));
         //成功
         ret = 0;
-error:  // 释放所有分配的内存（根据 alloc_state 决定释放哪些部分）
+error:  //释放所有分配的内存（根据 alloc_state 决定释放哪些部分）
         __free_domain_allocs(&d, alloc_state, cpu_map);
 
         return ret;
+}
+```
+
+#### 1. 分配所需的内存
+* `enum s_alloc` 为内存分配阶段状态，用于错误回滚
+```cpp
+enum s_alloc {
+        sa_rootdomain,
+        sa_sd,
+        sa_sd_shared,
+        sa_sd_storage,
+        sa_none,
+};
+```
+```c
+static enum s_alloc  
+__visit_domain_allocation_hell(struct s_data *d, const struct cpumask *cpu_map)
+{
+        memset(d, 0, sizeof(*d));
+
+        if (__sdt_alloc(cpu_map))
+                return sa_sd_storage;
+        if (__sds_alloc(d, cpu_map))
+                return sa_sd_shared;
+        d->sd = alloc_percpu(struct sched_domain *);
+        if (!d->sd)
+                return sa_sd_shared;
+        d->rd = alloc_rootdomain();
+        if (!d->rd)
+                return sa_sd;
+
+        return sa_rootdomain;
+}
+```
+##### `__sdt_alloc()`
+* `__sdt_alloc()` 为调度域拓扑的每个层级分配 per-CPU 数据结构
+  * 该函数为每个拓扑层级（如 `SMT`、`MC`、`PKG` 等）预先分配三个 per-CPU 指针数组
+  * 并为 `cpu_map` 中的每个 CPU 分别分配对应的结构体的实例
+    * 调度域（`sched_domain`）
+    * 调度组（`sched_group`）
+    * 调度组容量（`sched_group_capacity`）
+  * 这些结构体将在后续的域构建和组构建阶段被填充具体信息
+* 以上数据结构的用途简述如下
+
+数据结构        | 作用
+---------------|-----------
+`sched_domain` | 代表一个调度域，包含该域覆盖的 CPU 位图、标志、父/子域指针、负载均衡相关参数等。
+`sched_group`  | 代表域内的一组 CPU（通常共享某级缓存或物理封装），是负载均衡的最小单位。每个 CPU 在域中属于一个组，组内通过 `next` 指针形成链表。
+`sched_group_capacity` | 存储组的计算能力（capacity）、活跃 CPU 数量等，供负载均衡器使用以决定任务分配。
+
+* **per-CPU 存储**：每个 CPU 都独立持有指向其所在域、组和容量结构的指针，以便在调度时快速访问本地数据结构，避免锁竞争
+* **预先分配**：在正式构建拓扑关系之前一次性分配所有内存，使后续构建过程更稳定，且便于错误回滚（通过 `__free_domain_allocs()`）
+* **NUMA 感知**：使用 `kzalloc_node()` 在 CPU 所在节点分配内存，提升缓存访问效率
+
+```cpp
+/*
+ * @cpu_map: 需要构建调度域的 CPU 位图
+ * 返回值：0 表示成功，-ENOMEM 表示内存分配失败
+ */
+static int __sdt_alloc(const struct cpumask *cpu_map)
+{
+        struct sched_domain_topology_level *tl; //当前拓扑层级
+        int j;                                  //CPU 编号循环变量
+        //遍历所有预定义的调度域拓扑层级（从 SMT 到 NUMA[n]）
+        for_each_sd_topology(tl) {
+                struct sd_data *sdd = &tl->data; // 该层级的 per-CPU 数据容器
+
+                /*
+                 * 分配 per-CPU 指针数组，用于存储该层级中每个 CPU 的调度域指针。
+                 * 实际指向的 sched_domain 结构体将在下面的循环中逐个分配。
+                 */
+                sdd->sd = alloc_percpu(struct sched_domain *);
+                if (!sdd->sd)
+                        return -ENOMEM;
+
+                /*
+                 * 分配 per-CPU 指针数组，用于存储该层级中每个 CPU 的调度组指针。
+                 * 调度组是负载均衡的基本单位，通常代表共享某级资源的 CPU 子集。
+                 */
+                sdd->sg = alloc_percpu(struct sched_group *);
+                if (!sdd->sg)
+                        return -ENOMEM;
+
+                /*
+                 * 分配 per-CPU 指针数组，用于存储该层级中每个 CPU 的调度组容量信息。
+                 * 容量信息包括该组的算力（capacity）、活跃 CPU 计数等，用于负载均衡决策。
+                 */
+                sdd->sgc = alloc_percpu(struct sched_group_capacity *);
+                if (!sdd->sgc)
+                        return -ENOMEM;
+
+                // 遍历 cpu_map 中的每个 CPU，为该 CPU 分配该层级所需的具体数据结构
+                for_each_cpu(j, cpu_map) {
+                        struct sched_domain *sd;
+                        struct sched_group *sg;
+                        struct sched_group_capacity *sgc;
+
+                        /*
+                         * 分配调度域结构体，并额外包含一个 cpumask（域覆盖的 CPU 位图）。
+                         * 使用 kzalloc_node 在 CPU j 所在的 NUMA 节点上分配，提高访问局部性。
+                         */
+                        sd = kzalloc_node(sizeof(struct sched_domain) + cpumask_size(),
+                                        GFP_KERNEL, cpu_to_node(j));
+                        if (!sd)
+                                return -ENOMEM;
+
+                        // 将该域指针存储到 per-CPU 数组中，索引为 CPU j
+                        *per_cpu_ptr(sdd->sd, j) = sd;
+
+                        /*
+                         * 分配调度组结构体，同样包含一个 cpumask。
+                         * 每个 CPU 都会有一个对应的调度组，作为该层级中该 CPU 所在组的代表。
+                         */
+                        sg = kzalloc_node(sizeof(struct sched_group) + cpumask_size(),
+                                        GFP_KERNEL, cpu_to_node(j));
+                        if (!sg)
+                                return -ENOMEM;
+
+                        // 初始将组的 next 指针指向自身，形成单节点环，后续构建时会更新
+                        sg->next = sg;
+
+                        // 存储组指针到 per-CPU 数组
+                        *per_cpu_ptr(sdd->sg, j) = sg;
+
+                        /*
+                         * 分配调度组容量结构体，也包含 cpumask（用于记录组的 CPU 覆盖范围）。
+                         * sgc 用于存储该组的算力、运行时间等统计信息。
+                         */
+                        sgc = kzalloc_node(sizeof(struct sched_group_capacity) + cpumask_size(),
+                                        GFP_KERNEL, cpu_to_node(j));
+                        if (!sgc)
+                                return -ENOMEM;
+
+                        sgc->id = j;  // 以当前 CPU 编号作为该容量结构体的标识
+
+                        // 存储容量指针到 per-CPU 数组
+                        *per_cpu_ptr(sdd->sgc, j) = sgc;
+                }
+        }
+
+        return 0; // 所有分配成功
 }
 ```
