@@ -13,10 +13,19 @@ kernel_init()
    -> sched_init_smp()
       -> sched_init_numa(NUMA_NO_NODE)
       -> sched_init_domains(cpu_active_mask)
+         -> asym_cpu_capacity_scan()
          -> alloc_sched_domains(ndoms_cur = 1)
          -> build_sched_domains(doms_cur[0], NULL)
             -> __visit_domain_allocation_hell()
                -> __sdt_alloc(cpu_map)
+               -> __sds_alloc(d, cpu_map)
+               -> alloc_rootdomain()
+                  -> init_rootdomain(rd)
+               for_each_cpu(i, cpu_map) //为每个 CPU
+                  for_each_sd_topology(tl) //自底向上
+                  -> sd = build_sched_domain(tl, cpu_map, attr, sd, i) //构建调度域
+                     -> sd_init(tl, cpu_map, child, cpu)
+                     -> set_domain_attribute(sd, attr)
       -> init_sched_rt_class()
       -> init_sched_dl_class()
 -> run_init_process() //运行 init 进程
@@ -96,8 +105,8 @@ static struct sched_domain_topology_level *sched_domain_topology_saved;
 -----|------------|-------------------------|-------------------------|------------------------
 0    | SMT        | Core                    | SMT                     | SMT
 1    | MC         | Tile（在特定架构）       | CCX                     | CCX
-2    | PKG        | Die                     | CCD                     | CDD / NODE / NUMA[0]
-3    | NODE       | Package                 | Package / NUMA[0]       | Package / NUMA / NUMA[1]
+2    | PKG        | Die                     | CCD                     | CDD → NODE / NUMA[0]
+3    | NODE       | Package                 | Package / NUMA[0]       | Package → NUMA / NUMA[1]
 4    | NUMA       | Package hop 1           | Package hop 1 / NUMA[1] | Package hop 1 / NUMA[2]
 5    | NUMA       | Package hop 2           | Package hop 2 / NUMA[2] | Package hop 2 / NUMA[3]
 
@@ -106,7 +115,8 @@ static struct sched_domain_topology_level *sched_domain_topology_saved;
   * 在 EPYC 2 开始，内存控制器移到了 I/O Die 上，采用了中心架构，因此应该是能看到 `PKG` 这一级的（待求证）？
 * **Hygon**
   * Hygon 沿用 Zen1 的架构，内存控制器在 CDD 上，CDD 也就成了 NUMA 的边界，因此 Hygon 的调度级别中没有 `PKG` 这一级，`MC` 之后就到 `NODE`，之后到 `NUMA`
-  * CDD 之间可能会由于需要经过多个 hop 导致 NUMA 距离不同，在 package 内有多个 NUMA 层级
+  * CDD 之间可能会由于需要经过多个 hop 导致 NUMA 距离不同，因此在一个 package 内也可能会有多个 NUMA 层级
+* 对于 x86 平台，目前还没有使用到 Cluster 层级的
 
 ### SMT
 * `SMT` 对应到 **Core** 一级的调度
@@ -906,8 +916,8 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
                 goto error;
         //3. 为每个域构建调度组（用于负载均衡）
         /* Build the groups for the domains */
-        for_each_cpu(i, cpu_map) { //最底层域开始向上遍历
-                for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
+        for_each_cpu(i, cpu_map) {
+                for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {//最底层域开始向上遍历
                         sd->span_weight = cpumask_weight(sched_domain_span(sd));//计算域包含的 CPU 数量
                         if (sd->flags & SD_NUMA) { //NUMA 域的组可能重叠，使用专门函数构建
                                 if (build_overlap_sched_groups(sd, i))
@@ -998,6 +1008,7 @@ enum s_alloc {
         sa_none,
 };
 ```
+* `__visit_domain_allocation_hell()` 作为调度域内存分配的总入口，返回 `enum s_alloc` 告知分配进行到了哪个阶段
 ```c
 static enum s_alloc  
 __visit_domain_allocation_hell(struct s_data *d, const struct cpumask *cpu_map)
@@ -1011,7 +1022,7 @@ __visit_domain_allocation_hell(struct s_data *d, const struct cpumask *cpu_map)
         d->sd = alloc_percpu(struct sched_domain *);
         if (!d->sd)
                 return sa_sd_shared;
-        d->rd = alloc_rootdomain();
+        d->rd = alloc_rootdomain(); //根域主要用于实时进程负载均衡
         if (!d->rd)
                 return sa_sd;
 
@@ -1130,3 +1141,645 @@ static int __sds_alloc(struct s_data *d, const struct cpumask *cpu_map)
     return 0;
 }
 ```
+#### 2. 为 cpu_map 中指定的每个 CPU 建立调度域层级
+* `set_domain_attribute()` 设置域属性，目前仅有 `relax_domain_level` 这个属性
+  * 该属性见 Documentation/admin-guide/cgroup-v1/cpusets.rst
+  * `relax_domain_level=` 命令行参数可以配置缺省值
+  * 大概意思就是放宽类似唤醒事件需要迁移的域搜索范围，让远程 CPU 也可以迁移唤醒的进程，而不一定非要等到周期性负载均衡，因为那时可能太久了
+```cpp
+static struct sched_domain *build_sched_domain(struct sched_domain_topology_level *tl,
+                const struct cpumask *cpu_map, struct sched_domain_attr *attr,
+                struct sched_domain *child, int cpu)
+{       
+        struct sched_domain *sd = sd_init(tl, cpu_map, child, cpu);
+        //如果传进来了子调度域
+        if (child) { 
+                sd->level = child->level + 1; //本调度域的层级在子调度域的层级上加 1
+                sched_domain_level_max = max(sched_domain_level_max, sd->level); //记录调度域的最大层级
+                child->parent = sd;  //设置子调度域的父指针
+                //如果子调度域的 CPU 不是本调度域的子集，打印错误信息
+                if (!cpumask_subset(sched_domain_span(child),
+                                    sched_domain_span(sd))) {
+                        pr_err("BUG: arch topology borken\n");
+                        pr_err("     the %s domain not a subset of the %s domain\n",
+                                        child->name, sd->name);
+                        /* Fixup, ensure @sd has at least @child CPUs. */
+                        cpumask_or(sched_domain_span(sd),
+                                   sched_domain_span(sd),
+                                   sched_domain_span(child));
+                }
+        
+        }
+        set_domain_attribute(sd, attr); //设置域属性
+        
+        return sd;
+}
+```
+
+##### `sd_init()` 函数
+* `sd_init()` 初始化一个调度域结构体（`struct sched_domain`）
+* 该函数是构建调度域的核心函数之一，负责根据拓扑层级描述符，为指定 CPU 初始化该层级的调度域结构体，包括：
+  - 计算该域覆盖的 CPU 集合（通过 `tl->mask` 函数）
+  - 设置域的各种标志（`flags`）和负载均衡参数
+  - 根据域的特性（如共享 LLC、非对称容量、NUMA）调整行为
+  - 关联父/子域关系（通过 `child` 参数）
+```cpp
+/*
+ * @tl:       指向当前拓扑层级的描述符（如 SMT、MC、PKG、NODE、NUMA 等）
+ * @cpu_map:  全局 CPU 位图（通常为所有在线 CPU）
+ * @child:    当前域的子域（即更底层的域，初始时为 NULL）
+ * @cpu:      为哪个 CPU 初始化这个域（每个 CPU 都有自己的一份域副本）
+ *
+ * 返回值：指向初始化后的 sched_domain 结构体的指针。
+ */
+static struct sched_domain *
+sd_init(struct sched_domain_topology_level *tl,
+        const struct cpumask *cpu_map,
+        struct sched_domain *child, int cpu)
+{
+        struct sd_data *sdd = &tl->data;          //该层级的 per-CPU 数据容器
+        struct sched_domain *sd = *per_cpu_ptr(sdd->sd, cpu); //预先分配的域结构体
+        int sd_id, sd_weight, sd_flags = 0;       //域 ID、权重、动态 flags
+        struct cpumask *sd_span;                  //域覆盖的 CPU 位图（内嵌在 sd 中）
+        u64 now = sched_clock();                  //当前时间戳，用于 newidle 统计
+
+        sd_span = sched_domain_span(sd);          //获取 sd 内嵌的 cpumask 指针
+        //计算该域实际覆盖的 CPU：cpu_map ∩ tl->mask(tl, cpu)
+        //tl->mask 返回该层级中与给定 cpu 同属一组（如共享 LLC）的 CPU 位图，
+        //例如 tl_smt_mask()、tl_cls_mask()、tl_mc_mask()、tl_pkg_mask() 等
+        cpumask_and(sd_span, cpu_map, tl->mask(tl, cpu));
+        sd_weight = cpumask_weight(sd_span);      //域内 CPU 数量
+        sd_id = cpumask_first(sd_span);           //域内第一个 CPU 编号（用作标识）
+        //获取拓扑层级预设的静态 flags（如 SD_SHARE_LLC）
+        if (tl->sd_flags)
+                sd_flags = (*tl->sd_flags)();
+        //检查是否有非法 flags 并截断（仅保留允许的 flags 子集）
+        if (WARN_ONCE(sd_flags & ~TOPOLOGY_SD_FLAGS,
+                      "wrong sd_flags in topology description\n"))
+                sd_flags &= TOPOLOGY_SD_FLAGS;
+        //加上非对称 CPU 容量分类检测到的 flags（如 SD_ASYM_CPUCAPACITY）
+        sd_flags |= asym_cpu_capacity_classify(sd_span, cpu_map);
+        //使用复合字面量初始化 sd 结构体的大部分字段。
+        //这里是调度域的核心参数，均根据域权重（CPU 数量）和经验值设定。
+        *sd = (struct sched_domain){
+                .min_interval           = sd_weight,        //最小负载均衡间隔（jiffies）
+                .max_interval           = 2*sd_weight,      //最大负载均衡间隔
+                .busy_factor            = 16,               //繁忙因子，用于调整间隔
+                .imbalance_pct          = 117,              //默认不平衡百分比（17% 允许偏差）
+
+                .cache_nice_tries       = 0,                //缓存友好性尝试次数（默认 0，后续调整）
+                /* 域默认 flags：支持 newidle、exec、fork 平衡，支持唤醒亲和，偏好同级等 */
+                .flags                  = 1*SD_BALANCE_NEWIDLE
+                                        | 1*SD_BALANCE_EXEC
+                                        | 1*SD_BALANCE_FORK
+                                        | 0*SD_BALANCE_WAKE
+                                        | 1*SD_WAKE_AFFINE
+                                        | 0*SD_SHARE_CPUCAPACITY
+                                        | 0*SD_SHARE_LLC
+                                        | 0*SD_SERIALIZE
+                                        | 1*SD_PREFER_SIBLING
+                                        | 0*SD_NUMA
+                                        | sd_flags,          //叠加动态 flags
+                .last_balance           = jiffies,           //上次负载平衡时间
+                .balance_interval       = sd_weight,         //负载平衡间隔
+                /* 新空闲（newidle）负载平衡统计参数，用于优化 idle CPU 的拉取 */
+                .newidle_call           = 512,               //调用次数阈值
+                .newidle_success        = 256,               //成功次数阈值
+                .newidle_ratio          = 512,               //比例因子
+                .newidle_stamp          = now,               //起始时间戳
+
+                .max_newidle_lb_cost    = 0,                 //最大负载平衡开销
+                .last_decay_max_lb_cost = jiffies,           //上次衰减时间
+                .child                  = child,             //子域指针（更底层）
+                .name                   = tl->name,          //域名称（如 "SMT", "MC"）
+        };
+        //警告：如果同时设置了共享计算容量和非对称容量（如 SMT 加大小核），这是不支持的
+        WARN_ONCE((sd->flags & (SD_SHARE_CPUCAPACITY | SD_ASYM_CPUCAPACITY)) ==
+                  (SD_SHARE_CPUCAPACITY | SD_ASYM_CPUCAPACITY),
+                  "CPU capacity asymmetry not supported on SMT\n");
+        //将拓扑属性转换为实际调度行为。
+        /*
+         * Convert topological properties into behaviour.
+         */
+        /* 如果域具有非对称容量，其子域不应偏好同级（避免把任务放到异构核心上） */
+        if ((sd->flags & SD_ASYM_CPUCAPACITY) && sd->child)
+                sd->child->flags &= ~SD_PREFER_SIBLING;
+        //根据域共享特性调整 imbalance_pct 和 cache_nice_tries
+        if (sd->flags & SD_SHARE_CPUCAPACITY) {
+                sd->imbalance_pct = 110;
+                //共享 CPU 容量（SMT）：允许更小的不平衡（10%），因为核心内竞争强烈
+        } else if (sd->flags & SD_SHARE_LLC) {
+                sd->imbalance_pct = 117;
+                sd->cache_nice_tries = 1;
+                //共享 LLC：保持默认 117%，并开启一次缓存友好尝试（cache_nice_tries = 1）
+#ifdef CONFIG_NUMA
+        } else if (sd->flags & SD_NUMA) {
+                sd->cache_nice_tries = 2; //NUMA 域：更倾向于缓存友好（尝试 2 次）
+                //但取消偏好同级，增加串行化标志
+                sd->flags &= ~SD_PREFER_SIBLING;
+                sd->flags |= SD_SERIALIZE;  //串行化负载平衡，避免多个 NUMA 域同时平衡造成冲突
+                //如果该 NUMA 级别的距离大于节点回收距离（内存分配策略阈值），则取消执行、fork 和唤醒亲和，因为这些情形跨远距离迁移开销太大
+                if (sched_domains_numa_distance[tl->numa_level] > node_reclaim_distance) {
+                        sd->flags &= ~(SD_BALANCE_EXEC |
+                                       SD_BALANCE_FORK |
+                                       SD_WAKE_AFFINE);
+                }
+
+#endif /* CONFIG_NUMA */
+        } else {
+                sd->cache_nice_tries = 1; //普通域（如 PKG 但非 NUMA）：仅一次缓存友好尝试
+        }
+        //保存该层级的 per-CPU 数据指针，便于反向引用
+        sd->private = sdd;
+
+        return sd;
+}
+```
+##### `asym_cap_list` 链表的作用
+* `asym_cap_list` 是一个全局链表，用于 **管理系统中不同 CPU 算力（capacity）的分类信息**
+  * 简单来说，`asym_cap_list` 是调度器识别和管理 CPU 算力差异的核心数据结构，为支持非对称 CPU 容量（如 ARM big.LITTLE、Intel Hybrid 架构）的调度策略提供基础
+* **每个节点**（类型 `struct asym_cap_data`）包含：
+```cpp
+/*
+ * Asymmetric CPU capacity bits
+ */
+struct asym_cap_data {
+        struct list_head link;  //链表节点
+        struct rcu_head rcu;    //用于 RCU 安全释放
+        unsigned long capacity; //该组 CPU 的算力值（通常归一化后的值，如 SCHED_CAPACITY_SCALE）
+        unsigned long cpus[];   //属于该算力值的所有 CPU 位图
+};              
+```
+* 用途：
+1. **检测非对称 CPU 容量**：在大小核（big.LITTLE）或异构系统中，不同 CPU 的算力不同，调度器需要知道这些差异，以设置 `SD_ASYM_CPUCAPACITY` 标志，并在负载均衡时优先将任务分配到算力更高的 CPU
+2. **构建调度域标志**：`asym_cpu_capacity_classify()` 函数会利用此链表判断一个调度域是否包含不同能力的 CPU，从而设置 `SD_ASYM_CPUCAPACITY` 等标志
+3. **动态更新**：当 CPU 热插拔或拓扑变化时，调度域会重建，`asym_cpu_capacity_scan()` 被调用以重新扫描并更新链表，确保分组信息与当前硬件一致
+4. **优化内存**：对于对称系统（所有 CPU 算力相同），链表会被清空，避免不必要的内存开销和遍历
+
+##### `asym_cpu_capacity_scan()` 函数
+* `asym_cpu_capacity_scan()` 函数建立/更新按计算能力分组的 CPU 列表
+  * 更新操作需要显式请求重建调度域，并标明 CPU 拓扑发生了变化
+* 该函数遍历所有可能的 CPU，收集其算力值（capacity），将具有相同算力的 CPU 归入同一组，并维护在全局链表 `asym_cap_list` 中
+* 若系统中所有 CPU 算力相同（对称系统），则清空该链表以节省内存
+```cpp
+//kernel/sched/sched.h
+#define cpu_capacity_span(asym_data) to_cpumask((asym_data)->cpus)
+
+//kernel/sched/topology.c
+/*
+ * Set of available CPUs grouped by their corresponding capacities
+ * Each list entry contains a CPU mask reflecting CPUs that share the same
+ * capacity.
+ * The lifespan of data is unlimited.
+ */
+LIST_HEAD(asym_cap_list); 
+...
+/*
+ * Build-up/update list of CPUs grouped by their capacities
+ * An update requires explicit request to rebuild sched domains
+ * with state indicating CPU topology changes.
+ */
+static void asym_cpu_capacity_scan(void)
+{
+        struct asym_cap_data *entry, *next;
+        int cpu;
+        //第一步：清空链表上所有条目的 CPU 掩码，准备重新填充。因为我们要从零开始重建分组信息
+        list_for_each_entry(entry, &asym_cap_list, link)
+                cpumask_clear(cpu_capacity_span(entry));
+        //第二步：遍历所有可能的 CPU（且属于 housekeeping 域，即调度相关域），为每个 CPU 更新其能力值分组。
+        //该函数会根据 CPU 的算力值，在 asym_cap_list 中查找或创建对应的条目，并将该 CPU 加入对应掩码。
+        for_each_cpu_and(cpu, cpu_possible_mask, housekeeping_cpumask(HK_TYPE_DOMAIN))
+                asym_cpu_capacity_update_data(cpu);
+        //第三步：清理那些没有分配到任何 CPU 的无效条目（掩码为空）。
+        //这些条目可能在之前的更新中残留，但现在已经没有 CPU 属于该能力值。
+        list_for_each_entry_safe(entry, next, &asym_cap_list, link) {
+                if (cpumask_empty(cpu_capacity_span(entry))) {
+                        list_del_rcu(&entry->link);
+                        call_rcu(&entry->rcu, free_asym_cap_entry);
+                }
+        }
+        //如果最终链表中只剩下一个条目，说明所有 CPU 的算力相同（系统对称），此时无需保留该分组数据，直接删除该条目并清空链表。
+        //对称系统不需要非对称容量相关的调度域标志，节省内存和遍历开销。
+        /*
+         * Only one capacity value has been detected i.e. this system is symmetric.
+         * No need to keep this data around.
+         */
+        if (list_is_singular(&asym_cap_list)) {
+                entry = list_first_entry(&asym_cap_list, typeof(*entry), link);
+                list_del_rcu(&entry->link);
+                call_rcu(&entry->rcu, free_asym_cap_entry);
+        }
+}
+```
+##### `asym_cpu_capacity_update_data()` 函数
+* `asym_cpu_capacity_update_data()` 更新或添加一个 CPU 到非对称容量分组链表
+* 该函数获取指定 CPU 的计算能力（capacity），并在全局链表 `asym_cap_list` 中查找是否已存在相同能力的条目。
+  * 若存在，则直接将 CPU 加入该条目的 CPU 掩码；
+  * 否则，创建一个新条目并插入到链表中适当位置（保持链表按能力值降序排列）。
+* **注意**：链表维护一个 **降序排列**，即大容量 CPU 在前，小容量在后。这样遍历时可以先处理高能力组，有利于调度决策。
+```cpp
+// @cpu: 需要更新容量分组的 CPU 编号
+static inline void asym_cpu_capacity_update_data(int cpu)
+{
+        unsigned long capacity = arch_scale_cpu_capacity(cpu); //获取 CPU 的算力（归一化值）
+        struct asym_cap_data *insert_entry = NULL;  //记录新条目应插入的前驱位置
+        struct asym_cap_data *entry;                //遍历当前链表
+        //搜索是否已存在相同能力的条目。若不存在，则记录应插入的位置，使链表保持降序排列（从大到小）。
+        /*
+         * Search if capacity already exits. If not, track which the entry
+         * where we should insert to keep the list ordered descending.
+         */
+        list_for_each_entry(entry, &asym_cap_list, link) {
+                if (capacity == entry->capacity)
+                        goto done;   //找到相同容量，直接跳转到 done 添加 CPU
+                else if (!insert_entry && capacity > entry->capacity)
+                        //当前 capacity 大于当前条目的容量，且 insert_entry 未设置，
+                        //说明应插入在 entry 之前（即 entry 的前一个位置）。
+                        //记录前驱：list_prev_entry(entry, link) 获取 entry 的上一个节点
+                        insert_entry = list_prev_entry(entry, link);
+        }
+        //执行到这里说明链表遍历完毕，且没有找到相同容量，且 insert_entry 可能已被设置。创建一个新条目
+        entry = kzalloc(sizeof(*entry) + cpumask_size(), GFP_KERNEL);
+        if (WARN_ONCE(!entry, "Failed to allocate memory for asymmetry data\n"))
+                return;   //分配失败则直接返回，不更新链表
+        entry->capacity = capacity;
+        //如果 insert_entry 为 NULL，说明新容量比链表中所有现有容量都小，应添加到链表尾部（降序中最小）
+        /* If NULL then the new capacity is the smallest, add last. */
+        if (!insert_entry)
+                list_add_tail_rcu(&entry->link, &asym_cap_list);
+        else //否则插入到 insert_entry 后面（即保持降序）
+                list_add_rcu(&entry->link, &insert_entry->link);
+done:
+        __cpumask_set_cpu(cpu, cpu_capacity_span(entry)); //将当前 CPU 加入到该条目（可能是已有的或新建的）的 CPU 掩码中
+}
+```
+* 此函数确保 `asym_cap_list` 始终保持 **降序**，且每个 CPU 只属于一个条目，从而为后续的调度域标志设置（如 `SD_ASYM_CPUCAPACITY`）提供准确的分组信息
+
+##### `asym_cpu_capacity_classify()` 函数
+* 最后来看构建调度域过程中用到的 `asym_cpu_capacity_classify()` 函数
+* `asym_cpu_capacity_classify()` 检测给定调度域中是否存在 CPU 容量不对称，并返回相应标志
+  * 该函数通过遍历全局链表 `asym_cap_list`（该链表按容量分组，每个条目代表一种 CPU 容量值及其对应的 CPU 集合），检查调度域覆盖的 CPU 集合与各容量组的交集情况，从而确定域内包含了多少种不同的容量值，以及是否有某些容量值仅存在于域外
+```cpp
+/*
+ * @sd_span: 当前调度域覆盖的 CPU 位图
+ * @cpu_map: 系统全局可能的 CPU 位图（通常为 cpu_possible_mask）
+ *
+ * 返回值：指示不对称范围和类型的调度域标志
+ *   - 0：域内所有 CPU 容量相同（无不对称）
+ *   - SD_ASYM_CPUCAPACITY：域内存在容量不对称，但并非系统所有容量类型都包含在该域中
+ *   - SD_ASYM_CPUCAPACITY | SD_ASYM_CPUCAPACITY_FULL：域内存在容量不对称，且该域包含了系统中所有已知的容量类型（完整不对称）
+ */
+static inline int
+asym_cpu_capacity_classify(const struct cpumask *sd_span,
+                           const struct cpumask *cpu_map)
+{
+        struct asym_cap_data *entry;
+        int count = 0, miss = 0;
+        //遍历所有容量组，统计：
+        //count：当前域 sd_span 覆盖了哪些容量组（即与 sd_span 有交集的组数）
+        // miss：有哪些容量组与全局 cpu_map 有交集，但与 sd_span 无交集（即这些容量在域外存在）
+        /*
+         * Count how many unique CPU capacities this domain spans across
+         * (compare sched_domain CPUs mask with ones representing  available
+         * CPUs capacities). Take into account CPUs that might be offline:
+         * skip those.
+         */
+        list_for_each_entry(entry, &asym_cap_list, link) {
+                if (cpumask_intersects(sd_span, cpu_capacity_span(entry)))
+                        ++count;          //该容量组在域内有至少一个 CPU
+                else if (cpumask_intersects(cpu_map, cpu_capacity_span(entry)))
+                        ++miss;           //该容量组在系统中存在，但不在域内
+        }
+        //若链表非空但 count 为 0，意味着 sd_span 未覆盖任何已知容量组，这通常表示有误，因此触发警告（但仅一次）
+        WARN_ON_ONCE(!count && !list_empty(&asym_cap_list));
+        //如果域内只包含一种容量（count < 2），则判定为对称系统，无需设置任何标志
+        /* No asymmetry detected */
+        if (count < 2)
+                return 0;
+        //如果存在某些容量值在域外（miss 非零），说明域内虽然存在多种容量，但并非覆盖全部，因此仅返回基本非对称标志
+        /* Some of the available CPU capacity values have not been detected */
+        if (miss)
+                return SD_ASYM_CPUCAPACITY;
+        //若域内包含了所有系统中存在的容量组（miss == 0），则返回完整非对称标志，表示该域是完整非对称域（如整个系统大小核全部包含在内）
+        /* Full asymmetry */
+        return SD_ASYM_CPUCAPACITY | SD_ASYM_CPUCAPACITY_FULL;
+}
+```
+
+#### 检查构建的拓扑是否合理
+* `topology_span_sane()` 验证非 NUMA 拓扑层级的 CPU 掩码是否没有冲突（重叠）
+  * 该函数检查每个非 NUMA 拓扑层级（如 `SMT`、`MC`、`PKG`），确保同一层级内任意两个 CPU 所属的掩码要么完全相等，要么完全不相交，不允许部分重叠
+  * 这是因为部分重叠会破坏调度组（`sched_group`）的链表构建——后续的 `get_group()` 可能会断开先前构建的链接
+  * NUMA 层级（`SD_NUMA`）被允许重叠，因此跳过检查
+```cpp
+/*
+ * @cpu_map: 需要检查的 CPU 集合（通常为所有在线 CPU）
+ *
+ * 返回值：true 表示所有非 NUMA 层级都满足掩码一致性要求，false 表示存在冲突
+ */
+static bool topology_span_sane(const struct cpumask *cpu_map)
+{
+        struct sched_domain_topology_level *tl; //当前拓扑层级
+        struct cpumask *covered, *id_seen;      //临时掩码：covered 记录已出现的所有 CPU，id_seen 记录已见掩码的标识 ID
+        int cpu;                                //CPU 编号循环变量
+        //调用者必须持有 sched_domains_mutex 锁
+        lockdep_assert_held(&sched_domains_mutex);
+        //使用全局临时掩码（避免重复分配）
+        covered = sched_domains_tmpmask;
+        id_seen = sched_domains_tmpmask2;
+        //遍历所有预定义的拓扑层级
+        for_each_sd_topology(tl) {
+                int tl_common_flags = 0;  //该层级的通用标志
+                //获取层级静态标志（如 SD_NUMA）
+                if (tl->sd_flags)
+                        tl_common_flags = (*tl->sd_flags)();
+                //NUMA 层级允许重叠，直接跳过
+                /* NUMA levels are allowed to overlap */
+                if (tl_common_flags & SD_NUMA)
+                        continue;
+                //开始检查当前层级，清空迭代会用到的两个临时掩码
+                cpumask_clear(covered);
+                cpumask_clear(id_seen);
+                //非 NUMA 层级不允许部分重叠——它们必须要么完全相同，要么完全不相交。
+                //否则会导致调度组链表被破坏——后续的 get_group() 会打断之前已建立的链接。
+                /*
+                 * Non-NUMA levels cannot partially overlap - they must be either
+                 * completely equal or completely disjoint. Otherwise we can end up
+                 * breaking the sched_group lists - i.e. a later get_group() pass
+                 * breaks the linking done for an earlier span. 
+                 */
+                for_each_cpu(cpu, cpu_map) {
+                        const struct cpumask *tl_cpu_mask = tl->mask(tl, cpu);
+                        int id;
+                        //取该掩码中最低位 CPU 编号作为该掩码的唯一标识 ID
+                        /* lowest bit set in this mask is used as a unique id */
+                        id = cpumask_first(tl_cpu_mask);
+
+                        if (cpumask_test_cpu(id, id_seen)) {
+                                //该 ID 之前已见过，通过 ID 获得的掩码必须和通过 CPU 获得的掩码完全相等
+                                /* First CPU has already been seen, ensure identical spans */
+                                if (!cpumask_equal(tl->mask(tl, id), tl_cpu_mask))
+                                        return false;  //不等：同一 ID 对应不同掩码，冲突
+                        } else { //该掩码 ID 首次出现，通过 CPU 获得的掩码必须与之前所有掩码都不相交（完全独立）
+                                /* First CPU hasn't been seen before, ensure it's a completely new span */
+                                if (cpumask_intersects(tl_cpu_mask, covered))
+                                        return false;  //部分重叠：新掩码与已有掩码有交集但不等
+                                //将当前掩码加入已覆盖集合，并记录其 ID 到已见 ID 掩码
+                                cpumask_or(covered, covered, tl_cpu_mask);
+                                cpumask_set_cpu(id, id_seen);
+                        }
+                }
+        }
+        //所有非 NUMA 层级均检查通过
+        return true;
+}
+```
+
+#### 3. 为每个域构建调度组
+
+##### `struct sched_group`
+```cpp
+struct sched_group {
+        struct sched_group      *next;                  /* Must be a circular list */
+        atomic_t                ref;
+
+        unsigned int            group_weight;
+        unsigned int            cores;
+        struct sched_group_capacity *sgc;
+        int                     asym_prefer_cpu;        /* CPU of highest priority in group */
+        int                     flags;
+
+        /*           
+         * The CPUs this group covers.
+         *
+         * NOTE: this field is variable length. (Allocated dynamically
+         * by attaching extra space to the end of the structure,
+         * depending on how many CPUs the kernel has booted up with)
+         */  
+        unsigned long           cpumask[];
+};
+```
+##### 构建非 NUMA 调度组
+* `build_sched_groups()` 构建调度域中调度组的循环链表
+  * 该函数遍历调度域所覆盖的所有 CPU，将具有相同调度组（通常共享某级资源如 LLC）的 CPU 划分为一组，并为每个不同的组创建一个 `sched_group` 结构体，最终形成一个循环链表
+  * 每个组包含其覆盖的 CPU 位图（cpumask），并初始化其容量信息（`sgc`）
+* 前提：调度域树（`sched_domain` hierarchy）已经完全构建完成。
+```cpp
+/*
+ * @sd:  当前正在构建的调度域
+ * @cpu: 用于确定遍历起始点的 CPU 编号（通常为域内第一个 CPU）
+ *
+ * 返回值：0 表示成功（该函数当前总是成功）。
+ */
+static int
+build_sched_groups(struct sched_domain *sd, int cpu)
+{
+        struct sched_group *first = NULL, *last = NULL; //链表的首节点和尾节点
+        struct sd_data *sdd = sd->private;              //当前域所在层级的 per-CPU 数据
+        const struct cpumask *span = sched_domain_span(sd); //当前域覆盖的 CPU 位图
+        struct cpumask *covered;                        //临时掩码，记录已经处理过的 CPU
+        int i;                                          //CPU 循环变量
+        //调用者必须持有 sched_domains_mutex 锁
+        lockdep_assert_held(&sched_domains_mutex);
+        covered = sched_domains_tmpmask;  //使用全局临时掩码（避免重复分配）
+        //初始化 covered 为空，表示尚未处理任何 CPU
+        cpumask_clear(covered);
+        //从指定的 cpu 开始，环形遍历 span 中的每一个 CPU，for_each_cpu_wrap 提供从任意点开始的环形遍历
+        for_each_cpu_wrap(i, span, cpu) {
+                struct sched_group *sg;
+                //如果当前 CPU 已经被之前的某个组覆盖，则跳过
+                if (cpumask_test_cpu(i, covered))
+                        continue;
+                //获取当前 CPU 所属的调度组结构体
+                //get_group() 会根据当前 CPU 和 sdd 中的 per-CPU 数据，返回该 CPU 所在调度组（即该层级中与 i 共享同一组掩码的组）
+                //注意：这些组结构体在 __sdt_alloc() 中已经预先分配好
+                sg = get_group(i, sdd);
+                // 将该组的 CPU 掩码加入 covered，标记这些 CPU 已被处理
+                cpumask_or(covered, covered, sched_group_span(sg));
+
+                if (!first) //如果是第一个组，将其设为链表头
+                        first = sg;
+                if (last)   //如果 last 非空，则将 last 的 next 指向当前组，形成链接
+                        last->next = sg;
+                last = sg;  //更新 last 为当前组，用于下一次迭代
+        }
+        last->next = first; //所有组处理完毕后，将最后一个组的 next 指向第一个组，形成循环链表
+        sd->groups = first; //将该域的 groups 指针指向链表的第一个组
+        //总是成功
+        return 0;
+}
+```
+###### `get_group()` 函数
+* `get_group()` 获取指定 CPU 在给定拓扑层级中所属的调度组（`sched_group`）
+  * 该函数是构建调度域时的重要辅助函数，用于为每个 CPU 找到其所属的调度组，并确保共享相同资源的 CPU 组（如同一 LLC 域）共享同一个 `sched_group` 对象，从而实现“唯一组”的语义
+* 核心思路：
+  * 若当前层级有子域（`child`），则该层级的 *组* 应当与 *子域的域覆盖范围* 相对应
+    * 例如，在 `MC` 层级中，子域可能是 `SMT` 层级，则 `MC` 的一个组对应一个 `SMT` 域
+  * 因此，使用子域中第一个 CPU 作为该组的代表，因为同一组内的所有 CPU 在子域中属于同一个子域（即它们共享相同的 `sched_domain` 对象）
+  * 利用 per-CPU 预先分配好的 `sg` 和 `sgc` 指针，通过引用计数判断该组是否已被初始化，实现多个 CPU 共享同一组和容量结构
+* **封装拓扑**（Package topology，另见 fair.c 中关于负载均衡的说明文字）
+* 调度器会构建树形结构，用于描述多项关键硬件拓扑特征。默认配置（`default_topology[]`）包含以下层级：
+  - Simultaneous multithreading（SMT）
+  - Multi-Core Cache（MC）
+  - Package（PKG）
+* 其中最顶层的封装层级，范围基本覆盖一整个 NUMA 节点内全部 CPU
+* 该树形结构由三种核心数据结构构成，层级关系如下：
+```c
+  sched_domain（调度域）→ sched_group（调度组）→ sched_group_capacity（调度组算力描述）
+      ^ ^                    ^ ^
+      `-'                    `-'
+```
+* **调度域（sched_domain）**：每个 CPU 都配套一组调度域，域之间通过双向指针（父域 `parent`、子域 `child`）串联
+  * 每个调度域代表一层拓扑层级，其覆盖的 CPU 掩码范围逐层扩大
+* 每个调度域内维护一条环形双向链表，链表节点为 **调度组（sched_group）**
+  * 每个调度组对应下一层拓扑的完整范围；最底层调度域的调度组则对应单个逻辑 CPU
+  * 某调度域所链接的调度组，必然包含该域自身对应的 CPU [注]
+  * [注]：换言之，每个调度域链表中的第一个调度组，就是它对应的下层子调度域
+* 举个示例：一款处理器规格为 2 超线程、2 核心、2 cache cluster、单封装，逻辑 CPU 编号 0～7：
+```c
+CPU   0   1   2   3   4   5   6   7
+
+PKG  [                             ]
+MC   [             ] [             ]
+SMT  [     ] [     ] [     ] [     ]
+```
+等价掩码表达：
+```c
+PKG  0-7 0-7 0-7 0-7 0-7 0-7 0-7 0-7
+MC   0-3 0-3 0-3 0-3 4-7 4-7 4-7 4-7
+SMT  0-1 0-1 2-3 2-3 4-5 4-5 6-7 6-7
+
+CPU   0   1   2   3   4   5   6   7
+```
+* 可以这样理解二者分工：
+  * **调度域**用于在多层拓扑之间上下跳转
+  * **调度组**用于在同一层级内 **横向遍历**，**遍历粒度** 为 *下层调度域*
+* `sched_group_capacity` 用于保证：相同配置的调度组共用同一份算力统计存储，避免重复分配内存
+* 拓扑构建存在两处关联逻辑，二者都需要为每个调度组选出一个 **唯一标识 CPU**（在当前调度域范围内）：
+  1. 均衡 CPU（balance_cpu，详见 `should_we_balance()` 与 fair.c 负载均衡说明）：每个调度组仅选出一个 CPU，负责向上一层调度域发起负载均衡检查
+  2. 调度组算力结构（`sched_group_capacity`）：所有配置完全相同的调度组，共享同一份算力描述结构体
+* 这套拓扑层级具备互斥属性：
+  * 一条 SMT 逻辑核只会隶属于唯一物理核心，一个物理核心仅归属唯一多 caches，不存在跨组归属的情况
+  * 每个 CPU 在层级树中仅有唯一、确定的位置
+* 因此，为每个调度组选出唯一标识 CPU 的逻辑十分简单（遍历掩码实际为 **全 1**，组内所有 CPU 最终都会收敛到同一标识 CPU），直接选取组内第一个 CPU 即可
+
+```cpp
+/*
+ * @cpu:  当前 CPU 编号（用于索引 per-CPU 数据）
+ * @sdd:  当前拓扑层级的 per-CPU 数据容器（包含 sd、sg、sgc 指针数组）
+ *
+ * 返回值：指向 sched_group 结构体的指针，该结构体代表 cpu 在该层级中的调度组。
+ *
+ * Package topology (also see the load-balance blurb in fair.c)
+ *
+ * The scheduler builds a tree structure to represent a number of important
+ * topology features. By default (default_topology[]) these include:
+ *
+ *  - Simultaneous multithreading (SMT)
+ *  - Multi-Core Cache (MC)
+ *  - Package (PKG)
+ *
+ * Where the last one more or less denotes everything up to a NUMA node.
+ *
+ * The tree consists of 3 primary data structures:
+ *
+ *      sched_domain -> sched_group -> sched_group_capacity
+ *          ^ ^             ^ ^
+ *          `-'             `-'
+ *
+ * The sched_domains are per-CPU and have a two way link (parent & child) and
+ * denote the ever growing mask of CPUs belonging to that level of topology.
+ *
+ * Each sched_domain has a circular (double) linked list of sched_group's, each
+ * denoting the domains of the level below (or individual CPUs in case of the
+ * first domain level). The sched_group linked by a sched_domain includes the
+ * CPU of that sched_domain [*].
+ *
+ * Take for instance a 2 threaded, 2 core, 2 cache cluster part:
+ *
+ * CPU   0   1   2   3   4   5   6   7
+ *
+ * PKG  [                             ]
+ * MC   [             ] [             ]
+ * SMT  [     ] [     ] [     ] [     ]
+ *
+ *  - or -
+ *
+ * PKG  0-7 0-7 0-7 0-7 0-7 0-7 0-7 0-7
+ * MC   0-3 0-3 0-3 0-3 4-7 4-7 4-7 4-7
+ * SMT  0-1 0-1 2-3 2-3 4-5 4-5 6-7 6-7
+ *
+ * CPU   0   1   2   3   4   5   6   7
+ *
+ * One way to think about it is: sched_domain moves you up and down among these
+ * topology levels, while sched_group moves you sideways through it, at child
+ * domain granularity.
+ *
+ * sched_group_capacity ensures each unique sched_group has shared storage.
+ *
+ * There are two related construction problems, both require a CPU that
+ * uniquely identify each group (for a given domain):
+ *
+ *  - The first is the balance_cpu (see should_we_balance() and the
+ *    load-balance blurb in fair.c); for each group we only want 1 CPU to
+ *    continue balancing at a higher domain.
+ *
+ *  - The second is the sched_group_capacity; we want all identical groups
+ *    to share a single sched_group_capacity.
+ *
+ * Since these topologies are exclusive by construction. That is, its
+ * impossible for an SMT thread to belong to multiple cores, and cores to
+ * be part of multiple caches. There is a very clear and unique location
+ * for each CPU in the hierarchy.
+ *
+ * Therefore computing a unique CPU for each group is trivial (the iteration
+ * mask is redundant and set all 1s; all CPUs in a group will end up at _that_
+ * group), we can simply pick the first CPU in each group.
+ *
+ *
+ * [*] in other words, the first group of each domain is its child domain.
+ */
+static struct sched_group *get_group(int cpu, struct sd_data *sdd)
+{
+        struct sched_domain *sd = *per_cpu_ptr(sdd->sd, cpu); //获取该层级中当前 CPU 对应的调度域（该 CPU 在该层级的域）
+        struct sched_domain *child = sd->child; //该域的子域（更底层）
+        struct sched_group *sg;
+        bool already_visited;
+        //如果存在子域，则本层级的组应该对应子域的域覆盖范围。
+        //同一组中的所有 CPU 在子域中属于同一个调度域，因此取子域中的第一个 CPU 作为该组的代表，保证所有共享子域的 CPU 获得同一个 sg
+        if (child)
+                cpu = cpumask_first(sched_domain_span(child));
+        //获取该 CPU 在该层级预先分配的 sched_group 和 sched_group_capacity
+        sg = *per_cpu_ptr(sdd->sg, cpu);
+        sg->sgc = *per_cpu_ptr(sdd->sgc, cpu);
+        //增加引用计数，用于跟踪该组是否已经被访问过（多 CPU 共享）
+        /* Increase refcounts for claim_allocations: */
+        already_visited = atomic_inc_return(&sg->ref) > 1; //使用原子操作，因为可能并发访问
+        //对容量结构也做同样的引用计数，且二者状态应一致（若已访问组，则容量也应已访问）
+        /* sgc visits should follow a similar trend as sg */
+        WARN_ON(already_visited != (atomic_inc_return(&sg->sgc->ref) > 1));
+        //如果该组已经被访问过，说明其掩码和容量已初始化，直接返回。
+        /* If we have already visited that group, it's already initialized. */
+        if (already_visited)
+                return sg;
+        //首次访问该组，需要初始化其 CPU 掩码和容量信息
+        if (child) {
+                cpumask_copy(sched_group_span(sg), sched_domain_span(child)); //有子域：组覆盖范围 = 子域覆盖范围（即该组对应一个子域）
+                cpumask_copy(group_balance_mask(sg), sched_group_span(sg)); //负载均衡掩码通常与组覆盖范围一致（特殊情况可能不同，目前相同）
+                sg->flags = child->flags; //标志从子域继承，因为组代表子域级别的资源
+        } else { //无子域：最底层，组仅包含当前 CPU 本身
+                cpumask_set_cpu(cpu, sched_group_span(sg));
+                cpumask_set_cpu(cpu, group_balance_mask(sg));
+        }
+        //初始化容量结构：
+        //  capacity  = SCHED_CAPACITY_SCALE × 组内 CPU 数量（作为基础容量）
+        //  min_capacity / max_capacity 暂设为 SCHED_CAPACITY_SCALE，
+        //  后续会被正式容量更新逻辑覆盖（如 arch_scale_cpu_capacity）。
+        sg->sgc->capacity = SCHED_CAPACITY_SCALE * cpumask_weight(sched_group_span(sg));
+        sg->sgc->min_capacity = SCHED_CAPACITY_SCALE;
+        sg->sgc->max_capacity = SCHED_CAPACITY_SCALE;
+
+        return sg;
+}
+```
+#### 构建可重叠调度组
