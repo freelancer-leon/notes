@@ -840,7 +840,7 @@ struct sched_domain {
                 void *private;          /* used during construction */
                 struct rcu_head rcu;    /* used during destruction */
         };
-        struct sched_domain_shared *shared;
+        struct sched_domain_shared *shared; //指向最顶层的具有 SD_SHARE_LLC 标志的域（即共享最后一级缓存的最高层级域）共享的结构实例
 
         unsigned int span_weight;
         /*
@@ -861,13 +861,14 @@ struct s_data {
 
 ### 构建调度域 `build_sched_domains()`
 * `build_sched_domains()` 为指定的 CPU 集合构建调度域层次结构，主要流程如下：
-1. 分配所需的所有调度域、调度组、根域等内存。
-2. 对每个 CPU，根据预定义的拓扑层级（从 `SMT` 到 `NUMA[n]`）自下而上构建调度域。
-3. 为每个调度域构建其包含的调度组（用于负载均衡）。
-4. 关联共享 LLC 的调度域，并初始化负载均衡统计。
-5. 计算各调度组的 CPU 容量（用于负载均衡）。
-6. 将构建好的调度域挂载到每个 CPU 的运行队列上。
-7. 启用必要的静态分支（如非对称 CPU 容量、集群特性）。
+1. 分配所需的所有调度域、调度组、根域等内存
+2. 对每个 CPU，根据预定义的拓扑层级（从 `SMT` 到 `NUMA[n]`）自下而上构建调度域
+3. 为每个调度域构建其包含的调度组（用于负载均衡）
+4. 关联共享 LLC 的调度域，并初始化负载均衡统计
+5. 计算各调度组的 CPU 容量（用于负载均衡）
+6. 将构建好的调度域挂载到每个 CPU 的运行队列上
+7. 启用必要的静态分支（如非对称 CPU 容量、集群特性）
+8. 释放所有分配的内存（根据 alloc_state 决定释放哪些部分）
 ```cpp
 /*
  * @cpu_map: 需要构建调度域的 CPU 位图（通常为所有在线 CPU）
@@ -905,7 +906,7 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
                         has_asym |= sd->flags & SD_ASYM_CPUCAPACITY;
                         //如果是第一个层级（通常是最底层），保存到 per-CPU 指针中
                         if (tl == sched_domain_topology)
-                                *per_cpu_ptr(d.sd, i) = sd;
+                                *per_cpu_ptr(d.sd, i) = sd; //第 5 步 claim_allocations() 也是从这开始的
                         //如果当前域的 CPU 集合已经等于 cpu_map（到达顶层），则停止构建
                         if (cpumask_equal(cpu_map, sched_domain_span(sd)))
                                 break;
@@ -939,12 +940,10 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
                         sd = sd->parent;
 
                 if (sd->flags & SD_SHARE_LLC) {
-                        //使用该域中第一个 CPU 的共享数据结构（每个 LLC 域共享一个）
                         int sd_id = cpumask_first(sched_domain_span(sd));
-
+                        //使用该域中第一个 CPU 的共享数据结构 sds（每个 LLC 域共享一个）
                         sd->shared = *per_cpu_ptr(d.sds, sd_id);
-                        //初始化活跃 CPU 计数为该域包含的 CPU 数
-                        atomic_set(&sd->shared->nr_busy_cpus, sd->span_weight);
+                        atomic_set(&sd->shared->nr_busy_cpus, sd->span_weight);//初始化活跃 CPU 计数为该域包含的 CPU 数
                         atomic_inc(&sd->shared->ref);  //引用计数增加
                         //如果存在更高层域（如 NUMA），调整该层的 NUMA 不平衡统计参数
                         /*
@@ -990,7 +989,7 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
                 pr_info("root domain span: %*pbl\n", cpumask_pr_args(cpu_map));
         //成功
         ret = 0;
-error:  //释放所有分配的内存（根据 alloc_state 决定释放哪些部分）
+error:  //8. 释放所有分配的内存（根据 alloc_state 决定释放哪些部分）
         __free_domain_allocs(&d, alloc_state, cpu_map);
 
         return ret;
@@ -1126,7 +1125,7 @@ static int __sds_alloc(struct s_data *d, const struct cpumask *cpu_map)
     d->sds = alloc_percpu(struct sched_domain_shared *);
     if (!d->sds)
         return -ENOMEM;
-
+    //分配最顶层的具有 SD_SHARE_LLC 标志的域（即共享最后一级缓存的最高层级域）共享的结构实例
     for_each_cpu(j, cpu_map) {
         struct sched_domain_shared *sds;
 
@@ -1559,6 +1558,9 @@ struct sched_group {
         unsigned long           cpumask[];
 };
 ```
+* `next`：某一调度组域下的各调度组间用 `next` 指针构成环形链表
+* `ref`：调度组的引用计数
+
 ##### 构建非 NUMA 调度组
 * `build_sched_groups()` 构建调度域中调度组的循环链表
   * 该函数遍历调度域所覆盖的所有 CPU，将具有相同调度组（通常共享某级资源如 LLC）的 CPU 划分为一组，并为每个不同的组创建一个 `sched_group` 结构体，最终形成一个循环链表
@@ -1782,4 +1784,521 @@ static struct sched_group *get_group(int cpu, struct sd_data *sdd)
         return sg;
 }
 ```
-#### 构建可重叠调度组
+##### 构建可重叠调度组
+* `build_overlap_sched_groups()` 为允许重叠的调度域（如 `NUMA` 域）构建调度组循环链表
+  * 该函数与 `build_sched_groups()` 类似，但专门用于 NUMA 等允许组重叠的域
+  * 在 `NUMA` 域中，不同节点的组可能会覆盖相同的 CPU（重叠），因此不能简单按掩码去重
+  * 此外，当 NUMA 直径（节点间最大跳数）≥ 3 时，可能出现子域范围超出当前域的情况，此时需要向下寻找合适的后代域来构建组，以确保组是当前域的子集
+* 核心流程：
+  1. 从指定 CPU 开始，环形遍历域内每个 CPU
+  2. 对于每个尚未被覆盖的 CPU，获取该 CPU 在当前层级对应的调度域（`sibling`）
+  3. 检查该 `sibling` 域是否有效（包含当前 CPU）；若无效则跳过（因提前终止构建导致）
+  4. 若 `sibling` 的子域范围超出了当前域，则调用 `find_descended_sibling()` 向下寻找合适的后代域
+  5. 从该 `sibling`（或其后代）构建一个调度组（包含其子域的 CPU 集合）
+  6. 标记该组覆盖的 CPU 为已覆盖，初始化组与 `sibling` 域的关联
+  7. 将组加入循环链表
+  8. 最后将域的第一组设为 `sd->groups`
+* 这种设计解决了 NUMA 直径较大时，子域可能跨越多个 NUMA 节点，导致组不包含在当前域内的问题。
+
+###### `build_overlap_sched_groups()` 函数
+```cpp
+/*
+ * @sd:  当前调度域
+ * @cpu: 用于确定遍历起始点的 CPU
+ *
+ * 返回值：0 表示成功，-ENOMEM 表示内存分配失败。
+ */
+static int
+build_overlap_sched_groups(struct sched_domain *sd, int cpu)
+{
+        struct sched_group *first = NULL, *last = NULL, *sg;
+        const struct cpumask *span = sched_domain_span(sd); //当前域覆盖的 CPU 位图
+        struct cpumask *covered = sched_domains_tmpmask;    //标记已覆盖的 CPU
+        struct sd_data *sdd = sd->private;                  //当前层级的 per-CPU 数据
+        struct sched_domain *sibling;
+        int i;
+        //初始化 covered 为空
+        cpumask_clear(covered);
+        //从 "cpu" 开始环形遍历域内所有 CPU
+        for_each_cpu_wrap(i, span, cpu) {
+                struct cpumask *sg_span;
+                //如果该 CPU 已被已处理的组覆盖，跳过
+                if (cpumask_test_cpu(i, covered))
+                        continue;
+                //获取当前层级中 CPU i 对应的调度域（sibling）
+                sibling = *per_cpu_ptr(sdd->sd, i);
+                //对于不对称节点配置，可能导致域树深度不一致，需要跳过已覆盖整个范围的域。
+                //这种情况下，build_sched_domains() 会提前终止迭代，sibling 域覆盖范围可能为空。
+                //域应始终包含其构建所在的 CPU，因此检查该条件。
+                /*
+                 * Asymmetric node setups can result in situations where the
+                 * domain tree is of unequal depth, make sure to skip domains
+                 * that already cover the entire range.
+                 *
+                 * In that case build_sched_domains() will have terminated the
+                 * iteration early and our sibling sd spans will be empty.
+                 * Domains should always include the CPU they're built on, so
+                 * check that.
+                 */
+                if (!cpumask_test_cpu(i, sched_domain_span(sibling)))
+                        continue;   //sibling 调度域范围未覆盖该 CPU，跳过
+                //通常我们通过 sibling 的子域来构建调度组。
+                //但对于 NUMA 直径 ≥ 3 的机器，需要改用 sibling 的合适后代域的子域来构建，因为 sibling 的子域可能会超出当前正在构建的域范围。
+                /*
+                 * Usually we build sched_group by sibling's child sched_domain
+                 * But for machines whose NUMA diameter are 3 or above, we move
+                 * to build sched_group by sibling's proper descendant's child
+                 * domain because sibling's child sched_domain will span out of
+                 * the sched_domain being built as below.
+                 *
+                 * Smallest diameter=3 topology is:
+                 *
+                 *   node   0   1   2   3
+                 *     0:  10  20  30  40
+                 *     1:  20  10  20  30
+                 *     2:  30  20  10  20
+                 *     3:  40  30  20  10
+                 *
+                 *   0 --- 1 --- 2 --- 3
+                 *
+                 * NUMA-3       0-3             N/A             N/A             0-3
+                 *  groups:     {0-2},{1-3}                                     {1-3},{0-2}
+                 *
+                 * NUMA-2       0-2             0-3             0-3             1-3
+                 *  groups:     {0-1},{1-3}     {0-2},{2-3}     {1-3},{0-1}     {2-3},{0-2}
+                 *
+                 * NUMA-1       0-1             0-2             1-3             2-3
+                 *  groups:     {0},{1}         {1},{2},{0}     {2},{3},{1}     {3},{2}
+                 *
+                 * NUMA-0       0               1               2               3
+                 *
+                 * NUMA-2 层（节点 0 和 3）的组会出现问题，因为组范围不是域的子集。
+                 * 比如，节点 0 的 NUMA-2 层是距离为 30 的节点，节点 0、1、2 符合要求，节点 3 不符合要求，
+                 * 然而 group {1-3} 的范围覆盖了节点 3，导致在 NUMA-2 层负载聚合的时候有可能把任务迁移到节点 3 上。
+                 * 因此需要向下寻找后代域，使组范围成为当前域的子集。
+                 */
+                if (sibling->child &&
+                    !cpumask_subset(sched_domain_span(sibling->child), span)) //若子域超出当前域范围，
+                        sibling = find_descended_sibling(sd, sibling);        //寻找合适的后代域
+                //从 sibling（或其合适的后代）的子域构建调度组。组覆盖范围 = sibling->child 的域范围（或更后代）
+                //参数 cpu 用于索引 per-CPU 数据。
+                sg = build_group_from_child_sched_domain(sibling, cpu);
+                if (!sg)
+                        goto fail; //分配失败
+                //获取组覆盖的 CPU 掩码，并标记这些 CPU 为已覆盖
+                sg_span = sched_group_span(sg);
+                cpumask_or(covered, covered, sg_span);
+                //初始化组与 sibling 域的关系（如平衡 CPU 等）
+                init_overlap_sched_group(sibling, sg);
+                //将组添加到循环链表
+                if (!first)
+                        first = sg;
+                if (last)
+                        last->next = sg;
+                last = sg;
+                last->next = first; //保持环状
+        }
+        sd->groups = first; //设置域的 groups 指针
+
+        return 0;
+
+fail:
+        free_sched_groups(first, 0); //分配失败时释放已分配的组
+        return -ENOMEM;
+}
+```
+###### `find_descended_sibling()` 函数
+* `find_descended_sibling()` 在 NUMA 直径较大的系统中，为构建调度组寻找合适的后代域
+  * 在 NUMA 直径 ≥ 3 的系统中，某个 CPU 在当前层级（如 NUMA-2）对应的域（`sibling`）的子域（`child`）可能覆盖超出当前域 `sd` 的范围，导致无法直接使用该子域构建调度组。
+  * 该函数向下遍历 `sibling` 的后代域，直到找到一个后代域，其子域范围是 `sd` 的子集，从而保证组能正确表示 `sd` 内的分组。
+  * 此外，还需要跳过那些在 `cpu_attach_domain` 中会被退化（degenerated）的域（即子域与自身域范围相同的域），因为这些域对调度没有实际贡献，
+  * 但我们需要在不同拓扑层级间共享 `sched_group_capacity`，因此需要下沉到有意义的最深层。
+```cpp
+/*
+ * @sd:      当前正在构建的调度域（上层域）
+ * @sibling: 当前层级中某个 CPU 对应的调度域（可能其子域范围超出 sd）
+ *
+ * 返回值：找到的合适后代调度域指针。
+ */
+static struct sched_domain *
+find_descended_sibling(struct sched_domain *sd, struct sched_domain *sibling)
+{       //合适的后代应是其子域范围不会超出 sd 的那个
+        /*
+         * The proper descendant would be the one whose child won't span out
+         * of sd
+         */
+        while (sibling->child &&
+               !cpumask_subset(sched_domain_span(sibling->child),
+                               sched_domain_span(sd)))
+                sibling = sibling->child;   //子域超出范围，继续下沉
+        //由于我们将在不同拓扑层级之间引用 sgc（sched_group_capacity），需要继续下沉以跳过那些不会对调度产生贡献的域，
+        //因为这些域在 cpu_attach_domain 中会被退化（合并）。
+        //退化条件：子域与自身域范围完全相同。
+        /*
+         * As we are referencing sgc across different topology level, we need
+         * to go down to skip those sched_domains which don't contribute to
+         * scheduling because they will be degenerated in cpu_attach_domain
+         */
+        while (sibling->child &&
+               cpumask_equal(sched_domain_span(sibling->child),
+                             sched_domain_span(sibling)))
+                sibling = sibling->child;   //继续下沉到子域
+        //返回是子域范围是自身域范围子集的子域（且跳过那些范围相同的子域）
+        return sibling;
+}
+```
+###### `build_group_from_child_sched_domain()` 函数
+* `build_group_from_child_sched_domain()` 从调度域的子域构建一个调度组（`sched_group`）
+  * 该函数为重叠域（如 `NUMA` 域）中的每个组分配一个新的 `sched_group` 结构体，并将其 CPU 掩码设置为 sd 的子域（`child`）的覆盖范围，
+  * 若 `sd` 没有子域，则直接使用 `sd` 自身的覆盖范围。
+* 注意：此函数为每个组独立分配内存，导致组的分布可能与负载均衡器频繁访问的远程内存节点不一致。
+* 由于负载均衡器会立即访问远程内存来统计该组的负载均衡数据，因此将组分配在本地节点可能并无明显优势（甚至可能降低性能）。
+  * 这里使用 `kzalloc_node()`，但传入的是参考 CPU 的节点，可能并不理想。
+```cpp
+/*
+ * @sd:   要从中获取覆盖范围的调度域（sibling 域）
+ * @cpu:  用于 NUMA 节点分配的参考 CPU（该 CPU 所在节点用于分配内存）
+ *
+ * 返回值：指向新分配的 sched_group 结构体的指针，失败时返回 NULL。
+ */
+static struct sched_group *
+build_group_from_child_sched_domain(struct sched_domain *sd, int cpu)
+{
+        struct sched_group *sg;
+        struct cpumask *sg_span;
+        //分配一个新的 sched_group 结构体，加上额外的 cpumask 空间，内存位于参考 CPU 所在的 NUMA 节点。
+        //注意：由于负载均衡器可能跨节点访问该组的数据，此局部性可能无益。
+        sg = kzalloc_node(sizeof(struct sched_group) + cpumask_size(),
+                          GFP_KERNEL, cpu_to_node(cpu));
+        if (!sg)
+                return NULL;
+        //获取组内嵌的 cpumask 指针
+        sg_span = sched_group_span(sg);
+        if (sd->child) { //如果 sd 有子域，则组覆盖范围 = 子域的覆盖范围
+                cpumask_copy(sg_span, sched_domain_span(sd->child));
+                sg->flags = sd->child->flags; //组标志继承子域的标志（反映子域的特性）
+        } else { //无子域时，组覆盖范围 = sd 自身的覆盖范围（通常是单个 CPU 或最小分组
+                cpumask_copy(sg_span, sched_domain_span(sd));
+        }
+        // 初始化引用计数为 1（表示该组至少被一个 CPU 引用）
+        atomic_inc(&sg->ref);
+        return sg;
+}
+```
+
+###### 为什么 `build_overlap_sched_groups` 必须直接分配新组，而不是像 `build_sched_groups` 那样重用 per-CPU 预分配组（`sdd->sg`）?
+
+**非重叠域**（如 SMT/MC）和**重叠域**（如 NUMA）在拓扑结构上的本质区别
+
+1. **非重叠域（`build_sched_groups`）为什么能复用？**
+* 在非重叠域（`SMT`、`MC`、`PKG`）中，拓扑结构具有 **排他性** 和 **层次嵌套性**：
+  * **排他性**：一个 CPU 只能属于一个 `SMT` 组、一个 `MC` 组、一个 `PKG` 组。不同组之间的 CPU 集合完全不相交（或者相等，但不会部分重叠）
+  * **唯一映射**：在当前层级（如 `MC`），如果某个 CPU 的“子域”（`child`，如 `SMT`）范围是 `{0, 1}`，那么该层级中所有属于这个子域的 CPU（`0` 和 `1`），它们的 `child` 域范围都是 `{0, 1}`
+* 在 `get_group` 中，复用机制依赖一个关键操作：
+```c
+if (child)
+    cpu = cpumask_first(sched_domain_span(child));
+sg = *per_cpu_ptr(sdd->sg, cpu);
+```
+* 因为排他性，`{0, 1}` 这个组在 `sdd->sg` per-CPU 数组中只会被 **代表 CPU（即 CPU 0）** 的槽位持有
+  * CPU 0 和 CPU 1 调用 `get_group()` 时，都会找到代表 CPU 0，从而指向 **同一个** 预分配组对象
+  * 这正是 `sched_group` 结构体中 `ref` 引用计数存在的意义
+
+2. **重叠域（NUMA）为什么不能复用？**
+* NUMA 域打破了上述两条规则：
+  * **组是重叠的**：在 NUMA 中，不同节点的组为了进行跨节点负载均衡，必须覆盖相同的 CPU
+    * 例如，节点 0 的组可能包含节点 1 的 CPU，节点 1 的组也可能包含节点 0 的 CPU
+  * **域范围不对称**：由于 NUMA 距离不同（如直径 >= 3），同一个拓扑层级（如 NUMA-2）在不同 CPU 上的覆盖范围可能完全不同（即所谓的“不对称节点设置”）。
+* 域范围不对称的例子：
+  * 在 `build_sched_domains()` 为 cpu_map 中指定的每个 CPU 建立调度域层级时，为节点 1 中的 CPU 建立调度域在 NUMA-2 这一级就终止了，
+  * 因为节点 1 中的 CPU 通过 `sd_numa_mask()` 函数从 `sched_domains_numa_masks[]` 数组中得到的 `cpumask` 在 NUMA-2 就已经覆盖全范围了（即 `cpu_map`）
+  * 通过 `break` 跳出内层循环，完成该 CPU 调度域层级的构建，到下一个 CPU，于是节点 1 的调度域层级比节点 0 的调度域层级少了一级
+```cpp
+for_each_cpu(i, cpu_map) {
+        ...
+        //由底向上遍历所有拓扑层级（从 SMT 到 NUMA[n]）
+        for_each_sd_topology(tl) {
+                //为当前 CPU 构建一个调度域，并链接为前（下）一层的父域（sd 作为子域）
+                sd = build_sched_domain(tl, cpu_map, attr, sd, i);
+                ...
+                //如果当前域的 CPU 集合已经等于 cpu_map（到达顶层），则停止构建
+                if (cpumask_equal(cpu_map, sched_domain_span(sd)))
+                        break;
+        }
+}
+```
+* **根本原因**：在重叠域中，**`sched_group` 与 `CPU` 之间不再是“一对一映射”关系，而是“多对多”关系**
+  * 预分配的 `sdd->sg` 数组是每个 CPU 一个槽位，无法表达这种复杂的映射关系。
+
+3. **具体例子说明**
+* 以代码注释中给出的 **直径=3** 的四节点（0,1,2,3）NUMA 拓扑为例，重点关注节点 0 和节点 1 的 **NUMA-2** 层级：
+  * 根据注释中的表格：
+    * **节点 0** 的 NUMA-2 域（NUMA 距离为 `30`）覆盖范围（span）是 `{0, 1, 2}`（因为距离 `40` 太远，不包括 `3`）
+    * **节点 1** 的 NUMA-2 域（NUMA 距离为 `40`）覆盖范围是 `{0, 1, 2, 3}`
+* 现在，我们在 `build_overlap_sched_groups()` 中分别为这两个域构建调度组：
+* **场景 A：构建节点 0 的 NUMA-2 域（跨度 `{0,1,2}`）**
+  * 遍历从 CPU 0 开始：
+  1. 处理 CPU 0：其 `sibling`（即 CPU 0 在该层级的域）的子域跨度是 `{0, 1}`。由于 `{0, 1}` 是当前域 `{0,1,2}` 的子集，直接使用。**构建组 A：`{0, 1}`**
+  2. 标记 `0,1` 为已覆盖
+  3. 处理 CPU 2：其本地的 `sibling` 子域跨度是 `{2, 3}`。但 `{2, 3}` **不是** 当前域 `{0,1,2}` 的子集（因为包含 `3`）。于是调用 `find_descended_sibling` 向下寻找，最终可能会下沉到最底层（或合适的后代），从而 **构建组 B：`{2}`**（或者只包含 2 的组）
+  * 因此，节点 0 的 NUMA-2 域有两个组：`{0, 1}` 和 `{2}`
+* **场景 B：构建节点 1 的 NUMA-2 域（跨度 `{0,1,2,3}`）**
+  * 遍历从 CPU 1 开始（假设顺序）：
+  1. 处理 CPU 1：构建组 `{0, 1}`
+  2. 处理 CPU 3：其子域跨度是 `{2, 3}`，且完全包含在当前域内。**构建组 C：`{2, 3}`**
+
+**关键冲突点（为什么不能复用预分配组？）**
+* 观察上面构建的 **组 B（`{2}`）** 和 **组 C（`{2, 3}`）**
+  * **组 B** 只包含 CPU 2，它是为节点 0 的调度域服务的
+  * **组 C** 包含 CPU 2 和 3，它是为节点 1 的调度域服务的
+* 它们都包含了 CPU 2，但它们 **不是同一个组**！它们服务于不同的上级调度域（一个在跨度 `0-2` 下，一个在跨度 `0-3` 下），且包含的 CPU 集合不同（`{2}` vs `{2, 3}`）
+* 如果我们要复用预分配的 `sdd->sg[2]`（CPU 2 的 per-CPU 槽位）：
+  1. 当构建组 B 时，我们会把 `sg[2]` 的掩码设为 `{2}`，并加入节点 0 的链表
+  2. 当构建组 C 时，我们想把掩码设为 `{2, 3}`，但 `sg[2]` 已经被组 B 使用了
+* **致命的逻辑错误**，在构建组 C 时：
+  * 如果我们 **覆盖** `sg[2]`，节点 0 的链表中的组 B 会被错误地变为 `{2, 3}`，破坏节点 0 的域结构
+  * 如果我们 **复用** `sg[2]` 并增加引用计数，那么组 B 和组 C 会变成**同一个对象**，但它们的掩码不同，这根本不可能（一个对象只有一个掩码）
+
+**结论**
+* 正是因为重叠域中，同一个物理 CPU（如 CPU 2）可能因为上层 NUMA 范围的不同，而分属 **不同语义的调度组**（跨度不同），所以预分配的“每个 CPU 一个组”的静态模型彻底失效
+* 因此，`build_overlap_sched_groups()` 必须 **动态分配**（`kzalloc()`）全新的 `sched_group` 结构体来容纳这些重叠且语义不同的组对象，从而保证每个组独立、准确，且不影响其他域（如节点 0 和节点 1）各自的链表结构。这就是为什么它不共享 per-CPU 预分配组的根本原因。
+
+##### `init_overlap_sched_group()` 函数
+* `init_overlap_sched_group()` 初始化重叠域（如 NUMA）中的调度组与容量结构的关联
+1. 计算该调度组的“平衡掩码”（balance mask），即组内哪些 CPU 有资格向上发起负载均衡（通常为一个 CPU，避免多个 CPU 同时向上均衡造成竞争）
+2. 为该组分配一个共享的 `sched_group_capacity` (`sgc`) 结构，该结构存储组的算力信息
+   * 由于重叠域中多个调度组可能共享相同的容量数据（例如不同 NUMA 节点组的容量相同），此函数通过引用计数实现 `sgc` 的共享复用
+3. 确保共享同一 `sgc` 的所有组具有相同的平衡掩码，否则发出警告
+4. 初始化 `sgc` 的容量值为默认值（后续会被正式容量更新覆盖），防止出现除以零错误
+* 关键点：
+  * 使用 `build_balance_mask()` 计算出组内用于向上均衡的 **代表 CPU**
+  * 从该代表 CPU 的 per-CPU 数据中获取 `sgc`（因为每个 CPU 都有一个预分配的 `sgc` 槽位）
+  * 通过原子引用计数（`ref`）判断该 `sgc` 是否已被其他组使用，若首次使用则设置平衡掩码，否则验证是否一致
+```cpp
+/*
+ * @sd: 当前调度域（调用方所在的域）
+ * @sg: 已经分配并设置好 cpumask 的调度组（由 build_group_from_child_sched_domain() 创建）
+ */
+static void init_overlap_sched_group(struct sched_domain *sd,
+                                     struct sched_group *sg)
+{
+        struct cpumask *mask = sched_domains_tmpmask2; //临时掩码，用于存放平衡 CPU
+        struct sd_data *sdd = sd->private;             //当前域层级的 per-CPU 数据
+        struct cpumask *sg_span;
+        int cpu;
+        //计算该组内用于负载均衡的 CPU 集合。通常为组内的一个 CPU，用于代表整个组向上（父域）发起均衡请求。
+        build_balance_mask(sd, sg, mask);
+        cpu = cpumask_first(mask);   //取平衡掩码中的第一个 CPU 作为代表
+        //获取该代表 CPU 对应的 sched_group_capacity 指针
+        //注意：在 __sdt_alloc() 中，每个 CPU 都预先分配了一个 sgc 槽位。
+        //多个组若使用相同的代表 CPU，则共享同一个 sgc，通过引用计数实现。
+        sg->sgc = *per_cpu_ptr(sdd->sgc, cpu);
+        if (atomic_inc_return(&sg->sgc->ref) == 1)  //增加 sgc 的引用计数，并判断是否为首次使用
+                cpumask_copy(group_balance_mask(sg), mask); //首次使用：将计算出的平衡掩码复制到组的 balance_mask 中
+        else //非首次使用：验证现有的 balance_mask 是否与新计算的 mask 一致。若不一致，说明多个组共享 sgc 但平衡 CPU 不同，这会导致负载均衡混乱，因此发出警告（但仅一次）
+                WARN_ON_ONCE(!cpumask_equal(group_balance_mask(sg), mask));
+        //初始化 sgc 的容量字段，防止后续在负载均衡中因未初始化而导致除零错误。
+        //注意：这些值将在后续的 init_sched_groups_capacity() 中被真实的 CPU 容量覆盖。
+        /*
+         * Initialize sgc->capacity such that even if we mess up the
+         * domains and no possible iteration will get us here, we won't
+         * die on a /0 trap.
+         */
+        sg_span = sched_group_span(sg);
+        sg->sgc->capacity = SCHED_CAPACITY_SCALE * cpumask_weight(sg_span); //capacity 设为 SCHED_CAPACITY_SCALE × 组内 CPU 数，作为粗略估计
+        sg->sgc->min_capacity = SCHED_CAPACITY_SCALE; //min/max 设为 SCHED_CAPACITY_SCALE，后续更新
+        sg->sgc->max_capacity = SCHED_CAPACITY_SCALE;
+}
+```
+##### `build_balance_mask()` 函数
+* `build_balance_mask()` 构建调度组中可用于 **向上负载均衡的 CPU 掩码**
+* 该函数在组创建阶段调用，虽然此时组内其他信息尚未完全初始化，但每个组代表一个（子）调度域，因此可以利用已有的调度域树信息来筛选出哪些 CPU 适合代表该组向上发起负载均衡，筛选条件如下：
+  * 对于组内的每个 CPU i，获取该 CPU 在当前层级（`sd` 所在层级）对应的调度域 `sibling`
+    * 只有当 `sibling` 存在子域，并且 `sibling` 的子域覆盖范围恰好等于该组覆盖范围时，CPU i 才被视为有效的均衡 CPU
+  * 在重叠域（如 NUMA）中，同一调度组可能覆盖多个子调度域，但只有那些 **子域完全与组范围匹配的 CPU 才具备完整的子树信息，适合向上均衡**
+  * 该掩码最终用于确定组的 `sched_group_capacity` 所关联的代表 CPU
+```cpp
+/*
+ * @sd:   当前调度域（调用方所属域）
+ * @sg:   当前调度组（其覆盖范围 sg_span 已确定）
+ * @mask: 输出参数，存放筛选出的均衡 CPU 位图
+ */
+static void
+build_balance_mask(struct sched_domain *sd, struct sched_group *sg, struct cpumask *mask)
+{
+        const struct cpumask *sg_span = sched_group_span(sg); //该组覆盖的所有 CPU
+        struct sd_data *sdd = sd->private;                    //当前层级的 per-CPU 数据
+        struct sched_domain *sibling;
+        int i;
+
+        cpumask_clear(mask);
+        //遍历组内的每个 CPU
+        for_each_cpu(i, sg_span) {
+                sibling = *per_cpu_ptr(sdd->sd, i); //获取该 CPU 在当前层级（sd 所在层级）的调度域
+                //在非对称情况下可能出现这些 sibling 域未被使用（无 child）。
+                //但这不会导致 mask 为空，因为那些拥有顶层域的 CPU 应当覆盖该组。
+                /*
+                 * Can happen in the asymmetric case, where these siblings are
+                 * unused. The mask will not be empty because those CPUs that
+                 * do have the top domain _should_ span the domain.
+                 */
+                if (!sibling->child)
+                        continue; //若 sibling 无 child，则此 CPU 不参与平衡，跳过
+                //如果该 CPU 的 sibling 子域覆盖范围不等于当前组范围，说明该 CPU 的子树并不完全对应于本组，因此不能作为本组的均衡代表
+                /* If we would not end up here, we can't continue from here */
+                if (!cpumask_equal(sg_span, sched_domain_span(sibling->child)))
+                        continue;
+                //通过所有检查，将 CPU i 加入均衡掩码
+                cpumask_set_cpu(i, mask);
+        }
+        //平衡掩码不能为空，否则该组将无法发起向上负载均衡。如果为空，触发警告（表示拓扑配置可能有误）
+        /* We must not have empty masks here */
+        WARN_ON_ONCE(cpumask_empty(mask));
+}
+```
+
+#### 4. 处理共享 LLC 的域
+* 主要事情都在 `build_sched_domains()` 完成了，仅具有 `SD_SHARE_LLC` 标志的最高一层调度域（通常为 `MC` 或 `CLS` 层）中的第一个 CPU i 的调度域的 `sd->shared` 会被指向该 CPU 在 `s_data` 中的 per-CPU 的共享调度域实例 `s_data.sds[i]`
+* `adjust_numa_imbalance()` 计算并设置 NUMA 域的不平衡限制参数 `imb_numa_nr`，并向上传播以限制 LLC 之间的负载失衡
+* **不平衡参数 `imb_numa_nr`** 表示允许的最大 CPU 数之差（即负载不平衡的上限），用于 NUMA 负载均衡算法。当两个 NUMA 节点之间的 CPU 使用量差值超过此值，调度器会尝试迁移任务
+  * 这个值越大，负载均衡的机会越少
+* 其核心目标是：
+  * 当多个 LLC（最后一级缓存）位于同一 NUMA 节点时，允许一定程度的负载不平衡，以避免任务在 LLC 之间过度迁移
+  * 同时，当跨 NUMA 节点时，根据 LLC 数量限制不平衡，防止某些 LLC 过载而其他 LLC 空闲
+* 具体做法：
+  1. 计算当前 LLC 域所属的父域（`sd_llc->parent`，通常为 `DIE` 或 `PKG`）中包含的 LLC 数量（`nr_llcs`）
+     * 父域覆盖的 CPU 数 / 每个 LLC 域的 CPU 数 = 父域内 LLC 的个数
+     * 例如，若父域为 `PKG` 包含 `16` 个 CPU，每个 LLC 域（`MC`）包含 `4` 个 CPU，则该 `PKG` 中有 `4` 个 LLC   
+  2. 根据 `nr_llcs` 确定基础不平衡值 `imb`：
+     - 若只有一个 LLC（`nr_llcs == 1`），允许父域权重的 `12.5%`（即 `1/8`），这是基于 SMT 和内存带宽的经验值
+     - 若有多个 LLC，允许不平衡等于 LLC 数量（`nr_llcs`）
+  3. 将 `imb` 赋值给直接父域（`sd_llc->parent`）的 `imb_numa_nr`
+  4. 向上遍历至第一个 NUMA 域（`SD_NUMA`），计算其跨度权重 `imb_span`
+  5. 继续向上遍历所有父域，根据每个域相对于 `imb_span` 的规模因子 `factor`，将 `imb_numa_nr` 放大相应倍数，并设置给每个父域
+```cpp
+/* 
+ * @sd_llc: 共享 LLC 的调度域（如 MC 或 CLS 域）
+ *
+ * Calculate an allowed NUMA imbalance such that LLCs do not get
+ * imbalanced.
+ */
+static void adjust_numa_imbalance(struct sched_domain *sd_llc)
+{
+        struct sched_domain *parent;
+        unsigned int imb_span = 1; 
+        unsigned int imb = 0; 
+        unsigned int nr_llcs;
+        //断言：sd_llc 确实代表共享 LLC 的域，且存在父域
+        WARN_ON(!(sd_llc->flags & SD_SHARE_LLC));
+        WARN_ON(!sd_llc->parent);
+        //对于每个 NUMA 节点仅含一个 LLC 的场景，允许的负载失衡阈值设为节点总算力的 12.5%。
+        //该阈值是综合两项因素人为设定的 -- 超线程（SMT）与内存通道。
+        //- 针对双线程超线程（SMT-2），该阈值旨在避免过早共享超线程资源；但四线程超线程（SMT-4）或八线程超线程（SMT-8）或许适配不同阈值。
+        //- 针对内存通道维度，该数值只是对活跃内存通道数量的粗略估算，参考对象为近年的多核处理器。
+        //若单个节点包含多个独立 LLC，则放宽失衡判定条件，直到出现如下情形才触发均衡：某节点内多个任务争抢同一条 LLC，而另一节点的 LLC 却处于空闲状态。
+        //该逻辑存在两个前提假设：每个 LLC 配套的逻辑 CPU 数量充足，可规避超线程带来的干扰；同时默认 LLC 与内存通道数量存在对应关联。
+        /*
+         * For a single LLC per node, allow an
+         * imbalance up to 12.5% of the node. This is
+         * arbitrary cutoff based two factors -- SMT and
+         * memory channels. For SMT-2, the intent is to
+         * avoid premature sharing of HT resources but
+         * SMT-4 or SMT-8 *may* benefit from a different
+         * cutoff. For memory channels, this is a very
+         * rough estimate of how many channels may be
+         * active and is based on recent CPUs with
+         * many cores.
+         *
+         * For multiple LLCs, allow an imbalance
+         * until multiple tasks would share an LLC
+         * on one node while LLCs on another node
+         * remain idle. This assumes that there are
+         * enough logical CPUs per LLC to avoid SMT
+         * factors and that there is a correlation
+         * between LLCs and memory channels.
+         */
+        nr_llcs = sd_llc->parent->span_weight / sd_llc->span_weight;
+        //根据 LLC 数量确定基础不平衡值 imb：
+        //- 若只有一个 LLC，允许父域内 CPU 总数 12.5%（>>3）的不平衡，此值基于 SMT 和内存通道数量的经验估计
+        //- 若有多个 LLC，允许的不平衡等于 LLC 数量，目的是让每个 LLC 至少有一个任务，避免某些 LLC 完全空闲
+        if (nr_llcs == 1)
+                imb = sd_llc->parent->span_weight >> 3; //除以 8
+        else
+                imb = nr_llcs;
+        //确保 imb 至少为 1
+        imb = max(1U, imb);
+        sd_llc->parent->imb_numa_nr = imb; //将基础不平衡值赋给直接父域
+        //现在，向上找到第一个真正的 NUMA 域（SD_NUMA）
+        //通常调度域层次为：... -> NUMA-1 -> NUMA-2 -> ...
+        //在迭代 NUMA 域之前，NUMA 系统总是添加一个 NODE 域，sd_llc/MC 的父域可能为 DIE/PKG，再往上才是 NUMA
+        //首先从 sd_llc->parent->parent 开始（跳过直接父域），然后循环直到找到带有 SD_NUMA 标志的域
+        /*
+         * Set span based on the first NUMA domain.
+         *
+         * NUMA systems always add a NODE domain before
+         * iterating the NUMA domains. Since this is before
+         * degeneration, start from sd_llc's parent's
+         * parent which is the lowest an SD_NUMA domain can
+         * be relative to sd_llc.
+         */
+        parent = sd_llc->parent->parent;
+        while (parent && !(parent->flags & SD_NUMA))
+                parent = parent->parent;
+        //确定用于缩放的基础跨度 imb_span：
+        //- 若找到了 NUMA 域，则以其覆盖的 CPU 数为基准
+        //- 若未找到（如非 NUMA 系统），则回退到直接父域的跨度
+        //该跨度将用于计算上层域相对于此基础跨度的比例
+        imb_span = parent ? parent->span_weight : sd_llc->parent->span_weight;
+        //更新所有上层父域的 imb_numa_nr
+        /* Update the upper remainder of the topology */
+        parent = sd_llc->parent;//从直接父域开始
+        while (parent) {
+                int factor = max(1U, (parent->span_weight / imb_span));
+                //对于每个上层域，根据其跨度与 imb_span 的比值计算因子 factor，将基础 imb 按比例放大，使不平衡限制与域的大小成比例
+                parent->imb_numa_nr = imb * factor;
+                parent = parent->parent; //向上跳一级，继续处理更上层的域
+        }
+}
+```
+#### 5. 计算物理封装和节点级别的 CPU 容量（用于负载均衡的算力值）
+* `claim_allocations()` 标记已使用的调度域数据，防止被后续释放函数误释放
+* 该函数在调度域构建完成后被调用，其目的是将已经成功构建并使用的调度域（`sched_domain`）、调度组（`sched_group`）和调度组容量（`sched_group_capacity`）对应的 per-CPU 指针置为 `NULL`
+* 为何要这样做？
+  * 在构建过程中，`__sdt_alloc()` 为每个拓扑层级、每个 CPU 都预分配了这些结构体，但实际构建后，某些结构体可能被多个 CPU 或组共享（通过引用计数 `ref > 1`）
+  * 当构建完成，`__free_domain_allocs()` 会遍历所有预分配的结构体并尝试释放它们
+  * 为了不释放那些正在被使用的共享结构体，我们将这些共享结构的 per-CPU 指针清空，这样 `__free_domain_allocs()` 在释放时会跳过这些指针为 `NULL` 的条目，从而保证共享数据的安全
+* 具体操作：
+1. 若该 CPU 对应的共享 LLC 域数据结构（`sds`）引用计数 `> 0`，则将其置 `NULL`
+2. 遍历该 CPU 从底层到顶层的所有调度域，对每个域：
+   - 断言该 CPU 的 `sd` 指针确实指向当前域（用于调试）
+   - 将该 CPU 的 `sd` 指针置 `NULL`
+   - 若该 CPU 对应的 `sg` 指针引用计数 `> 0`，则置 `NULL`
+   - 若该 CPU 对应的 `sgc` 指针引用计数 `> 0`，则置 `NULL`
+```cpp
+/*
+ * @cpu: 当前遍历的 CPU 编号
+ * @d:   保存所有分配数据的结构体（包含 per-CPU 指针数组）
+ */
+static void claim_allocations(int cpu, struct s_data *d)
+{
+        struct sched_domain *sd;
+        //处理共享 LLC 域的数据结构（sds）
+        if (atomic_read(&(*per_cpu_ptr(d->sds, cpu))->ref)) //若该 CPU 对应的 sds 引用计数大于 0，说明该 sds 被多个 CPU 共享
+                *per_cpu_ptr(d->sds, cpu) = NULL; //不应释放，因此将其置 NULL，使释放函数跳过
+        //遍历该 CPU 从最底层到顶层的所有调度域。注意：sd 链表已经通过 sd->parent 连接
+        for (sd = *per_cpu_ptr(d->sd, cpu); sd; sd = sd->parent) { //回顾 build_sched_domains() 第 2 步的赋值
+                struct sd_data *sdd = sd->private;  //该域所在层级的 per-CPU 数据容器
+                //断言：该 CPU 的 sd 指针确实指向当前域，确保一致性。若断言失败，说明 per-CPU 指针被意外修改
+                WARN_ON_ONCE(*per_cpu_ptr(sdd->sd, cpu) != sd);
+                *per_cpu_ptr(sdd->sd, cpu) = NULL; //将该 CPU 在当前层级的 sd 指针置 NULL，防止释放函数误释放
+                //若该 CPU 在当前层级的 sg 引用计数 > 0，说明该组被多个 CPU 共享，不应释放，因此将指针置 NULL
+                if (atomic_read(&(*per_cpu_ptr(sdd->sg, cpu))->ref))
+                        *per_cpu_ptr(sdd->sg, cpu) = NULL;
+                //同理，若 sgc 引用计数 > 0，也不应释放，置 NULL
+                if (atomic_read(&(*per_cpu_ptr(sdd->sgc, cpu))->ref))
+                        *per_cpu_ptr(sdd->sgc, cpu) = NULL;
+        }
+}
+```
+
+#### 6. 将构建好的调度域挂载到每个 CPU 的运行队列上
