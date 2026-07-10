@@ -2063,6 +2063,94 @@ for_each_cpu(i, cpu_map) {
 * 正是因为重叠域中，同一个物理 CPU（如 CPU 2）可能因为上层 NUMA 范围的不同，而分属 **不同语义的调度组**（跨度不同），所以预分配的“每个 CPU 一个组”的静态模型彻底失效
 * 因此，`build_overlap_sched_groups()` 必须 **动态分配**（`kzalloc()`）全新的 `sched_group` 结构体来容纳这些重叠且语义不同的组对象，从而保证每个组独立、准确，且不影响其他域（如节点 0 和节点 1）各自的链表结构。这就是为什么它不共享 per-CPU 预分配组的根本原因。
 
+###### 例子：可重叠调度组
+
+* 比如这样一台机器，有 2 个 socket，每个 socket 有 6 个 NUMA node，它们之间的 NUMA distance 和互联拓扑如下：
+
+![2 sockets NUMA Distance](pic/numa_eg.png){:height="40%" width="40%"}
+![2 sockets NUMA Topology](pic/2sk-12nm.svg.svg)
+
+* 对于单个 socket 来说，拓扑如下：
+```c
+3 - 0
+|   |
+2 - 5
+|   |
+1 - 4
+```
+* 我们只看一个 socket 的 NUMA 层级拓扑
+```c
+NUMA-7     0-11                   0-11                   N/A                    0-11                   0-11                   N/A
+  groups:  {0-9,11},{1-11}
+
+NUMA-6     0-9,11                 0-8,10-11              N/A                                                                  N/A
+  groups:  {0-6,8-9},{7},{11}
+
+NUMA-5     0-6,8-9                0-5,7,10-11            0-11                                                                 0-11
+  groups:  {0-5,9},{6},{8}                               {0-7,9-11},{0,3-11}
+
+NUMA-4     0-5,9                  0-5,10                 0-7,9-11               0-6                    0-5,7                  0-10
+  groups:  {0-5},{9}                                     {0-6,10},{7},{9},{11}
+
+NUMA-3     0-5                    0-5                    0-6,10                 0-5                    0-5                    0-5,7,9
+  groups:  {0,2-5},{1-5}                                 {0-5},{6},{10}
+
+NUMA-2     0,2-5                  1-5                    0-5                    0-3,5                  0-2,4,5                0-5
+  groups:  {0,3,5},{2},{4}                               {1-3,5},{1,4-5},{0,3,5}
+
+NUMA-1     0,3,5                  1,2,4                  1-3,5                  0,2,3                  1,4,5                  0,2,4,5
+  groups:  {0},{3},{5}                                   {1},{3},{5},{2}
+
+NUMA-0     0                      1                      2                      3                      4                      5
+```
+* **对 NUMA 节点 0 上的 CPU 来说：**
+1. NUMA-0 这一级为 0-hop，NUMA 距离为 `10`
+   * domain 覆盖 NUMA 节点 0 上的 CPU，group 以 CCX 为单位划分，这是以 NUMA 为划分单元，所以没显示
+2. NUMA-1 这一级为 1-hop，NUMA 距离为 `12`，在这范围内的节点有 `0, 3, 5`
+   * 构建组的时候，节点 0 上的 CPU 0 在 NUMA-0 的子域范围 `{0}` 是 `0, 3, 5` 的子集，因此以它的子域范围 `{0}` 作为第一个组
+     * 节点 0 上的其他 CPU 因为范围已被 `{0}` 覆盖，跳过（`continue` 语句）
+   * 节点 3 上的 CPU 在 NUMA-0 的子域范围 `{3}` 是 `0, 3, 5` 的子集，因此以它的子域范围 `{3}` 作为第二个组，节点 3 上的其他 CPU 同理被跳过
+   * 节点 5 上的 CPU 在 NUMA-0 的子域范围 `{5}` 是 `0, 3, 5` 的子集，因此以它的子域范围 `{5}` 作为第三个组，节点 5 上的其他 CPU 同理被跳过
+   * 节点 1、2、4 的 CPU 不在节点 `0, 3, 5` 这个范围内，因此 `build_overlap_sched_groups()` 不会遍历
+3. NUMA-2 这一级为 2-hop，NUMA 距离为 `15`，在这范围内的节点有 `0, 3, 5, 2, 4`，即 `0,2-5`
+   * 构建组的时候，节点 0 上的 CPU 0 在 NUMA-1 的子域范围 `{0,3,5}` 是 `0,2-5` 的子集，因此以它的子域范围 `{0,3,5}` 作为第一个组
+     * 节点 0, 3, 5 上的其他 CPU 因为范围已被 `{0,3,5}` 覆盖，跳过（`continue` 语句）
+   * 节点 2 上的 CPU 在 NUMA-1 的子域范围 `{1,2,3,5}` 不是 `0, 3, 5, 2, 4` 的子集，因此向下沉降到它的孙子域范围 `{2}` 在这个范围内，作为第二个组，节点 2 上的其他 CPU 同理被跳过
+   * 节点 4 上的 CPU 在 NUMA-1 的子域范围 `{1,4,5}` 不是 `0, 3, 5, 2, 4` 的子集，因此向下沉降到它的孙子域范围 `{4}` 作为第三个组，节点 4 上的其他 CPU 同理被跳过
+   * 节点 1 的 CPU 不在节点 `0, 3, 5, 2, 4` 这个范围内，因此 `build_overlap_sched_groups()` 不会遍历
+4. NUMA-3 这一级为 3-hop，NUMA 距离为 `19`，在这范围内的节点有 `0-5`，涵盖了第一个 socket
+   * 构建组的时候，节点 0 上的 CPU 0 在 NUMA-2 的子域范围 `{0,2-5}` 是 `0-5` 的子集，因此以它的子域范围 `{0,2-5}` 作为第一个组
+     * 节点 0, 2, 3, 4, 5 上的其他 CPU 因为范围以被覆盖，跳过（`continue` 语句）
+   * 节点 1 上的 CPU 在 NUMA-2 的子域范围 `{1-5}` 是 `0-5` 的子集，因此以它的子域范围 `{1-5}` 作为第二个组，节点 1 上的其他 CPU 同理被跳过
+   * 至此，节点 0 上的 CPU 在 NUMA-3 这一级的调度组构建完毕
+   * ==可以看到，调度组 1 `{0,2-5}` 和调度组 2 `{1-5}` 部分节点 `{2-4}` 出现重叠==
+5. NUMA-4 这一级还通过互联连接到远程的 socket，NUMA 距离为 `29`，因此范围为本地 socket 的 NUMA 节点 `0-5` 加一个远程直连的节点 `9`
+* 然而构建调度组的规则和之前是一样的，故 NUMA-4 到 NUMA-7 的调度组构建不再赘述
+
+* **对 NUMA 节点 2 上的 CPU 来说：**
+1. NUMA-0 这一级为 0-hop，NUMA 距离为 `10`
+   * domain 覆盖 NUMA 节点 2 上的 CPU，group 以 CCX 为单位划分，这是以 NUMA 为划分单元，不显示
+2. NUMA-1 这一级为 1-hop，NUMA 距离为 `12`，由于物理拓扑上处在中间，范围内的节点有 `1-3,5`
+   * 构建组的时候，节点 2 上的 CPU 在 NUMA-0 的子域范围 `{1}` 是 `1-3,5` 的子集，因此以它的子域范围 `{1}` 作为第一个组
+     * 节点 2 上的其他 CPU 因为范围已被 `{2}` 覆盖，跳过（`continue` 语句）
+   * 节点 1、3 上的 CPU 在 NUMA-0 的子域范围 `{1}` 和 `{3}` 是 `1-3,5` 的子集，因此以它们的子域范围 `{1}`、`{3}` 作为第二、三个组，节点 1、3 上的其他 CPU 同理被跳过
+   * 节点 5 上的 CPU 在 NUMA-0 的子域范围 `{5}` 是 `1-3,5` 的子集，因此以它的子域范围 `{5}` 作为第四个组，节点 5 上的其他 CPU 同理被跳过
+   * 节点 0、4 的 CPU 不在节点 `1-3,5` 这个范围内，因此 `build_overlap_sched_groups()` 不会遍历
+3. NUMA-2 这一级为 2-hop，NUMA 距离为 `15`，在这范围内的节点有 `0-5`，由于物理位置的关系，这一级就已经覆盖了第一个 socket了
+   * 构建组的时候，节点 2 上的 CPU 在 NUMA-2 的子域范围 `{1-3,5}` 是 `0-5` 的子集，因此以它的子域范围 `{1-3,5}` 作为第一个组
+     * 节点 1、2、3、5 上的其他 CPU 因为范围以被覆盖，跳过（`continue` 语句）
+   * 节点 4 上的 CPU 在 NUMA-2 的子域范围 `{1,4,5}` 是 `0-5` 的子集，因此以它的子域范围 `{1,4,5}` 作为第二个组，节点 4 上的其他 CPU 同理被跳过
+   * 节点 0 上的 CPU 在 NUMA-2 的子域范围 `{0,3,5}` 是 `0-5` 的子集，因此以它的子域范围 `{0,3,5}` 作为第二个组，节点 0 上的其他 CPU 同理被跳过
+   * 至此，节点 2 上的 CPU 在 NUMA-3 这一级的调度组构建完毕
+   * ==可以看到，调度组之间的部分节点出现重叠==
+4. NUMA-3 这一级通过本地 socket 的 1-hop 加互联连接到远程的 socket，NUMA 距离为 `32`，因此范围为本地 socket 的 NUMA 节点 `0-5` 加两个远程直连的节点 `6` 和 `10`
+5. NUMA-4 这一级通过本地 socket 的 1-hop 加互联连接到远程的 socket 再加 1-hop，NUMA 距离为 `35`，因此范围为本地 socket 的 NUMA 节点 `0-5` 加五个远程节点 `6-9``10`
+* 然而构建调度组的规则和之前是一样的，故 NUMA-4 到 NUMA-7 的调度组构建不再赘述
+
+* **总结**
+  * 各 CPU 调度组的范围来自子调度域，子调度域的范围来自各 CPU 传入 `tl->mask(tl, cpu)` 回调得到（`sd_init()`）
+  * 对于 NUMA 层级来说，回调函数 `sd_numa_mask()`，而这个函数读的就是之前构建的 `sched_domains_numa_masks[][]` 二维数组
+
 ##### `init_overlap_sched_group()` 函数
 * `init_overlap_sched_group()` 初始化重叠域（如 NUMA）中的调度组与容量结构的关联
 1. 计算该调度组的“平衡掩码”（balance mask），即组内哪些 CPU 有资格向上发起负载均衡（通常为一个 CPU，避免多个 CPU 同时向上均衡造成竞争）
@@ -2302,3 +2390,99 @@ static void claim_allocations(int cpu, struct s_data *d)
 ```
 
 #### 6. 将构建好的调度域挂载到每个 CPU 的运行队列上
+* `cpu_attach_domain()` 将调度域 `sd` 附加到 `cpu` 作为其基础域
+* 调用者必须持有热插拔锁（hotplug lock）
+* 该函数的主要任务：
+1. 从 `sd` 开始向上遍历，移除那些不会对调度产生贡献的“退化”域（即与父域范围相同或功能重叠的域），同时更新父子链接
+2. 处理整个 `sd` 自身可能退化的特殊情况
+3. 将清理后的 `sd` 挂载到 CPU 的运行队列（`rq->sd`），并替换旧域
+4. 释放被替换的旧域树
+5. 更新 CPU 的拓扑缓存（如 LLC 共享域等）
+```cpp
+/*
+ * Attach the domain 'sd' to 'cpu' as its base domain. Callers must
+ * hold the hotplug lock.
+ *
+ * @sd:  要附加的调度域（通常是该 CPU 的顶层域）
+ * @rd:  该 CPU 所属的根域（root domain）
+ * @cpu: 目标 CPU 编号
+ */
+static void
+cpu_attach_domain(struct sched_domain *sd, struct root_domain *rd, int cpu)
+{
+        struct rq *rq = cpu_rq(cpu);
+        struct sched_domain *tmp;
+        //1. 从 sd 开始向上移除不贡献调度的域（内部退化）
+        /*
+         * 遍历域链：从 sd 开始，依次检查每个域与其父域的关系。
+         * 若父域退化（即父域与子域功能相同或范围一致），则将子域提升到祖父域，
+         * 并销毁父域。
+         */
+        for (tmp = sd; tmp; ) {
+                struct sched_domain *parent = tmp->parent;
+                if (!parent)
+                        break;  // 已到达顶层，停止
+
+                if (sd_parent_degenerate(tmp, parent)) {
+                        // 父域退化：将当前域 tmp 的父指针直接指向祖父域
+                        tmp->parent = parent->parent;
+
+                        /* 若父域有共享的 LLC 数据结构，则转交给 tmp */
+                        if (parent->shared) {
+                                WARN_ON_ONCE(tmp->shared);
+                                tmp->shared = parent->shared;
+                                parent->shared = NULL;
+                        }
+
+                        /* 若祖父域存在，更新其 child 指针和 groups 标志 */
+                        if (parent->parent) {
+                                parent->parent->child = tmp;
+                                parent->parent->groups->flags = tmp->flags;
+                        }
+
+                        /*
+                         * 若父域有 SD_PREFER_SIBLING 标志，将其继承给 tmp，
+                         * 因为退化后子域的跨度与父域相同，该属性应传递。
+                         */
+                        if (parent->flags & SD_PREFER_SIBLING)
+                                tmp->flags |= SD_PREFER_SIBLING;
+
+                        // 销毁已退化的父域
+                        destroy_sched_domain(parent);
+                } else {
+                        // 父域未退化，继续向上检查
+                        tmp = tmp->parent;
+                }
+        }
+
+        //2. 处理整个 sd 自身退化的特殊情况
+        if (sd && sd_degenerate(sd)) {
+                tmp = sd;
+                sd = sd->parent;          // 提升到父域
+                destroy_sched_domain(tmp);
+                if (sd) {
+                        struct sched_group *sg = sd->groups;
+
+                        /*
+                         * 调度组的 flags 保存了子域的 flags 以便快速访问。
+                         * 子域已被销毁，因此需要清除这些 flags。
+                         */
+                        do {
+                                sg->flags = 0;
+                        } while (sg != sd->groups);
+
+                        sd->child = NULL;   // 父域不再有子域
+                }
+        }
+        //可选：调试输出当前域结构
+        sched_domain_debug(sd, cpu);
+        //3. 将清理后的域树挂载到运行队列
+        rq_attach_root(rq, rd); //将 CPU 的根域切换到 rd
+        tmp = rq->sd; //保存旧域指针以便稍后释放
+        rcu_assign_pointer(rq->sd, sd); //使用 RCU 赋值新域指针
+        dirty_sched_domain_sysctl(cpu); //更新 sysctl 相关参数
+        destroy_sched_domains(tmp);     //4. 释放旧的域树（tmp）
+        //5. 更新该 CPU 的拓扑缓存（如 LLC、SMT 等共享域信息）
+        update_top_cache_domain(cpu);
+}
+```
