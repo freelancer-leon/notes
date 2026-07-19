@@ -232,8 +232,8 @@ static const u32 runnable_avg_yN_inv[] __maybe_unused = {
   - 选择 `2^32` 是因为它足够大，能保证 `y^n`（0.97 左右）放大后依然有极高的精度（误差在 1/40 亿以内）。
   - 同时，`val`（负载值）通常也是按照 `2^32` 缩放过的。所以 `val * y^n` 做完乘法，再右移 32 位，结果依然保持了 `2^32` 的精度标准，可以继续参与后续的累加运算，而不会丢失有效数字
 
-## 负载贡献的累加总和
-* `__accumulate_pelt_segments()` 函数是 PELT 算法的 **数学核心**，它负责计算过去一段时间内，负载贡献的 **累加总和**
+## PELT 负载的累加
+* `__accumulate_pelt_segments()` 函数是 PELT 算法的 **数学核心**，它负责计算过去一段时间内，负载贡献的 **累加**
 
 ### 函数背景与输入参数
 * 在 PELT 更新时，时间被分成了三段（`d1`, `d2`, `d3`），这个函数的作用就是计算这三段时间对负载总和的贡献
@@ -358,3 +358,169 @@ c2 = LOAD_AVG_MAX                      //全部无限项
 * 原因：性能因素
 1. **O(1) vs O(n)**：这个函数在每次时钟中断（每 `1ms`）都可能被调用。如果直接循环累加，当系统空闲很久后，`periods` 可能非常大（比如几万），循环开销不可接受
 2. **利用几何级数性质**：通过 `LOAD_AVG_MAX - decay_load(LOAD_AVG_MAX, periods) - 1024`，用常数次运算（`decay_load` 只有一次查表+移位）就计算出了完整的级数和
+
+## 负载贡献的累加总和
+* PELT 更新时间被分成了三段 `d1`、`d2`、`d3` 的概念之已讨论过不再赘述，`accumulate_sum()` 函数是 PELT 更新流程中的**总调度中心**
+* 它完成了两件核心工作：**老化（衰减）历史负载** 和 **累加新产生的负载**
+```cpp
+/*
+ * Accumulate the three separate parts of the sum; d1 the remainder
+ * of the last (incomplete) period, d2 the span of full periods and d3
+ * the remainder of the (incomplete) current period.
+ *
+ *           d1          d2           d3
+ *           ^           ^            ^
+ *           |           |            |
+ *         |<->|<----------------->|<--->|
+ * ... |---x---|------| ... |------|-----x (now)
+ *
+ *                           p-1
+ * u' = (u + d1) y^p + 1024 \Sum y^n + d3 y^0
+ *                           n=1
+ *
+ *    = u y^p +					(Step 1)
+ *
+ *                     p-1
+ *      d1 y^p + 1024 \Sum y^n + d3 y^0		(Step 2)
+ *                     n=1
+ */
+static __always_inline u32
+accumulate_sum(u64 delta, struct sched_avg *sa,
+	       unsigned long load, unsigned long runnable, int running)
+{
+	u32 contrib = (u32)delta; /* p == 0 -> delta < 1024 */
+	u64 periods;
+
+	delta += sa->period_contrib;
+	periods = delta / 1024; /* A period is 1024us (~1ms) */
+
+	/*
+	 * Step 1: decay old *_sum if we crossed period boundaries.
+	 */
+	if (periods) {
+		sa->load_sum = decay_load(sa->load_sum, periods);
+		sa->runnable_sum =
+			decay_load(sa->runnable_sum, periods);
+		sa->util_sum = decay_load((u64)(sa->util_sum), periods);
+
+		/*
+		 * Step 2
+		 */
+		delta %= 1024; //此时 delta 被重赋值为 当前不完整周期中已过去的时间（即数学公式里的 d3）
+		if (load) {
+			/*
+			 * This relies on the:
+			 *
+			 * if (!load)
+			 *	runnable = running = 0;
+			 *
+			 * clause from ___update_load_sum(); this results in
+			 * the below usage of @contrib to disappear entirely,
+			 * so no point in calculating it.
+			 */
+			contrib = __accumulate_pelt_segments(periods,
+					1024 - sa->period_contrib, delta);
+		}
+	}
+	sa->period_contrib = delta; //余数留待下次使用
+
+	if (load)
+		sa->load_sum += load * contrib;
+	if (runnable)
+		sa->runnable_sum += runnable * contrib << SCHED_CAPACITY_SHIFT;
+	if (running)
+		sa->util_sum += contrib << SCHED_CAPACITY_SHIFT;
+
+	return periods;
+}
+```
+
+### 1. 时间分片（边界对齐）
+```c
+delta += sa->period_contrib;
+periods = delta / 1024; /* A period is 1024us (~1ms) */
+```
+* `sa->period_contrib` 为上次更新时，当前 `1024us` 周期内 **已经过去** 的时间（即上次 `delta % 1024` 的余数）
+* `delta` 为这次的时间差
+* `delta += sa->period_contrib`：将上次的余数加到这次的时间差上。这样，我们就得到了 **从上一个完整周期的起始边界** 到当前时刻的总时间
+* `periods = delta / 1024`：计算这段时间跨越了多少个 **完整的 1024us 周期**
+* 为什么要加 `sa->period_contrib`？
+  * 因为 PELT 必须按 `1024us` 周期边界进行分段累加。如果不加，`d1`（上个周期剩余部分）就会被丢弃，导致负载计算不准确
+
+### 2. Step 1 — 老化历史贡献（衰减旧的 `*_sum`）
+```cpp
+if (periods) {
+    sa->load_sum = decay_load(sa->load_sum, periods);
+    sa->runnable_sum = decay_load(sa->runnable_sum, periods);
+    sa->util_sum = decay_load((u64)(sa->util_sum), periods);
+    // ...
+}
+```
+* 这里对应注释中公式的 Step 1：`u * y^p`
+* 作用：将过去累积的所有贡献（`load_sum`、`runnable_sum`、`util_sum`）整体衰减 `periods` 个周期
+* 含义：距离现在越久远的负载，其权重越小。这是指数衰减在数据结构上的直接体现
+* 注意：此时 `sa->*_sum` 已经变成了“老化后的历史值”，还不包含本次新增的负载
+
+### 3. Step 2 — 计算本次新增贡献（`contrib`）
+```cpp
+delta %= 1024;
+if (load) {
+    contrib = __accumulate_pelt_segments(periods,
+                    1024 - sa->period_contrib, delta);
+}
+```
+* 这里对应注释中公式的 **Step 2**：`d1 * y^p + 1024 * sum(...) + d3 * y^0`
+* `delta %= 1024`：此时 `delta` 被重赋值为 **当前不完整周期中已过去的时间**（即数学公式里的 `d3`）
+* `1024 - sa->period_contrib`：这是上个周期剩余的时间，即数学公式里的 `d1`
+* 调用 `__accumulate_pelt_segments(periods, d1, d3)`：利用之前的几何级数差集算法，一次性算出本次新产生的负载贡献总值（`contrib`）
+* **关键优化 `if (load)`**：注释里提到 `if (!load) runnable = running = 0`
+  * 如果 `load` 为 `0`（即任务权重为 `0`，通常发生在空队列或系统空闲时），那么后续 `load * contrib` 依然为 `0`
+  * 此时计算 `contrib` 完全是浪费 CPU，所以直接跳过
+
+### 4. 累加回三个独立的 `*_sum` 字段
+
+```c
+sa->period_contrib = delta;
+
+if (load)
+    sa->load_sum += load * contrib;
+if (runnable)
+    sa->runnable_sum += runnable * contrib << SCHED_CAPACITY_SHIFT;
+if (running)
+    sa->util_sum += contrib << SCHED_CAPACITY_SHIFT;
+```
+
+* `sa->period_contrib = delta`：保存本次 `d3`（当前周期已过去的时间），作为下次更新的起始余数
+* `load_sum` 累加：乘以 `load`（任务的权重 `load.weight`，通常与 nice 值相关）。因为不同 nice 值的任务对“负载”的贡献权重不同（高 nice 值权重低）
+* `runnable_sum` 与 `util_sum` 累加：这里都左移了 `SCHED_CAPACITY_SHIFT`（通常为 `10`，即乘以 `1024`）
+* 为什么要移位？
+  * 因为 `contrib` 是基于 `1024us` 时间单位计算的，而 `util_sum` 需要以 **算力容量（capacity）** 为单位进行缩放（频率不变性和 CPU 不变性）
+  * 左移 `10` 位相当于将时间贡献映射到 `[0, 1024]` 的容量刻度上，以便后续直接除以周期数得到 `util_avg`
+* `runnable` 和 `running` 的标志位：分别控制是否更新可运行负载和利用率
+  * 它们在调用时由 `___update_load_sum()` 根据任务状态（是否在队列、是否在运行）设置
+
+### 5. 返回值 `periods`
+
+```c
+return periods;
+```
+
+函数返回本次跨越的完整周期数。  
+这个返回值主要用于 **`___update_load_avg()`** 中判断是否需要进行 **`load_avg` 的更新**，以及触发**负载均衡**的时机判断（例如，如果 `periods` 大于 1，意味着系统可能经历了较长的空闲期）。
+
+### 完整流程图（新旧合并）
+
+把 Step 1 和 Step 2 合并，就得到了完整的更新公式：
+
+\[
+\text{new_sum} = \underbrace{\text{old_sum} \times y^{periods}}_{\text{Step 1: 老化历史}} + \underbrace{\text{__accumulate_pelt_segments}(periods, d1, d3)}_{\text{Step 2: 新增贡献}}
+\]
+
+这与 PELT 论文中的标准递推公式完全一致。
+
+### 总结：这个函数的精妙之处
+1. **解耦历史与新增**：先把老的贡献全部衰减，再独立计算新的贡献，最后相加
+2. **按需计算**：通过 `if (load)` 和 `if (runnable)` 等标志，避免在空闲时进行不必要的乘法运算
+3. **统一的缩放处理**：将 `runnable_sum` 和 `util_sum` 左移 `SCHED_CAPACITY_SHIFT`，为后续除以周期数（`LOAD_AVG_MAX`）得到 `avg` 值做好了准备，同时保证了频率/CPU 不变性
+4. **状态持久化**：通过 `period_contrib` 保存断点，使得中断性的更新也能完美拼接
+* 简单来说，==`accumulate_sum()` 就像是一个精准的“计数器”，它把不连续的时间增量，通过周期边界对齐和指数衰减，精确地累加到了三个独立的负载统计维度（权重负载、可运行时间、利用率）上==
