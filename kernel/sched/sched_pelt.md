@@ -874,8 +874,17 @@ int __update_load_avg_blocked_se(u64 now, struct sched_entity *se)
 | `se->avg.runnable_avg` | `runnable_sum / divider` | 反映该任务在阻塞期间 **依然“可运行”状态的时间占比**（通常很快衰减） |
 | `se->avg.util_avg` | `util_sum / divider` | 反映该任务在阻塞期间 **依然需要的 CPU 算力**（用于 EAS 等） |
 
----
-
+## `__update_load_avg_se()` 函数
+* 函数 `__update_load_avg_se()` 是 PELT 更新路径中 **最核心、最通用的入口**，专门用于更新 **正在运行队列中（或正在运行）的调度实体（`sched_entity`）**
+* 它与刚刚讲过的 `__update_load_avg_blocked_se()`（只老化不新增）形成了鲜明的对比：==`__update_load_avg_se()` 不仅会老化历史负载，还会累加当前这一小段时间内新产生的运行贡献==
+* `__update_load_avg_se()` 函数的设计体现了 PELT 算法的 **多维负载观测** 理念：
+  * 一个 **“就绪”** 的任务（`on_rq`）会产生 **“负载”压力**
+  * 它 **在队列中等待** 会贡献 **“可运行”时间**
+  * 只有当它真正 **抢到 CPU 执行** 时，才贡献 **“利用率”**
+* 通过这三个独立的标志位，内核能够精细区分：
+  * `load_avg`：用于传统的负载均衡（选择最繁忙的 CPU）
+  * `runnable_avg`：用于抢占和组调度中的压力评估
+  * `util_avg`：用于性能调频（DVFS）和能量感知调度（EAS），因为它只关心实实在在的 CPU 算力消耗
 ```cpp
 int __update_load_avg_se(u64 now, struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
@@ -890,7 +899,85 @@ int __update_load_avg_se(u64 now, struct cfs_rq *cfs_rq, struct sched_entity *se
 
 	return 0;
 }
+```
 
+### 核心差异：三个标志位的精准控制
+* `load`、`runnable`、`running` 这三个参数直接决定了哪些 `*_sum` 会被累加新贡献：
+```c
+___update_load_sum(now, &se->avg, 
+                   !!se->on_rq,       //load 标志
+                   se_runnable(se),   //runnable 标志
+                   cfs_rq->curr == se //running 标志
+)
+```
+
+| 参数位置 | 传入值 | 对应的 `accumulate_sum()` 行为 | 影响的统计量
+| :--- | :--- | :--- | :---
+| `load`（第3个）| `!!se->on_rq` | 如果为 `1`，则计算 `contrib`，并执行 `sa->load_sum += load * contrib` | `load_sum`（权重负载）
+| `runnable`（第4个）| `se_runnable(se)` | 如果为 `1`，则执行 `sa->runnable_sum += runnable * contrib << SCHED_CAPACITY_SHIFT` | `runnable_sum`（可运行时间）
+| `running`（第5个）| `cfs_rq->curr == se` | 如果为 `1`，则执行 `sa->util_sum += contrib << SCHED_CAPACITY_SHIFT` | `util_sum`（实际运行利用率）
+
+* 源码开头的注释清晰地定义了不同层级的数据流，在这个函数中得到了完整闭环：
+1. `load_sum` 的累加：用 `se->on_rq` 控制，乘以 `se_weight(se)`（权重），得到带权重的负载压力
+2. `runnable_sum` 的累加：用 `se_runnable(se)` 控制，反映排队时间（对于组调度尤为重要）
+3. `util_sum` 的累加：用 `cfs_rq->curr == se` 严格控制，只记录真正运行的时间
+
+#### 1. `!!se->on_rq` — 是否在运行队列上？
+* **`on_rq`** 表示该实体是否在 CFS 的就绪队列（`cfs_rq`）中，包括两种情况：
+1. 正在等待调度的任务（在队列里排队）
+2. 正在当前 CPU 上运行的任务（`curr` 指针指向它，它也在 `on_rq` 上，除非被特殊标记出队）
+* **作用**：只要实体处于“就绪”状态（`on_rq=1`），它的 `load_sum` 就应该被累加。这代表了该实体对系统造成的“权重压力”
+
+#### 2. `se_runnable(se)` — 是否可运行（组调度专用）
+* 注释中明确说明了这个宏的区分：
+  * 对于 **普通任务（`task`）**：`se_runnable() = !!on_rq`（与上面的 `load` 完全一致）
+  * 对于 **任务组（`group`）**：`se_runnable() = grq->h_nr_runnable`（即该任务组中处于可运行状态的任务数量）
+* **作用**：用于更新 `runnable_sum`
+  * 在组调度中，一个组实体（`task_group` 的 `se`）即使其 `on_rq=1`，如果组内只有一个任务在运行，它的“可运行性”贡献应该比有 5 个任务在运行时要小
+  * `h_nr_runnable` 反映了组内的实际排队压力
+
+#### 3. `cfs_rq->curr == se` — 是否正在当前 CPU 上运行
+* 这是最精确的 **“运行中”** 标志
+  * 即使 `se->on_rq=1`，如果该实体在队列中排队但未获得 CPU（例如，因为有更高优先级的任务正在运行），这个条件为 `false`
+* **作用**：用于更新 `util_sum`（利用率）
+  * `util_avg` 用来衡量对 CPU 算力的真实消耗，只有当前这一刻真正在 CPU 上执行指令的时间才计入 `util_sum`。它在 EAS（能量感知调度）和 `schedutil` 调频中至关重要
+
+### 与 `blocked_se` 的完整对比
+
+| 特征 | `__update_load_avg_blocked_se` | **`__update_load_avg_se`** |
+| :--- | :--- | :--- |
+| **调用场景** | 任务睡眠、出队后，或周期性清理时 | 任务入队、出队时，以及每次 `scheduler_tick()` 时钟中断 |
+| **`load` 标志** | `0` | `!!se->on_rq`（通常为 `1`） |
+| **`runnable` 标志** | `0` | `se_runnable(se)` |
+| **`running` 标志** | `0` | `cfs_rq->curr == se` |
+| **是否累加新贡献（Step 2）** | **否**（只衰减历史） | **是**（衰减历史 + 累加新时间片） |
+| **`*_sum` 变化** | 只降不增 | 先降（老化）后升（新增），动态平衡 |
+
+### 后续处理：`cfs_se_util_change()`
+* 这是一个非常重要的性能优化回调
+* 它检查 `se->avg.util_est` 是否发生了变化
+  * 如果发生了变化，它会向上冒泡更新所在的 `cfs_rq` 的 `util_avg`，并最终可能触发 **`schedutil`** 调频 Governor 重新评估 CPU 频率
+* 简单说它的意图是想表明：这个任务变忙了，可能得让 CPU 跑快一点
+```c
+static inline void cfs_se_util_change(struct sched_avg *avg)
+{
+    unsigned int enqueued;
+
+    if (!sched_feat(UTIL_EST))
+        return;
+
+    /* Avoid store if the flag has been already reset */
+    enqueued = avg->util_est;
+    if (!(enqueued & UTIL_AVG_UNCHANGED))
+        return;
+
+    /* Reset flag to report util_avg has been updated */
+    enqueued &= ~UTIL_AVG_UNCHANGED;
+    WRITE_ONCE(avg->util_est, enqueued);
+}
+```
+---
+```cpp
 int __update_load_avg_cfs_rq(u64 now, struct cfs_rq *cfs_rq)
 {
 	if (___update_load_sum(now, &cfs_rq->avg,
