@@ -953,30 +953,34 @@ ___update_load_sum(now, &se->avg,
 | **是否累加新贡献（Step 2）** | **否**（只衰减历史） | **是**（衰减历史 + 累加新时间片） |
 | **`*_sum` 变化** | 只降不增 | 先降（老化）后升（新增），动态平衡 |
 
-### 后续处理：`cfs_se_util_change()`
-* 这是一个非常重要的性能优化回调
-* 它检查 `se->avg.util_est` 是否发生了变化
-  * 如果发生了变化，它会向上冒泡更新所在的 `cfs_rq` 的 `util_avg`，并最终可能触发 **`schedutil`** 调频 Governor 重新评估 CPU 频率
-* 简单说它的意图是想表明：这个任务变忙了，可能得让 CPU 跑快一点
+### 清除标志：`cfs_se_util_change()`
+* `cfs_se_util_change()` 服务于 UTIL_EST（预估利用率） 机制
+  * 当调度器需要知道一个任务的 CPU 需求时，直接读取 `util_avg` 可能不够平滑（因为 PELT 衰减可能导致值抖动）
+  * UTIL_EST 机制会记录一个任务运行时的“峰值”或“稳定值”
+* 为了提升性能，代码设计了 `UTIL_AVG_UNCHANGED` 标志：
+  * 在任务刚入队或某些场景下，如果 `util_avg` 没有变化，就置上这个标志
+  * 当 `___update_load_avg()` 因为时间跨过周期而更新了 `util_avg` 时，就调用 `cfs_se_util_change()` 清除这个标志
+  * 这样，上层的 `cpu_util()` 或 EAS 算法在读取该值时，就能通过检查这个标志，判断 `util_est` 缓存是否有效，如果标志被清除（即值变了），就知道需要重新计算缓存值了
 ```c
 static inline void cfs_se_util_change(struct sched_avg *avg)
 {
     unsigned int enqueued;
-
+    //系统是否开启能量感知调度中的预估利用率功能
     if (!sched_feat(UTIL_EST))
         return;
 
     /* Avoid store if the flag has been already reset */
     enqueued = avg->util_est;
-    if (!(enqueued & UTIL_AVG_UNCHANGED))
-        return;
-
+    if (!(enqueued & UTIL_AVG_UNCHANGED)) //检测“未修改”标志位
+        return;  //如果已经被修改了，则返回
+    //清除“未修改”标志位，表示已发生变化
     /* Reset flag to report util_avg has been updated */
     enqueued &= ~UTIL_AVG_UNCHANGED;
     WRITE_ONCE(avg->util_est, enqueued);
 }
 ```
----
+## `__update_load_avg_cfs_rq()` 函数
+* kernel/sched/pelt.c
 ```cpp
 int __update_load_avg_cfs_rq(u64 now, struct cfs_rq *cfs_rq)
 {
@@ -992,7 +996,87 @@ int __update_load_avg_cfs_rq(u64 now, struct cfs_rq *cfs_rq)
 
 	return 0;
 }
+```
+### 调度定点数缩放
+* `SCHED_FIXEDPOINT_SHIFT = 10` 这意味着 `util_avg` 和 `load_avg` 等平均值使用 `2^10 = 1024` 作为基数。因此，`util_avg` 的取值范围是 `0 ~ 1024`，其中 `1024` 代表 100% 的 CPU 算力
+* `NICE_0_LOAD_SHIFT = 20` 表示任务权重（`se->load.weight`）在内部是以 `2^20 = 1,048,576` 为基数的“高精度”整数存储的
+  * 因为 nice 值从 `-20` 到 `19`，其对应的权重（`sched_prio_to_weight[]`）比值很大（`15:88761 ≈ 1:5917`）
+    * 如果只用 10 位精度（`1024`）来存储权重，低优先级任务的权重值太小（接近 `1`），整数运算时会丢失精度
+    * 用 20 位存储，可以完美保留所有 nice 值之间的细微权重差异
+* `scale_load_down(w)` 宏将“高精度（20 位）”的权重值，右移 10 位，收缩回“标准精度（10 位）”的值
+  * `w >> SCHED_FIXEDPOINT_SHIFT` 相当于 `w / 1024`
+  * `max(2UL, ...)` 确保即使是最低优先级的任务，缩放后的权重也不会小于 `2`，防止在后续除法中除零或归零
+* include/linux/sched.h
+```cpp
+/*
+ * Integer metrics need fixed point arithmetic, e.g., sched/fair
+ * has a few: load, load_avg, util_avg, freq, and capacity.
+ *
+ * We define a basic fixed point arithmetic range, and then formalize
+ * all these metrics based on that basic range.
+ */
+# define SCHED_FIXEDPOINT_SHIFT         10
+...
+# define NICE_0_LOAD_SHIFT      (SCHED_FIXEDPOINT_SHIFT + SCHED_FIXEDPOINT_SHIFT)
+...
+# define scale_load_down(w)                                     \
+({                                                              \
+        unsigned long __w = (w);                                \    
+                                                                \
+        if (__w)                                                \
+                __w = max(2UL, __w >> SCHED_FIXEDPOINT_SHIFT);  \
+        __w;                                                    \    
+})
+```
 
+### 1. 三个标志位的传入逻辑（与 `se` 版本的差异）
+```c
+___update_load_sum(now, &cfs_rq->avg,
+				scale_load_down(cfs_rq->load.weight),
+				cfs_rq->h_nr_runnable,
+				cfs_rq->curr != NULL)
+```
+| 参数 | `__update_load_avg_se` (任务) | **`__update_load_avg_cfs_rq` (CPU队列)** | 说明 |
+| :--- | :--- | :--- | :--- |
+| `load` (第3个) | `!!se->on_rq` (值为 0 或 1) | `scale_load_down(cfs_rq->load.weight)` (值为具体权重) | 这是最关键的区别！<br>对于队列，`load`直接传入该CPU上所有任务的 **总权重值** |
+| `runnable` (第4个) | `se_runnable(se)` (通常为 1) | `cfs_rq->h_nr_runnable` (该CPU上的可运行任务计数) | 更新 `runnable_sum`，用于计算平均可运行时间 |
+| `running` (第5个) | `cfs_rq->curr == se` (是否正在运行) | `cfs_rq->curr != NULL` (只要有任务在运行即为真) | 只要有任务在当前CPU上执行，就更新 `util_sum` |
+
+### 2. 为什么 `___update_load_avg(&cfs_rq->avg, 1)` 里的权重是 `1`？
+* 回顾 `accumulate_sum()` 中的累加逻辑：`sa->load_sum += load * contrib`
+* **对于 `se`（任务实体）**：
+  * 调用 `___update_load_sum()` 时，`load` 参数传的是 `!!se->on_rq`（即 **1**），所以 `se->avg.load_sum` 累加的是 **“未加权”的纯时间贡献**
+  * 因此，在后续计算 `load_avg` 时，`___update_load_avg(&se->avg, se_weight(se))` 必须 **乘以任务的权重**
+    * 公式为：`se->avg.load_avg = se_weight(se) * se->avg.load_sum / divider`
+* **对于 `cfs_rq`（CPU运行队列）**：
+  * 调用 `___update_load_sum()` 时，`load` 参数传的是 `scale_load_down(cfs_rq->load.weight)`（即该CPU上所有任务的 **总权重**）
+  * 这意味着 `cfs_rq->avg.load_sum` 累加的是 **“已经加权”的总负载贡献**
+  * 如果此时再乘以一个非 `1` 的权重，就会造成 **双重加权（Double Weighting）**，数据完全错误
+  * 因此，在计算 `cfs_rq` 的 `load_avg` 时，`___update_load_avg()` 必须传入权重 `1`
+    * 公式变为：`cfs_rq->avg.load_avg = 1 * cfs_rq->avg.load_sum / divider`
+
+### 数据流向的全局视角
+* 把这个逻辑放进 PELT 的整个流水线中，看得更清楚：
+1. `cfs_rq->load.weight` 维护着该 CPU 上所有 `on_rq` 任务的权重之和（比如 2 个普通任务，权重各 `1024`，总和为 `2048`）
+2. `__update_load_avg_cfs_rq()` 在时钟中断或负载均衡时被调用：
+   - 它把总权重 `2048` 通过 `scale_load_down` 缩放为 `2`（因为 `2048 >> 10 = 2`），传给底层 `accumulate_sum()`
+   - 底层将 `load * contrib` 累加到 `cfs_rq->avg.load_sum` 中
+   - 最后，用权重 `1` 计算平均值，得到 `cfs_rq->avg.load_avg`
+3. 这个 `load_avg` 直接代表了该 CPU 当前的“系统总负载压力”，是负载均衡器（`find_busiest_group()`）判断哪个 CPU 最繁忙的最核心依据
+
+## 实时负载更新 `update_rt_rq_load_avg()` 函数
+* `update_rt_rq_load_avg()` 是 PELT 机制在 **实时调度类（RT, Real-Time）** 上的适配实现
+* RT 调度类有自己的负载均衡策略（通常基于 RT 任务的 `prio` 和 CPU 亲和性），完全不需要 PELT 的 `load_avg` 来做决策
+
+### 既然 RT 不用 `load_avg` 做负载均衡，那为什么要维护这套 PELT 数据呢？
+* 主要为性能调频（DVFS）和能量感知调度（EAS）服务
+  * `rq->avg_rt.util_avg` 在 `schedutil` 调频 Governor 中被读取。当 RT 任务运行时，`util_avg` 会迅速升高到接近 `1024`，驱使 CPU 频率快速提升，以保证 RT 任务的低延迟
+  * 在大小核（big.LITTLE）架构上，EAS 会利用 `util_avg` 来判断 RT 任务是否适合放在高性能大核上运行
+  * 所以，这个函数虽然在 RT 负载均衡中没有用，但它负责将 RT 任务的“CPU 占用率”实时反映到系统的频率和功耗控制上
+* 简单来说，`update_rt_rq_load_avg()` 利用 PELT 的数学框架，将 RT 任务的“二值运行状态”转化成一个平滑的 `util_avg` 曲线，供性能和功耗管理模块使用，而不涉及其自身的调度决策
+
+### `update_rt_rq_load_avg()` 代码实现
+```cpp
 /*
  * rt_rq:
  *
@@ -1018,7 +1102,55 @@ int update_rt_rq_load_avg(u64 now, struct rq *rq, int running)
 
 	return 0;
 }
+```
 
+* `load`、`runnable`、`running` 三个标志位被传入了 **完全相同的值**
+
+| 参数 | CFS 版本（`cfs_rq`） | **RT 版本（`rq->avg_rt`）** | 原因分析 |
+| :--- | :--- | :--- | :--- |
+| `load` | `scale_load_down(总权重)` | `running` | RT 任务没有优先级权重（Nice值）的概念，只有固定优先级。只要 RT 类在运行，它对系统造成的“负载压力”就是满额的（`1`），否则为 `0` |
+| `runnable` | `h_nr_runnable`（任务计数） | `running` | 在标准的 RT 内核中（未开启 `CONFIG_RT_GROUP_SCHED` 组调度），RT 任务一旦就绪，几乎会立即抢占 CPU 并运行。因此“可运行”和“正在运行”在时间上几乎重合 |
+| `running` | `curr != NULL` | `running` | 表示当前 CPU 上是否有 RT 任务在运行 |
+
+* **结论**：对于 RT，PELT 只追踪一个纯粹的“**CPU 繁忙时间片**”
+  * 如果当前 CPU 被 RT 任务占用（`running=1`），则三个 `*_sum` 同时累加
+  * 如果空闲或运行 CFS 任务（`running=0`），则三个 `*_sum` 同时衰减
+* 源码注释中给出了 RT 特有的数据关系：
+```c
+util_sum = cpu_scale * load_sum
+runnable_sum = util_sum
+load_avg 和 runnable_avg 不支持且无意义
+```
+
+#### 1. `util_sum = cpu_scale * load_sum`
+* `load_sum` 在这里实际上存储的是 **未缩放的时间贡献**（由 `___update_load_sum()` 中的 `running * contrib` 累加得到）
+* `util_sum` 需要表示对 CPU 算力的实际消耗。因为不同性能的 CPU 核心（`cpu_scale`）运行同样的时间，消耗的“算力总量”不同
+  * 公式表明，`util_sum` 是在 `load_sum` 的基础上乘以了 CPU 的容量缩放因子（通常 `cpu_scale = 1024` 代表最高性能核心）
+* 在 RT 的特定逻辑中（可能是更新 `util_sum` 的调用处），会执行这个缩放操作，将纯时间转换为算力消耗
+
+#### 2. `runnable_sum = util_sum`
+* 由于 RT 任务的“可运行”等同于“即将运行/正在运行”，两者在时间轴上无法区分，因此这两个值被设为相等
+
+#### 3. `load_avg` 和 `runnable_avg` 不支持且无意义
+* 为什么不支持 `load_avg`？
+  * `load_avg` 是 CFS 用来衡量“带权重的系统压力”的，用于跨 CPU 的负载均衡（`find_busiest_group()`）
+  * RT 调度器有自己的负载均衡策略（通常基于 RT 任务的 `prio` 和 CPU 亲和性），完全不需要 PELT 的 `load_avg` 来做决策
+* 为什么不支持 `runnable_avg`？
+  * 同上，RT 不需要它来调整抢占或时间片
+
+### `___update_load_avg(&rq->avg_rt, 1)` 中的权重为什么是 `1`？
+* 在 `update_rt_rq_load_avg()` 中：
+1. **累加时**：`load` 参数传入的是 `running`（值为 `0` 或 `1`）
+2. **累加公式**：`sa->load_sum += 1 * contrib`（此时 `load_sum` 是 **未加权的纯时间总和**）
+3. **平均时**：如果传入 `weight = 1`，公式变为 `load_avg = 1 * (未加权总和) / divider`。**这计算出来的是一个“未加权的平均 CPU 占用时间百分比”**
+* **RT 不需要 `load_avg`**：RT 使用基于固定优先级的抢占式调度。它的负载均衡逻辑（`pull_rt_task()`）依据的是任务本身的 `prio` 优先级和 CPU 亲和性（`cpumask`），与 PELT 算出的 `load_avg` 数值无关
+* 既然没有任何上层代码会去读取 `rq->avg_rt.load_avg`，那么计出什么数值都无所谓。内核选择传入 `1`，只不过是为了凑齐 `___update_load_avg` 的函数参数格式，并得到一个在数学上自洽（不溢出、不除零）的占位值罢了
+* RT 维护这套 PELT 数据的唯一目的，是为了得到 **`rq->avg_rt.util_avg`**
+  * `util_avg` 反映的是 CPU 被 RT 任务占用的 时间比例（`0 ~ 1024`）
+  * 这个值会被 `schedutil` 调频 Governor 读取，用来在 RT 任务运行时提升 CPU 频率
+  * 对于 `util_avg` 的计算，RT 的 `runnable` 和 `running` 参数也传的是 `running`，因此它的值等于“纯运行时间占比”
+
+```cpp
 /*
  * dl_rq:
  *
