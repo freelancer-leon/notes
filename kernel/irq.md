@@ -634,7 +634,7 @@ ixgbe_open()
 ## x86 的中断入口的实现
 
 ### 旧的到中断通用入口 `common_interrupt` 的实现
-#### Call Trace
+* Call Trace
 ```cpp
 irq_entries_start
 -> jmp common_interrupt
@@ -839,6 +839,45 @@ irq_entries_start
   ```
 
 ### 新的到中断通用入口 `common_interrupt` 的实现
+```c
+irq_entries_start
+   //宏展开 DECLARE_IDTENTRY_IRQ(X86_TRAP_OTHER, common_interrupt)
+   //=> idtentry_irq => idtentry => idtentry_body = > asm_common_interrupt
+   jmp asm_common_interrupt
+      call \cfunc //调用 common_interrupt
+      => common_interrupt
+         +-> irqentry_enter(regs)
+         +-> run_irq_on_irqstack_cond(__##func, regs, vector)
+         |   -> call_on_irqstack_cond(func, regs, ASM_CALL_IRQ, IRQ_CONSTRAINTS, regs, vector)
+         |      -> call_on_irqstack(func, asm_call, constr)
+         |         -> call_on_stack(__this_cpu_read(hardirq_stack_ptr),func, asm_call, argconstr)
+         |               call %c[__func] //宏展开 ASM_CALL_IRQ，调用 __common_interrupt
+         |            -> __common_interrupt()
+         |                  //arch/x86/kernel/irq.c
+         |               -> call_irq_handler(vector, regs)
+         |                  -> struct irq_desc *desc = __this_cpu_read(vector_irq[vector]) //根据中断向量找到中断描述符
+         |                  -> handle_irq(desc, regs)
+         |                        //include/linux/irqdesc.h
+         |                     -> generic_handle_irq_desc(desc)
+         |                        -> desc->handle_irq(desc) //第一阶段中断分发
+         |                           //kernel/irq/chip.c
+         |                        => handle_edge_irq()
+         |                           -> desc->irq_data.chip->irq_ack(&desc->irq_data) //中断应答
+         |                              //arch/x86/kernel/apic/io_apic.c
+         |                           => ack_lapic_irq() //struct irq_chip lapic_chip "local-APIC"
+         |                              -> apic_eoi()
+         |                                 -> static_call(apic_call_eoi)() //DECLARE_APIC_CALL(eoi)
+         |                                    //arch/x86/include/asm/apic.h
+         |                                 => native_apic_msr_eoi() //arch/x86/kernel/apic/x2apic_cluster.c
+         |                                    -> native_wrmsrq(APIC_BASE_MSR + (APIC_EOI >> 4), APIC_EOI_ACK)
+         |                           -> handle_irq_event(desc)
+         |                              -> handle_irq_event_percpu(desc)
+         |                                 -> __handle_irq_event_percpu(desc)
+         |                                       unsigned int irq = desc->irq_data.irq; //中断线号
+         |                                       for_each_action_of_desc(desc, action)  //遍历同中断号的 irqaction
+         |                                       -> action->handler(irq, action->dev_id) //第二阶段中断分发
+         +-> irqentry_exit(regs, state)
+```
 * `irq_entries_start` 的实现有所不同，跳转到通用中断入口 `asm_common_interrupt`
 * arch/x86/include/asm/idtentry.h
 ```cpp

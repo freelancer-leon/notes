@@ -1150,6 +1150,18 @@ load_avg 和 runnable_avg 不支持且无意义
   * 这个值会被 `schedutil` 调频 Governor 读取，用来在 RT 任务运行时提升 CPU 频率
   * 对于 `util_avg` 的计算，RT 的 `runnable` 和 `running` 参数也传的是 `running`，因此它的值等于“纯运行时间占比”
 
+## `update_dl_rq_load_avg()` 函数
+* `update_dl_rq_load_avg()` 将 DL 任务的二值运行状态（`running`），通过 PELT 的指数衰减框架，转化成平滑的 CPU 利用率信号（`util_avg`），供频率缩放和功耗管理模块使用
+* 它不参与 DL 任务的调度决策（那由 `dl_rq` 的带宽和死锁检测负责），而是为系统的性能调频（DVFS）和功耗控制（EAS）提供实时数据
+* `load_avg` 对 DL 调度而言也是无意义的
+  * DL 的决策依据是带宽（Bandwidth），即 `runtime / period`
+  * DL 调度器使用 `dl_bw` 和 `dl_rq` 进行准入控制（Admission Control）和负载均衡，而完全不依赖 PELT 计算出的加权负载（`load_avg`）来决定抢占或迁移
+* `runnable_avg` 对 DL 调度而言也是无意义的
+  * DL 任务的运行具有严格的确定性和突发性
+  * 它们要么在运行（消耗预算），要么被挂起等待下一个周期，不存在像 CFS 那样长的排队等待时间（`runnable` 状态通常极短）
+  * 因此追踪 `runnable_avg` 对调度没有参考价值
+* `util_sum = cpu_scale * load_sum`
+  * 与 RT 完全一样：`load_sum` 存储原始时间贡献，`util_sum` 乘以 CPU 容量因子（`cpu_scale`）后，用于反映对 CPU 算力的实际消耗
 ```cpp
 /*
  * dl_rq:
