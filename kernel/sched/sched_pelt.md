@@ -88,7 +88,7 @@ u' = (u + d1) * y^p + 1024 * (y^1 + y^2 + ... + y^(p-1)) + d3 * y^0
 2.  **细粒度追踪**：为每个调度实体（任务或任务组）独立计算负载
 3.  **高效实现**：通过查表法和分段累积，避免了复杂的浮点运算
 4.  **关键指标**：提供了 `load_avg`（负载均衡）、`runnable_avg` 和 `util_avg`（频率缩放和EAS）等不同维度的指标
-5.  **平台无关**：通过频率/CPU不变性设计，使得指标在不同硬件条件下具有可比性
+5.  **平台无关**：通过频率/CPU 不变性设计，使得指标在不同硬件条件下具有可比性
 * PELT 算法的精妙之处在于，它用相对较小的计算开销，为调度器提供了精确且可比较的负载信息，是整个调度器实现智能负载均衡的基础
 
 
@@ -779,8 +779,8 @@ update_load_avg()   //上层入口（任务入队/出队/时钟中断）
 2. 它将无单位的大整数 `*_sum` 转换成直观的百分比（`0~1024` 刻度），供上层的负载均衡（寻找最繁忙 CPU）和频率缩放（`schedutil` 决定 CPU 频率）直接使用
 
 ## `__update_load_avg_blocked_se()` 函数
-* 函数 `__update_load_avg_blocked_se` 是 PELT 更新路径中一个 **专门用于“老化（Aging）”阻塞任务** 的入口
-* `__update_load_avg_blocked_se()` 函数的设计哲学是：==一个不在 CPU 上运行的任务，其负载不应凭空消失，而应随着时间指数级衰减；但它绝不能在睡眠期间‘刷存在感’（累加新的时间片）==
+* 函数 `__update_load_avg_blocked_se()` 是 PELT 更新路径中一个 **专门用于“老化（Aging）”阻塞任务** 的入口
+* 它的设计哲学是：==一个不在 CPU 上运行的任务，其负载不应凭空消失，而应随着时间指数级衰减；但它绝不能在睡眠期间‘刷存在感’（累加新的时间片）==
 * 它通过传递 **全 `0`** 标志给底层 `___update_load_sum()`，精确实现了“**只衰减、不新增**”的语义
   * 这使得调度器能够记住一个进程在过去（比如 `16ms` 前）是 CPU 密集型的，从而在它醒来时给予适当的处理
   * 同时确保如果它睡得太久（超过 `32ms`），它的历史影响会衰减到几乎可以忽略不计，不会再干扰当前的负载均衡决策
@@ -1188,7 +1188,13 @@ int update_dl_rq_load_avg(u64 now, struct rq *rq, int running)
 
 	return 0;
 }
+```
 
+## `update_hw_load_avg()` 函数
+* `update_hw_load_avg()` 函数是 PELT 框架在 **硬件压力（Hardware Pressure）** 追踪上的应用，它代表了一种完全不同的追踪维度
+* 它与之前看过的 CFS、RT、DL 函数最本质的区别在于：**RT/DL 追踪的是“时间”（是否在运行），而 HW 追踪的是“算力缺口”（Capacity loss）**
+
+```cpp
 #ifdef CONFIG_SCHED_HW_PRESSURE
 /*
  * hardware:
@@ -1219,6 +1225,73 @@ int update_hw_load_avg(u64 now, struct rq *rq, u64 capacity)
 	return 0;
 }
 #endif /* CONFIG_SCHED_HW_PRESSURE */
+```
+
+### 理解“硬件压力”是什么
+* 注释中给出了明确的计算公式：
+\[
+\text{delta capacity} = \text{actual capacity} - \text{capped capacity due to a HW event}
+\]
+
+* `actual capacity`：CPU 在最高频率/无干扰下的理论最大算力（通常归一化为 `1024`）
+* `capped capacity`：由于硬件事件（如 **热节流 Thermal Throttling**、**电源限制 Power Limit**、或外部中断风暴）导致 CPU 实际可用的当前最大算力
+* 举例：如果一颗大核最高频率算力为 `1024`，但因为 CPU 温度过高，硬件强制降频，导致当前最高可用算力只有 `512`。那么这个 CPU 的 **硬件压力（缺口）** 就是 `1024 - 512 = 512`
+
+### 为什么三个参数全是 `capacity`？而且这个值可以大于 1？
+* 回顾函数调用：
+```c
+___update_load_sum(now, &rq->avg_hw,
+                   capacity,   //load 参数
+                   capacity,   //runnable 参数
+                   capacity)   //running 参数
+```
+* 在 CFS/RT/DL 中，这三个参数是 `0` 或 `1`（标志位）。但在这里，它们是一个 **`u64` 类型的 `capacity` 值**（取值范围通常为 `0~1024`）
+* ==核心区别在于：HW 压力不是一个“是否发生”的状态，而是一个“有多严重”的连续量==
+
+1. `load` 参数的语义变化：
+   - 在 CFS 中，`load` 代表“权重”
+   - 在这里，`load` 代表“当前的算力缺口大小”。如果缺口是 512，那么累加公式变为：`sa->load_sum += 512 * contrib`（而不是 `1 * contrib`）
+   - 这意味着，**硬件压力造成的负载贡献，与压力的严重程度成正比**。压力越大，`load_sum` 上升得越快
+2. `runnable` 和 `running` 的意义：
+   - 对于 HW 压力，不存在“可运行”或“正在运行”的概念。将这三个值统一设为 `capacity`，是为了利用 PELT 的衰减框架，将这个 **连续的算力缺口值**，像累积“负载”一样进行指数加权平滑
+
+### 为什么 `___update_load_avg(&rq->avg_hw, 1)` 中的权重是 1？
+* 这与 CFS `cfs_rq` 的逻辑类似，但动机不同：
+  * **累加时已量化**：因为 `load` 参数传入的是具体的 `capacity` 值（如 `512`），所以 `rq->avg_hw.load_sum` 累加的是 **已经按压力大小加权后的总和**
+  * **平均时无需再加权**：如果此时传入一个非 1 的权重，会造成双重量化。因此，必须传入权重 `1`，公式为：
+    ```c
+    rq->avg_hw.load_avg = 1 * rq->avg_hw.load_sum / divider
+    ```
+* **最终计算出的 `load_avg` 含义**：在过去的某个时间窗口内，该 CPU 平均损失了多少算力（范围 0~1024）。如果值为 512，表示平均有 50% 的算力被硬件吃掉了
+
+### 注释中对比 RT/DL 的含意
+* 注释特意强调：
+> *"unlike rt/dl ... util_avg is binary, HW pressure is time weighted 'delta' capacity"*
+
+| 特性 | RT/DL（实时/截止时间） | **HW Pressure（硬件压力）** |
+| :--- | :--- | :--- |
+| **追踪对象** | 任务是否在运行（0 或 1） | 算力缺口大小（0~1024 连续值） |
+| **输入值** | `running`（标志位） | **`capacity`（量化值）** |
+| **物理意义** | 该 CPU 有多“忙” | 该 CPU 有多“被限制” |
+| **产生的信号** | `util_avg`（用于调频） | **`load_avg`（用于负载均衡规避）** |
+
+* `update_hw_load_avg()` 利用 PELT 的数学框架，创造性地将 **硬件算力限制** 转换成了 **随时间衰减的平均负载信号**
+* 它的设计精髓在于：
+1. **非二进制输入**：将连续的 `capacity` 值作为累加权值，精确反映压力大小
+2. **利用 CFS 的负载路径**：因为 CFS 的 `load_avg` 本身就是加权累加，正好适合承载“量化后的压力”这个概念
+3. **服务于隔离决策**：最终结果告诉调度器：“某些 CPU 虽然看起来很闲，但实际上被硬件卡住了脖子，别把任务放上去。”
+
+### 这个信号用在哪里？（上层逻辑）
+* `rq->avg_hw.load_avg` 最终会汇聚到调度域（`sched_domain`）的硬件压力统计中
+* 当负载均衡器（`find_busiest_group()`）看到某个 CPU 的硬件压力很高（比如 `load_avg` 接近 512）时，即使该 CPU 上的任务 `util_avg` 不高，均衡器也会 **避免向该 CPU 迁移新任务**，甚至尝试把任务迁走。因为继续往一个正在“被硬件降频”的 CPU 上堆任务，只会让任务跑得更慢，毫无意义
+* 这也是为什么它不叫 `util_avg` 而沿用 `load_avg` 的原因 —— **它代表系统在当前算力约束下，需要被“打折扣”看待的残余处理能力**
+
+## 中断平均负载更新 `update_irq_load_avg()`
+* `update_irq_load_avg()` 专门用于追踪**中断（IRQ）和软中断（SoftIRQ）**对 CPU 造成的负载
+* 它与之前我们分析的所有函数（CFS/RT/DL/HW）有一个根本性的不同：**它在一个更新周期内，连续调用了两次 `___update_load_sum()`**
+```cpp
+//kernel/sched/sched.h
+#define cap_scale(v, s)         ((v)*(s) >> SCHED_CAPACITY_SHIFT)
 
 #ifdef CONFIG_HAVE_SCHED_AVG_IRQ
 /*
@@ -1272,7 +1345,210 @@ int update_irq_load_avg(struct rq *rq, u64 running)
 	return ret;
 }
 #endif /* CONFIG_HAVE_SCHED_AVG_IRQ */
+```
 
+### 第一步：特殊的时间缩放（`cap_scale`）
+* 在调用底层更新函数之前，首先对 `running` 时间进行了两次缩放：
+
+```c
+running = cap_scale(running, arch_scale_freq_capacity(cpu_of(rq)));
+running = cap_scale(running, arch_scale_cpu_capacity(cpu_of(rq)));
+```
+* **为什么需要缩放？**  
+* 中断处理消耗的是 CPU 的 **算力（Capacity）**。如果 CPU 当前处于降频状态（频率低）或运行在小核上（性能弱），那么同样的 `1ms` 中断处理时间，消耗的“算力总量”是不同的
+* 通过 `cap_scale`（乘以频率因子和 CPU 容量因子，再右移 `SCHED_CAPACITY_SHIFT`），`running` 时间被转换为 **以 `1024` 为基数的算力消耗单位**，使得在不同频率、不同核心上追踪的 IRQ 负载具有可比性（即具备“CPU 不变性”）
+
+### 第二步：核心机制——两次更新（双段衰减法）
+* 这是函数最精妙的部分，注释中明确解释了原因：
+
+> *"We know the time that has been used by interrupt since last update but we don't know when."*  
+> （我们知道上次更新以来中断用了多少时间，但 **不知道具体发生在哪一刻**。）
+
+* 标准 PELT 算法假设负载均匀分布在时间轴上。但对于中断，它通常是 **突发（Burst）**的
+* 为了精确老化，内核做了一个最坏情况（或最合理）的假设：**假设所有中断处理都发生在刚刚过去的这一小段时间内（即紧挨着当前时刻）**
+* 为了实现这个假设，代码将整个更新周期切成了两段：
+
+#### 第一段：衰减历史（不含中断）
+```c
+ret = ___update_load_sum(rq->clock - running, &rq->avg_irq,
+                          0, 0, 0);
+```
+- **时间戳**：`rq->clock - running`。这意味着我们把历史的终点设置在“中断爆发之前”
+- **标志位**：`(0, 0, 0)`。这意味着在这段从上次更新到“中断爆发前”的时间里，**只做指数衰减（老化历史）**，不累加任何新的贡献
+- **效果**：`rq->avg_irq` 的 `*_sum` 值按照这段“无中断”的时间长度进行比例衰减
+
+#### 第二段：累加中断突发
+```c
+ret += ___update_load_sum(rq->clock, &rq->avg_irq,
+                           1, 1, 1);
+```
+- **时间戳**：`rq->clock`（当前时刻）
+- **标志位**：`(1, 1, 1)`。注意，此时底层函数内部计算的时间差是：`delta = rq->clock - (rq->clock - running) = running`
+- **效果**：这段 `running` 时间被当作“满载运行”状态，直接累加到 `load_sum`、`runnable_sum` 和 `util_sum` 中，并且因为时间很短（就在刚才），它的衰减几乎可以忽略不计
+
+### 第三步：这样做的数学意义是什么？
+* 传统的单次更新会把中断时间平均分配到整个周期里，导致中断产生的负载信号被“稀释”和平滑，响应不够灵敏
+* **双段更新法等效于数学上的“分段积分”：**
+1.  先将历史负载按无中断时间衰减
+2.  再在时间轴的末端（`now` 时刻）瞬间加上一大块突发负载
+
+* 这使得 **`rq->avg_irq.util_avg` 能够对最近的中断爆发做出极其快速的反应**，同时又能保持 PELT 原有的长期历史衰减特性
+* 这对于依赖该信号进行调频（DVFS）的场景至关重要——如果 CPU 刚处理完大量网卡中断，`schedutil` 需要立刻知道并提高频率，以应对后续可能到来的数据包
+
+### 第四步：为什么标志位是 `(1,1,1)` 但注释说 `load_avg` 无意义？
+* 注释中提到：
+
+> load_avg and runnable_avg are not supported and meaningless.
+
+* 既然无意义，为什么还要传 `1,1,1`（即同时累加 load 和 runnable）？
+  - **代码复用的副作用**：`___update_load_sum()` 是通用函数，它同时维护三个独立的累加器（`load_sum`, `runnable_sum`, `util_sum`）。我们无法只单独累加 `util_sum` 而不累加其他两个（除非修改函数接口）
+  - **真正有用的只有 `util_sum`**：在第二段调用中，`running=1` 使得 `util_sum += contrib << SCHED_CAPACITY_SHIFT`，这是我们真正需要的 IRQ 利用率信号
+  - **其他两个是无用占位**：虽然 `load_sum` 和 `runnable_sum` 也增加了，但上层逻辑（负载均衡、`schedutil`）只会读取 `rq->avg_irq.util_avg`，另外两个值仅仅是为了满足数据结构的一致性，没有任何实际用途（类似于 RT/DL 场景）
+
+### 第五步：最终平均值计算
+
+```c
+if (ret) {
+    ___update_load_avg(&rq->avg_irq, 1);
+    trace_pelt_irq_tp(rq);
+}
+```
+- 当两次调用中只要有任意一次跨过了周期边界（`ret > 0`），就调用 `___update_load_avg()` 刷新平均值
+- 传入权重 `1`，因为 `load_sum` 累加时传的是 `1`（未加权），所以计算时也无需再加权
+
+### IRQ 与其他 PELT 信号的对比
+
+| 特性 | CFS/RT/DL | **IRQ（中断）** |
+| :--- | :--- | :--- |
+| **输入数据** | 运行状态（0/1）或压力大小（capacity） | **运行时间（纳秒）** |
+| **时间假设** | 均匀分布在整个周期内 | **假设集中在最近时刻（突发）** |
+| **更新方式** | 单次调用 `___update_load_sum()` | **两次调用（先衰减无中断段，再累加突发段）** |
+| **缩放处理** | 部分在外部、部分在内部 | **显式使用 `cap_scale` 缩放频率和 CPU 容量** |
+| **主要用途** | 负载均衡、调频 | **调频（DVFS）**，应对中断引起的性能需求变化 |
+
+* 这个函数的设计：**中断既是突发的，又对延迟极其敏感。** 通过两次更新的“欺骗性”技巧，PELT 成功地在标准指数衰减框架下，实现了对突发负载的快速响应
+
+
+```c
+set_next_task_idle()
+-> update_idle_rq_clock_pelt(rq)
+   -> _update_idle_rq_clock_pelt(rq)
+         rq->clock_pelt = rq_clock_task(rq);
+```
+
+```c
+update_rq_clock()
+   clock = sched_clock_cpu(cpu_of(rq));
+   delta = clock - rq->clock;
+   rq->clock += delta;
+-> update_rq_clock_task(rq, delta)
+   -> update_rq_clock_pelt(rq, delta)
+         if (unlikely(is_idle_task(rq->curr))) {
+         -> _update_idle_rq_clock_pelt(rq);
+            -> rq->clock_pelt  = rq_clock_task(rq);
+                return;
+         }
+         delta = cap_scale(delta, arch_scale_cpu_capacity(cpu_of(rq)));
+         delta = cap_scale(delta, arch_scale_freq_capacity(cpu_of(rq)));
+         rq->clock_pelt += delta;
+```
+
+* kernel/sched/pelt.h
+```cpp
+static inline u64 rq_clock_pelt(struct rq *rq)
+{
+	lockdep_assert_rq_held(rq);
+	assert_clock_updated(rq);
+
+	return rq->clock_pelt - rq->lost_idle_time;
+}
+
+/* The rq is idle, we can sync to clock_task */
+static inline void _update_idle_rq_clock_pelt(struct rq *rq)
+{ //
+	rq->clock_pelt  = rq_clock_task(rq);
+
+	u64_u32_store(rq->clock_idle, rq_clock(rq));
+	/* Paired with smp_rmb in migrate_se_pelt_lag() */
+	smp_wmb();
+	u64_u32_store(rq->clock_pelt_idle, rq_clock_pelt(rq));
+}
+
+/*
+ * The clock_pelt scales the time to reflect the effective amount of
+ * computation done during the running delta time but then sync back to
+ * clock_task when rq is idle.
+ *
+ *
+ * absolute time   | 1| 2| 3| 4| 5| 6| 7| 8| 9|10|11|12|13|14|15|16
+ * @ max capacity  ------******---------------******---------------
+ * @ half capacity ------************---------************---------
+ * clock pelt      | 1| 2|    3|    4| 7| 8| 9|   10|   11|14|15|16
+ *
+ */
+static inline void update_rq_clock_pelt(struct rq *rq, s64 delta)
+{
+	if (unlikely(is_idle_task(rq->curr))) {
+		_update_idle_rq_clock_pelt(rq);
+		return;
+	}
+
+	/*
+	 * When a rq runs at a lower compute capacity, it will need
+	 * more time to do the same amount of work than at max
+	 * capacity. In order to be invariant, we scale the delta to
+	 * reflect how much work has been really done.
+	 * Running longer results in stealing idle time that will
+	 * disturb the load signal compared to max capacity. This
+	 * stolen idle time will be automatically reflected when the
+	 * rq will be idle and the clock will be synced with
+	 * rq_clock_task.
+	 */
+
+	/*
+	 * Scale the elapsed time to reflect the real amount of
+	 * computation
+	 */
+	delta = cap_scale(delta, arch_scale_cpu_capacity(cpu_of(rq)));
+	delta = cap_scale(delta, arch_scale_freq_capacity(cpu_of(rq)));
+
+	rq->clock_pelt += delta;
+}
+
+/*
+ * When rq becomes idle, we have to check if it has lost idle time
+ * because it was fully busy. A rq is fully used when the /Sum util_sum
+ * is greater or equal to:
+ * (LOAD_AVG_MAX - 1024 + rq->cfs.avg.period_contrib) << SCHED_CAPACITY_SHIFT;
+ * For optimization and computing rounding purpose, we don't take into account
+ * the position in the current window (period_contrib) and we use the higher
+ * bound of util_sum to decide.
+ */
+static inline void update_idle_rq_clock_pelt(struct rq *rq)
+{
+	u32 divider = ((LOAD_AVG_MAX - 1024) << SCHED_CAPACITY_SHIFT) - LOAD_AVG_MAX;
+	u32 util_sum = rq->cfs.avg.util_sum;
+	util_sum += rq->avg_rt.util_sum;
+	util_sum += rq->avg_dl.util_sum;
+
+	/*
+	 * Reflecting stolen time makes sense only if the idle
+	 * phase would be present at max capacity. As soon as the
+	 * utilization of a rq has reached the maximum value, it is
+	 * considered as an always running rq without idle time to
+	 * steal. This potential idle time is considered as lost in
+	 * this case. We keep track of this lost idle time compare to
+	 * rq's clock_task.
+	 */
+	if (util_sum >= divider)
+		rq->lost_idle_time += rq_clock_task(rq) - rq->clock_pelt;
+
+	_update_idle_rq_clock_pelt(rq);
+}
+```
+
+* kernel/sched/pelt.c
+```cpp
 /*
  * Load avg and utiliztion metrics need to be updated periodically and before
  * consumption. This function updates the metrics for all subsystems except for
