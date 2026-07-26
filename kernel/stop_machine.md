@@ -404,7 +404,7 @@ static void create_kthread(struct kthread_create_info *create)
 ```
 
 ### 内核线程的公用入口函数 `kthread()`
-* `kthread()` 是内核线程的公用入口函数
+* `kthread()` 是内核线程的公用入口函数，由 `ret_from_fork_asm -> ret_from_fork(prev, regs, fn, fn_arg) -> fn(fn_arg)` 过来
   * kernel/kthread.c
 ```cpp
 static int kthread(void *_create)
@@ -441,7 +441,7 @@ static int kthread(void *_create)
     //将 result 域设置为 current，告诉用户我们已经生成了，正等待被停止或唤醒
     /* OK, tell user we're spawned, wait for stop or wakeup */
     __set_current_state(TASK_UNINTERRUPTIBLE);
-    create->result = current;
+    create->result = current; //比如 __kthread_create_on_node() 会等着接收这个结果
     /*
      * Thread is going to call schedule(), do not preempt it,
      * or the creator may spend more time in wait_task_inactive().
@@ -464,21 +464,27 @@ static int kthread(void *_create)
 ## Per CPU 热插拔线程
 * 可以看看目前有哪些热插拔线程：
 ```cpp
-1 drivers/powercap/idle_inject.c|420| <<idle_inject_init>> return smpboot_register_percpu_thread(&idle_inject_threads);
-2 kernel/cpu.c|1208| <<cpuhp_threads_init>> BUG_ON(smpboot_register_percpu_thread(&cpuhp_threads));
-3 kernel/irq_work.c|324| <<irq_work_init_threads>> BUG_ON(smpboot_register_percpu_thread(&irqwork_threads));
-4 kernel/rcu/tree.c|2557| <<rcu_spawn_core_kthreads>> WARN_ONCE(smpboot_register_percpu_thread(&rcu_cpu_thread_spec),
-5 kernel/softirq.c|970| <<spawn_ksoftirqd>> BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
-6 kernel/stop_machine.c|579| <<cpu_stop_init>> BUG_ON(smpboot_register_percpu_thread(&cpu_stop_threads));
+1 drivers/hv/vmbus_drv.c|1513| <<vmbus_bus_init>> ret = smpboot_register_percpu_thread(&vmbus_irq_threads);                                     
+2 drivers/powercap/idle_inject.c|418| <<idle_inject_init>> return smpboot_register_percpu_thread(&idle_inject_threads);
+3 kernel/cpu.c|1224| <<cpuhp_threads_init>> BUG_ON(smpboot_register_percpu_thread(&cpuhp_threads));
+4 kernel/irq_work.c|331| <<irq_work_init_threads>> BUG_ON(smpboot_register_percpu_thread(&irqwork_threads));
+5 kernel/rcu/tree.c|2993| <<rcu_spawn_core_kthreads>> WARN_ONCE(smpboot_register_percpu_thread(&rcu_cpu_thread_spec),
+6 kernel/softirq.c|1169| <<spawn_ksoftirqd>> BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
+7 kernel/softirq.c|1172| <<spawn_ksoftirqd>> BUG_ON(smpboot_register_percpu_thread(&timer_thread));
+8 kernel/stop_machine.c|580| <<cpu_stop_init>> BUG_ON(smpboot_register_percpu_thread(&cpu_stop_threads));
+9 net/core/dev.c|13269| <<net_dev_init>> smpboot_register_percpu_thread(&backlog_threads);
 ```
 * 对应名字是：
 ```cpp
-1 idle_inject_threads.thread_comm = "idle_inject/%u"
-2 cpuhp_threads.thread_comm       = "cpuhp/%u"
-3 irqwork_threads.thread_comm     = "irq_work/%u"
-4 rcu_cpu_thread_spec.thread_comm = "rcuc/%u"
-5 softirq_threads.thread_comm     = "ksoftirqd/%u"
-6 cpu_stop_threads.thread_comm    = "migration/%u"
+1 vmbus_irq_threads.thread_comm   = "vmbus_irq/%u"
+2 idle_inject_threads.thread_comm = "idle_inject/%u"
+3 cpuhp_threads.thread_comm       = "cpuhp/%u"
+4 irqwork_threads.thread_comm     = "irq_work/%u"
+5 rcu_cpu_thread_spec.thread_comm = "rcuc/%u"
+6 softirq_threads.thread_comm     = "ksoftirqd/%u"
+7 timer_thread.thread_comm        = "ktimers/%u"
+8 cpu_stop_threads.thread_comm    = "migration/%u"
+9 backlog_threads.thread_comm     = "backlog_napi/%u"
 ```
 * `smpboot_register_percpu_thread()` 接口函数用于注册 per-CPU 的热插拔线程，但并不调用这些线程的入口函数
 * 其中的关键点是，`smpboot_thread_fn()` 是 per-CPU 内核线程的公用入口函数
@@ -543,7 +549,7 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
          */
         wait_for_completion(&done); //等待 kthread() 结束完成量
     }
-    task = create->result;
+    task = create->result; //收到 kthread() 传回的内核线程 task 实例
 free_create:
     kfree(create);
     return task;  //返回创建好的内核线程
@@ -574,7 +580,7 @@ static int smpboot_thread_fn(void *data)
         set_current_state(TASK_INTERRUPTIBLE);
         preempt_disable();
  ...
-         if (kthread_should_park()) {
+        if (kthread_should_park()) {
             __set_current_state(TASK_RUNNING);
             preempt_enable();
             if (ht->park && td->status == HP_THREAD_ACTIVE) {
@@ -609,7 +615,7 @@ static int smpboot_thread_fn(void *data)
 * kernel/stop_machine.c
 ```cpp
 static struct smp_hotplug_thread cpu_stop_threads = {
-    .store          = &cpu_stopper.thread,
+    .store          = &cpu_stopper.thread, //per-CPU 的指向 struct task_struct 实例的指针
     .thread_should_run  = cpu_stop_should_run,
     .thread_fn      = cpu_stopper_thread,
     .thread_comm        = "migration/%u",
@@ -655,6 +661,8 @@ static void cpu_stop_create(unsigned int cpu)
     sched_set_stop_task(cpu, per_cpu(cpu_stopper.thread, cpu));
 }
 ```
+
+### 分发 Stop Task 工作
 * `struct smp_hotplug_thread cpu_stop_threads` 的 `.thread_fn` 函数指针指向 `cpu_stopper_thread()`
 * 通过 `kthread() -> smpboot_thread_fn() -> ht->thread_fn(td->cpu)` 调用 `cpu_stopper_thread()` 回调
   * kernel/stop_machine.c
@@ -799,10 +807,11 @@ stop_machine(cpu_stop_fn_t fn, void *data, const struct cpumask *cpus)
 #### 多 CPU stop 函数 `multi_cpu_stop()`
 * 通过 `cpu_stop_threads.thread_comm = "migration/%u"` 这个内核线程调用 stop machine task
 ```cpp
-ret_from_fork_asm -> ret_from_fork()
--> kthread()
+ret_from_fork_asm -> ret_from_fork(prev, regs, fn, fn_arg)
+-> fn(fn_arg)
+=> kthread() //内核线程的公用入口
    -> threadfn(data)
-   => smpboot_thread_fn()
+   => smpboot_thread_fn() //per-CPU 内核线程的公用入口
       while (1) {
       -> __set_current_state(TASK_RUNNING);
       -> preempt_enable()
@@ -967,10 +976,11 @@ smp_init()
 ```
 * Per CPU 的 `migration/%u` stop task 被唤醒后会调用 `cache_rendezvous_handler()`
 ```cpp
-ret_from_fork_asm -> ret_from_fork()
--> kthread()
+ret_from_fork_asm -> ret_from_fork(prev, regs, fn, fn_arg)
+-> fn(fn_arg)
+=> kthread() //内核线程的公用入口
    -> threadfn(data)
-   => smpboot_thread_fn()
+   => smpboot_thread_fn() //per-CPU 内核线程的公用入口
       while (1) {
       -> ht->thread_fn(td->cpu) //前面是 CPU 热插拔内核线程的公用路径
       => cpu_stopper_thread()   //遍历 works 链表，逐个处理 work

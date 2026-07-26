@@ -15,13 +15,13 @@
 
 ```c
 cpu_possible_mask (最大支持范围)
-       │
+       │ - 物理热插拔
        ▼
 cpu_present_mask (物理存在的 CPU)
-       │
+       │ - 系统下线
        ▼
 cpu_online_mask  (正在运行的 CPU)
-       │
+       │ - idle CPU
        ▼
 cpu_active_mask  (活跃处理任务的 CPU)
 ```
@@ -39,7 +39,7 @@ cpu_active_mask  (活跃处理任务的 CPU)
 
 #### `cpu_present_mask`
 * 系统中当前存在的 CPU 的位图。它们并非全部在线。在启动时由内核通过硬件探测（如 ACPI）确定。
-* **可能动态变化**：当 **物理热插拔** 被相关的子系统 （如ACPI）处理时，可以改变和添加新的位或从位图中删除，这取决于事件是 `hot-add/hot-remove`。目前还没有定死规定。
+* **可能动态变化**：当 **物理热插拔** 被相关的子系统 （如 ACPI）处理时，可以改变和添加新的位或从位图中删除，这取决于事件是 `hot-add/hot-remove`。目前还没有定死规定。
 * 典型的用法是在启动时启动拓扑结构，这时热插拔被禁用。
 * 始终是 `cpu_possible_mask` 的子集（物理 CPU 数量 ≤ 最大可能 CPU 数量）
 
@@ -81,7 +81,7 @@ smpboot: Booting Node 0 Processor 4 APIC 0x1
 ```
 * CPU4 又可以使用了。
 * 这应该对所有的 CPU 都有效。CPU0 通常比较特殊，被排除在 CPU 热插拔之外。
-* 在 X86 上，内核选项 `CONFIG_BOOTPARAM_HOTPLUG_CPU0` 必须被启用，以便能够关闭 CPU0。或者，可以使用内核命令选项 `cpu0_hotplug`。
+* 在 x86 上，内核选项 `CONFIG_BOOTPARAM_HOTPLUG_CPU0` 必须被启用，以便能够关闭 CPU0。或者，可以使用内核命令选项 `cpu0_hotplug`。
 * CPU0 的一些已知的依赖性:
   * 从休眠/暂停中恢复。如果 CPU0 处于离线状态，休眠/暂停将失败。
   * PIC 中断。如果检测到 PIC 中断，CPU0 就不能被移除。
@@ -96,25 +96,25 @@ smpboot: Booting Node 0 Processor 4 APIC 0x1
   * 当删除状态的回调或从多实例状态中删除实例时，也可以调用它们。
 * 如果某个使用场景只需要一个方向的热插拔操作回调（CPU 上线或 CPU 下线），则在设置状态时，可以将另一个不需要的回调设置为 `NULL`。
 * 状态空间被划分成三个阶段：
-#### PREPARE 阶段
+#### 1. PREPARE 阶段
 * PREPARE 阶段涵盖了从 `CPUHP_OFFLINE` 到 `CPUHP_BRINGUP_CPU` 之间的状态空间。
 * 在该阶段中，`startup` 回调在 CPU 上线操作启动 CPU 之前被调用，`teardown` 回调在 CPU 下线操作使 CPU 功能失效之后被调用。
-* 这些回调是在 **控制 CPU 上调用的**，因为它们显然不能在热插拔的 CPU 上运行，此时热插拔的 CPU 要么还没有启动，要么已经功能失效。
+* 这些回调是在 **控制 CPU** 上调用的，因为它们显然不能在热插拔的 CPU 上运行，此时热插拔的 CPU 要么还没有启动，要么已经功能失效。
 * `startup` 回调用于设置 CPU 成功上线所需要的资源。`teardown` 回调用于释放资源或在热插拔的 CPU 功能失效后，将待处理的工作转移到在线的 CPU 上。
 * 允许 `startup` 回调失败。如果回调失败，CPU 上线操作被中止，CPU 将再次被降到之前的状态（通常是 `CPUHP_OFFLINE`）。
 * 本阶段中的 `teardown` 回调不允许失败。
-#### STARTING 阶段
+#### 2. STARTING 阶段
 * STARTING 阶段涵盖了 `CPUHP_BRINGUP_CPU + 1` 到 `CPUHP_AP_ONLINE` 之间的状态空间。
-* 该阶段中的 `startup` 回调是在早期 CPU 设置代码中的 CPU 上线操作期间，禁用中断的情况下在热插拔的 CPU 上被调用。
-* `teardown` 回调是在 CPU 完全关闭前不久的 CPU 下线操作期间，禁用中断的情况下在热插拔的 CPU 上被调用。
+* 该阶段中的 `startup` 回调是在早期 CPU 设置代码中的 CPU 上线操作期间，**禁用中断** 的情况下在 **热插拔的 CPU** 上被调用。
+* `teardown` 回调是在 CPU 完全关闭前不久的 CPU 下线操作期间，**禁用中断** 的情况下在 **热插拔的 CPU** 上被调用。
 * 该阶段中的回调不允许失败。
 * 回调用于低级别的硬件初始化/关机和核心子系统。
-#### ONLINE 阶段
+#### 3. ONLINE 阶段
 * ONLINE 阶段涵盖了 `CPUHP_AP_ONLINE + 1` 到 `CPUHP_ONLINE` 之间的状态空间。
-* 该阶段中的 `startup` 回调是在 CPU 上线时在热插拔的 CPU上调用的。
-* `teardown` 回调是在 CPU 下线操作时在热插拔 CPU 上调用的。
-* 回调是在每个 CPU 热插拔线程的上下文中调用的，该线程绑定在热插拔的CPU上。
-* 回调是在启用中断和抢占的情况下调用的。
+* 该阶段中的 `startup` 回调是在 CPU 上线时在 **热插拔的 CPU** 上调用的。
+* `teardown` 回调是在 CPU 下线操作时在 **热插拔 CPU** 上调用的。
+* 回调是在每个 CPU 热插拔 **线程的上下文中** 调用的，该线程绑定在热插拔的 CPU 上。
+* 回调是在 **启用中断和抢占** 的情况下调用的。
 * 允许回调失败。如果回调失败，CPU 热插拔操作被中止，CPU 将恢复到之前的状态。
 ### 分配一个状态
 * 有两种方式分配一个 CPU 热插拔状态:
@@ -288,7 +288,7 @@ $ tail /sys/devices/system/cpu/hotplug/states
 * 了解一下 `DEVICE_ATTR_RW()` 宏，通过 `static DEVICE_ATTR_RW(online)` 定义了 `/sys/devices/system/cpu/cpu*/online` 文件操作回调函数
   * `online_store()` 是它的 *写* 回调函数
   * 往该文件写 `0` 会让指定 CPU 的 `cpuhp_state` 目标为 `CPUHP_OFFLINE`
-* 首先，因为当前 `st->state` 是 `CPUHP_OFFLINE`，条件 `if (st->state > CPUHP_TEARDOWN_CPU)` 是满足的，表明如果当前 CPU 状态在 AP 热插拔线程的范围内，那么我们需要踢一下（唤醒）该线程。
+* 首先，因为当前 `st->state` 是 `CPUHP_ONLINE`，条件 `if (st->state > CPUHP_TEARDOWN_CPU)` 是满足的，表明如果当前 CPU 状态在 AP 热插拔线程的范围内，那么我们需要踢一下（唤醒）该线程。
   * 不要着急一步到位至目标 `CPUHP_OFFLINE`，先将目标设为 `CPUHP_TEARDOWN_CPU`
   * 调用 `cpuhp_kick_ap_work()` 触发 offline CPU 的调度
   * 恢复目标状态 `st->target` 为 `CPUHP_OFFLINE`，继续往前
@@ -334,10 +334,11 @@ static struct smp_hotplug_thread cpuhp_threads = {
   * 如果该函数无事可做就在 `smpboot_thread_fn()` 处睡眠
 * 在这个场景，它是被 `_cpu_down() -> cpuhp_kick_ap_work()` 唤醒的
 ```cpp
-ret_from_fork_asm -> ret_from_fork()
--> kthread()
+ret_from_fork_asm -> ret_from_fork(prev, regs, fn, fn_arg)
+-> fn(fn_arg)
+=> kthread() //内核线程的公用入口
    -> threadfn(data)
-   => smpboot_thread_fn()
+   => smpboot_thread_fn() //per-CPU 内核线程的公用入口
       while (1) {
       -> __set_current_state(TASK_RUNNING);
       -> preempt_enable()

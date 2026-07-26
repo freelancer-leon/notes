@@ -499,8 +499,8 @@ start_kernel()
 
 #### irq_desc 数组/maple tree
 * 中断描述符 `struct irq_desc` 用于记录各个中断事件的处理方法和未处理事件
-  * 包含了该中断的所有信息（处理函数、标志、芯片数据等）。
-* 对于启用了 `CONFIG_SPARSE_IRQ` 的系统（绝大多数现代内核），`irq_desc` 被存储在一个名为 `sparse_irqs` 的全局数据结构中（早期是基数树，现在使用 Maple Tree），并通过中断号（`virq`）进行索引。
+  * 包含了该中断的所有信息（处理函数、标志、芯片数据等）
+* 对于启用了 `CONFIG_SPARSE_IRQ` 的系统（绝大多数现代内核），`irq_desc` 被存储在一个名为 `sparse_irqs` 的全局数据结构中（早期是基数树，现在使用 Maple Tree），并通过 **中断号（`virq`）进行索引**
 * 注意：不要与硬件分发中用到的“中断描述符表”（IDT）相混淆 —— 那是与不同中断向量入口地址相关的
 * `struct irq_desc` 定义见 include/linux/irqdesc.h
 * 对于旧的系统用 `struct irq_desc irq_desc[NR_IRQS]` 数组存储
@@ -517,7 +517,7 @@ start_kernel()
   ```
 
 #### `vector_irq[]`
-* `vector_irq[]` 则是 per-CPU 的存储指向 `struct irq_desc` 实例的指针，索引是 vector（向量）
+* `vector_irq[]` 则是 per-CPU 的存储指向 `struct irq_desc` 实例的指针，**索引是 vector（向量）**
 * 声明在 arch/x86/include/asm/hw_irq.h
   ```cpp
   typedef struct irq_desc* vector_irq_t[NR_VECTORS];
