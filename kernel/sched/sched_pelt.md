@@ -736,15 +736,17 @@ util\_avg = \frac{util\_sum}{\text{Divider}}
 * **当 CPU 真正满载时**，`util_sum` 刚好达到理论最大值 `Sum_max`
 * 代入除法：\( util\_avg = \frac{Sum\_max}{Divider} = \frac{Divider}{Divider} = 1 \)
 * 换算成内核的 `0~1024` 刻度，`util_avg` 正好等于 **1024**，完美地反映了 100% 繁忙的状态
+  * 注意：`util_sum` 在计算的时候放大了 `1024` 倍，而除数没有放大，所以 `util_avg` 是 `0~1024` 刻度
 * 如果不用这个动态除数，满载时算出来的值永远达不到 `1024`，会导致调度器误以为 CPU 还有空闲容量而错误地迁移任务
 
 ##### 2. 为什么要用动态除数？（防止振荡）
 * 注释中提到的 *“unwanted oscillation in the range [1002..1024[”* 是关键
 * **假设使用固定除数 `LOAD_AVG_MAX`**：
   * 如果一个 CPU 在长达 `32ms` 内一直满负荷运行（`util_sum` 达到了当前周期能累加的最大值），计算 `util_avg = util_sum / LOAD_AVG_MAX`
-  * 随着 `period_contrib` 从 `0` 逐渐增长到 `1023`，分子（最大和）也在从 `LOAD_AVG_MAX-1024` 逐渐增长到 `LOAD_AVG_MAX-1`
+  * 随着 `period_contrib` 从 `0` 逐渐增长到 `1023`，分子（最大和 `Sum_max = (LOAD_AVG_MAX - 1024) + period_contrib`）也在从 `LOAD_AVG_MAX-1024` 逐渐增长到 `LOAD_AVG_MAX-1`
   * **结果**：即使 CPU 完全满载，计算出的 `util_avg` 也只能在 `1002` 到 `1023` 之间波动，**永远达不到 1024**
     * 这会导致负载均衡器认为该 CPU 还有少量余力，从而错误地迁移任务过来
+
 * **使用动态除数 `LOAD_AVG_MAX - 1024 + period_contrib`**：
   * 分子最大和除以这个动态除数，结果恒等于 `1`。换算成 `util_avg`（`0~1024` 刻度）就是 **1024**
   * 这精确地反映了 CPU 100% 繁忙的真实状态，消除了锯齿振荡，保证了算法的收敛性
@@ -1128,6 +1130,15 @@ load_avg 和 runnable_avg 不支持且无意义
   * 公式表明，`util_sum` 是在 `load_sum` 的基础上乘以了 CPU 的容量缩放因子（通常 `cpu_scale = 1024` 代表最高性能核心）
 * 在 RT 的特定逻辑中（可能是更新 `util_sum` 的调用处），会执行这个缩放操作，将纯时间转换为算力消耗
 
+```c
+1 kernel/sched/pelt.c|486| <<update_other_load_avgs>> return update_rt_rq_load_avg(now, rq, curr_class == &rt_sched_class) |                    
+2 kernel/sched/rt.c|1671| <<set_next_task_rt>> update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 0);
+3 kernel/sched/rt.c|1731| <<put_prev_task_rt>> update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
+4 kernel/sched/rt.c|2443| <<switched_to_rt>> update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 0);
+5 kernel/sched/rt.c|2539| <<task_tick_rt>> update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
+```
+* 从 `update_rt_rq_load_avg()` 的调用者可以看到传入的 `now` 都是经过 `rq_clock_pelt(rq)` 缩放过的，但无需经过加权
+  * 第一个调用者 `update_other_load_avgs()` 后面会讲，它的 `now = rq_clock_pelt(rq)`
 #### 2. `runnable_sum = util_sum`
 * 由于 RT 任务的“可运行”等同于“即将运行/正在运行”，两者在时间轴上无法区分，因此这两个值被设为相等
 
@@ -1150,7 +1161,7 @@ load_avg 和 runnable_avg 不支持且无意义
   * 这个值会被 `schedutil` 调频 Governor 读取，用来在 RT 任务运行时提升 CPU 频率
   * 对于 `util_avg` 的计算，RT 的 `runnable` 和 `running` 参数也传的是 `running`，因此它的值等于“纯运行时间占比”
 
-## `update_dl_rq_load_avg()` 函数
+## DL 调度负载更新 `update_dl_rq_load_avg()` 函数
 * `update_dl_rq_load_avg()` 将 DL 任务的二值运行状态（`running`），通过 PELT 的指数衰减框架，转化成平滑的 CPU 利用率信号（`util_avg`），供频率缩放和功耗管理模块使用
 * 它不参与 DL 任务的调度决策（那由 `dl_rq` 的带宽和死锁检测负责），而是为系统的性能调频（DVFS）和功耗控制（EAS）提供实时数据
 * `load_avg` 对 DL 调度而言也是无意义的
@@ -1190,7 +1201,7 @@ int update_dl_rq_load_avg(u64 now, struct rq *rq, int running)
 }
 ```
 
-## `update_hw_load_avg()` 函数
+## 硬件负载更新 `update_hw_load_avg()` 函数
 * `update_hw_load_avg()` 函数是 PELT 框架在 **硬件压力（Hardware Pressure）** 追踪上的应用，它代表了一种完全不同的追踪维度
 * 它与之前看过的 CFS、RT、DL 函数最本质的区别在于：**RT/DL 追踪的是“时间”（是否在运行），而 HW 追踪的是“算力缺口”（Capacity loss）**
 
@@ -1364,7 +1375,7 @@ running = cap_scale(running, arch_scale_cpu_capacity(cpu_of(rq)));
 > *"We know the time that has been used by interrupt since last update but we don't know when."*  
 > （我们知道上次更新以来中断用了多少时间，但 **不知道具体发生在哪一刻**。）
 
-* 标准 PELT 算法假设负载均匀分布在时间轴上。但对于中断，它通常是 **突发（Burst）**的
+* 标准 PELT 算法假设负载均匀分布在时间轴上。但对于中断，它通常是 **突发（Burst）** 的
 * 为了精确老化，内核做了一个最坏情况（或最合理）的假设：**假设所有中断处理都发生在刚刚过去的这一小段时间内（即紧挨着当前时刻）**
 * 为了实现这个假设，代码将整个更新周期切成了两段：
 
@@ -1428,31 +1439,71 @@ if (ret) {
 
 * 这个函数的设计：**中断既是突发的，又对延迟极其敏感。** 通过两次更新的“欺骗性”技巧，PELT 成功地在标准指数衰减框架下，实现了对突发负载的快速响应
 
+## PELT 时钟
 
+### 三条时钟速查
+
+| 时钟 | 含义 |
+|---|---|
+| `rq->clock` | 原始的 `sched_clock_cpu()`，纯粹的墙钟时间 |
+| `rq->clock_task` | 扣掉 irq/steal 时间后的任务时间 |
+| `rq->clock_pelt` | 按 CPU capacity × 频率缩放过的时间轴，rq idle 时重新同步回 `clock_task` |
+| `rq->clock_idle` | 进入 idle 那一刻的 `rq_clock()` 快照（墙钟轴） |
+| `rq->clock_pelt_idle` | 进入 idle 那一刻的 `rq_clock_pelt()` 快照（PELT 轴） |
+| `rq->lost_idle_time` | 因 `util_sum` 饱和而"无法偿还"的算力欠账累计值 |
+
+### 路径一：即将进入空闲
+* `set_next_task_idle()` 是调度器选中 idle 进程作为下一个任务，即进入空闲的入口
 ```c
 set_next_task_idle()
 -> update_idle_rq_clock_pelt(rq)
+      if (util_sum >= divider) //如果队列满载
+      -> rq->lost_idle_time += rq_clock_task(rq) - rq->clock_pelt; //记录算力衰减的欠账
    -> _update_idle_rq_clock_pelt(rq)
-         rq->clock_pelt = rq_clock_task(rq);
+      -> rq->clock_pelt = rq_clock_task(rq); //重置量具的零点
+      -> u64_u32_store(rq->clock_idle, rq_clock(rq)) //保存进入 idle 那一刻的 rq_clock() 快照（墙钟轴）
+      -> u64_u32_store(rq->clock_pelt_idle, rq_clock_pelt(rq)); //保存进入 idle 那一刻的 rq_clock_pelt() 快照（PELT 轴）
+                                               return rq->clock_pelt - rq->lost_idle_time;
 ```
 
+### 路径二：更新队列的 PELT 时间
 ```c
-update_rq_clock()
-   clock = sched_clock_cpu(cpu_of(rq));
-   delta = clock - rq->clock;
-   rq->clock += delta;
+update_rq_clock() //目前多达 49 个调用处，分布在调度器的关键路径上
+   clock = sched_clock_cpu(cpu_of(rq)); //获取硬件时钟
+   delta = clock - rq->clock; //增量 = 硬件时钟 - 队列记录的时钟
+   rq->clock += delta;        //更新队列时钟记录
 -> update_rq_clock_task(rq, delta)
+      irq_delta = irq_time_read(cpu_of(rq)) - rq->prev_irq_time; //获取中断时间
+      rq->prev_irq_time += irq_delta;  //更新中断时间记录，为下一次做准备
+      delta -= irq_delta;              //从增量中刨去中断时间
+      steal = prev_steal = paravirt_steal_clock(cpu_of(rq)); //获取虚拟化时钟
+      steal -= rq->prev_steal_time_rq; //得到虚拟化偷取的时间
+      rq->prev_steal_time_rq = prev_steal; //更新偷取时间的记录，为下一次做准备
+      delta -= steal;                  //从增量中刨去虚拟化偷取的时间
+      rq->clock_task += delta; //更新 clock_task（这是排除中断和偷取后的净任务运行时间）
    -> update_rq_clock_pelt(rq, delta)
-         if (unlikely(is_idle_task(rq->curr))) {
+         if (unlikely(is_idle_task(rq->curr))) { //即便是 idle 任务也要更新 PELT 时钟
          -> _update_idle_rq_clock_pelt(rq);
-            -> rq->clock_pelt  = rq_clock_task(rq);
-                return;
+            -> rq->clock_pelt = rq_clock_task(rq); //CPU 空闲时，PELT 时钟与任务时钟 gap 清零，确保下次计账不重叠
+            -> u64_u32_store(rq->clock_idle, rq_clock(rq)) //保存进入 idle 那一刻的 rq_clock() 快照（墙钟轴）
+            -> u64_u32_store(rq->clock_pelt_idle, rq_clock_pelt(rq)); //保存进入 idle 那一刻的 rq_clock_pelt() 快照（PELT 轴）
+                                                     return rq->clock_pelt - rq->lost_idle_time;
+            return; //update_rq_clock_pelt() 返回
          }
          delta = cap_scale(delta, arch_scale_cpu_capacity(cpu_of(rq)));
          delta = cap_scale(delta, arch_scale_freq_capacity(cpu_of(rq)));
          rq->clock_pelt += delta;
 ```
 
+### `rq_clock_pelt()` 中减去 `lost_idle_time` 的意义
+* `rq_clock_pelt(rq)` 是一条按算力与频率折算的、每 `rq` 私有的虚拟时钟：
+  * **忙时** 按实际吞吐比例慢走，
+  * **空闲** 时以 1:1 追平 `clock_task` 并归还忙时欠下的时间，唯有 `rq` 饱和到无空闲可归还时，欠账才被记入 `lost_idle_time` 永久扣除
+  * 所有 PELT 的 `last_update_time` 都记在这条轴上
+1. `lost_idle_time` 记录的是因算力衰减造成的 `clock_pelt` 的欠账，在空闲时如果 `clock_pelt` 不跟随 `clock_task` 推进，那么在下次计算 `lost_idle_time` 会把空闲时间计算在 `clock_pelt` 的欠账内，并且 `+=` 会把累计 gap 反复积分，重复计账，甚至会让 `rq_clock_pelt()` 返回负数 -- 这从根本上是错误的，空闲时间与算力衰减造成的欠账是两个概念
+2. 阻塞任务负载 **是否** 衰减，由 `__update_load_avg_blocked_se()` 传入的三个 `0` 决定，与 `clock_pelt`/`clock_task` 的同步无关；然而阻塞任务负载衰减 **多少**，是否正确，取决于同步语句把空闲期间的 PELT 轴速率钉在 1:1 —— 这一点与同步高度相关
+   * 回顾之前 `__update_load_avg_blocked_se()` 函数给 `___update_load_sum()` 的最后三个参数是 `0`，于是 `delta` 不累加到 `*_sum` 上，只对 `*_sum` 进行衰减
+3. 空闲期间衰减并非"持续"发生：tickless idle 下 `clock_pelt` 冻结，衰减由 tick、`sched_balance_update_blocked_averages()` 与 `migrate_se_pelt_lag()` 惰性追平
 * kernel/sched/pelt.h
 ```cpp
 static inline u64 rq_clock_pelt(struct rq *rq)
@@ -1462,18 +1513,166 @@ static inline u64 rq_clock_pelt(struct rq *rq)
 
 	return rq->clock_pelt - rq->lost_idle_time;
 }
-
+```
+### 重置 PELT 时间 `_update_idle_rq_clock_pelt()`
+* 该函数在路径一和二上都会调用
+* 因为 CPU 已经空闲了，不会再产生新的计算工作，每次空闲同步都把 PELT 时钟（缩放时钟）与 任务时间的 gap 清零，重置量具的零点，使得下一次测到的 `clock_task - clock_pelt` 必然是一段全新的、与之前互不重叠的欠账
+```cpp
 /* The rq is idle, we can sync to clock_task */
 static inline void _update_idle_rq_clock_pelt(struct rq *rq)
-{ //
+{	//CPU 空闲时，强制同步 PELT 时钟与任务时钟，直接覆盖，强行对齐
 	rq->clock_pelt  = rq_clock_task(rq);
-
+	//进入 idle 那一刻的 rq_clock() 快照（墙钟轴）
 	u64_u32_store(rq->clock_idle, rq_clock(rq));
 	/* Paired with smp_rmb in migrate_se_pelt_lag() */
 	smp_wmb();
-	u64_u32_store(rq->clock_pelt_idle, rq_clock_pelt(rq));
+	u64_u32_store(rq->clock_pelt_idle, rq_clock_pelt(rq)); //进入 idle 那一刻的 rq_clock_pelt() 快照（PELT 轴）
 }
+```
+* `rq->clock_idle`：进入 idle 那一刻的 `rq_clock(rq)`，即墙钟读数。作用是给远端 CPU 一个测量"这个 CPU 已经 idle 多久"的基准点：
+  ```c
+  sched_clock_cpu(cpu_of(rq)) - u64_u32_load(rq->clock_idle)
+  ```
+* `rq->clock_pelt_idle`：同一刻的 `rq_clock_pelt(rq)`（已减去 `lost_idle_time`），即 PELT 轴的读数。它是远端 CPU 推算的起点。
 
+### 更新空闲时 PELT 时间
+* 该函数仅在 **路径一：即将进入空闲** 上调用
+```cpp
+/*
+ * When rq becomes idle, we have to check if it has lost idle time
+ * because it was fully busy. A rq is fully used when the /Sum util_sum
+ * is greater or equal to:
+ * (LOAD_AVG_MAX - 1024 + rq->cfs.avg.period_contrib) << SCHED_CAPACITY_SHIFT;
+ * For optimization and computing rounding purpose, we don't take into account
+ * the position in the current window (period_contrib) and we use the higher
+ * bound of util_sum to decide.
+ */
+static inline void update_idle_rq_clock_pelt(struct rq *rq)
+{ //1. 计算一个“饱和阈值”
+	u32 divider = ((LOAD_AVG_MAX - 1024) << SCHED_CAPACITY_SHIFT) - LOAD_AVG_MAX;
+	u32 util_sum = rq->cfs.avg.util_sum;
+	util_sum += rq->avg_rt.util_sum;
+	util_sum += rq->avg_dl.util_sum;
+	//2. 判定是否“超载/满负荷”
+	/*
+	 * Reflecting stolen time makes sense only if the idle
+	 * phase would be present at max capacity. As soon as the
+	 * utilization of a rq has reached the maximum value, it is
+	 * considered as an always running rq without idle time to
+	 * steal. This potential idle time is considered as lost in
+	 * this case. We keep track of this lost idle time compare to
+	 * rq's clock_task.
+	 */
+	if (util_sum >= divider) //成立说明在过去时间段内，该 CPU 的算力被 CFS、RT、DL 任务完全占满（100% 利用率）
+		rq->lost_idle_time += rq_clock_task(rq) - rq->clock_pelt; //3. 记录算力衰减的欠账
+	//4. 最后执行硬重置
+	_update_idle_rq_clock_pelt(rq);
+}
+```
+#### 1. 理解 `divider`（饱和阈值）
+* 注释中解释了这是用于判断 CPU 在过去是否 **完全满载（fully busy）** 的阈值
+* 为了在不进行浮点运算的前提下，快速判断 CPU 是否“完全繁忙（Fully Busy）”而构造的一个 **安全阈值（安全裕度）**
+
+##### 第一步：回顾 PELT 的“完全繁忙”判定标准
+* 在 PELT 中，`util_avg` 的取值范围是 `0~1024`（`1024` 代表 100% 算力被耗尽）。之前我们分析过，`util_sum` 和 `util_avg` 的关系是：
+
+\[
+util\_avg = \frac{util\_sum}{Divider\_Real}
+\]
+
+* 其中，**真实的除数** \( Divider\_Real \) 是动态的，取决于当前周期内已度过的时间（`period_contrib`）：
+
+\[
+Divider\_Real = LOAD\_AVG\_MAX - 1024 + period\_contrib
+\]
+
+* 因此，**CPU 完全繁忙（`util_avg >= 1024`）** 的数学条件是：
+
+\[
+util\_sum \ge 1024 \times (LOAD\_AVG\_MAX - 1024 + period\_contrib)
+\]
+
+##### 第二步：消除动态变量 `period_contrib`
+* 由于 `period_contrib` 在每次更新时都在 `[0, 1024)` 范围内变化，如果直接用这个动态值做判断，每次都需要进行额外的乘法和加法。内核为了 **性能优化**，希望用一个 **固定的常量阈值** 来代替这个动态计算
+* 于是，代码选择了忽略 `period_contrib`，并选取了它的 **最小值 `0`**，得到理论固定阈值：
+
+\[
+Threshold\_0 = 1024 \times (LOAD\_AVG\_MAX - 1024)
+\]
+
+* 最小值取 `0` 是因为 `period_contrib` 越小，右边的阈值就越小，条件 `util_sum >= 阈值` 就越 **容易** 满足。这是一种“宽松”的判定策略，确保不会因为舍入误差而漏掉繁忙状态
+
+##### 第三步：引入 `- LOAD_AVG_MAX`（安全裕度）
+* 如果我们直接使用 \( 1024 \times (LOAD\_AVG\_MAX - 1024) \) 作为阈值，在边界情况下，`util_sum` 可能会因为整数运算的截断误差而略微偏小，导致本该判定为繁忙的 CPU 被误判为空闲
+* 为了避免这种“漏判”，内核开发者决定 **进一步降低阈值**，增加一个“安全裕度（Safety Margin）”。他们选择减去一个 `LOAD_AVG_MAX`（大约 `47742`）：
+
+\[
+divider = 1024 \times (LOAD\_AVG\_MAX - 1024) - LOAD\_AVG\_MAX
+\]
+
+* 为什么偏偏减去 `LOAD_AVG_MAX`？
+  - `LOAD_AVG_MAX` 本身代表了 **单个调度实体（`sched_entity`）在完全满载时所能贡献的最大负载值**（大约 `47742`）
+  - 在 `update_idle_rq_clock_pelt()` 中，`util_sum` 是三个独立部分的总和：`cfs.util_sum + rt.util_sum + dl.util_sum`。每一部分在各自的维护过程中都可能引入微小的舍入误差
+  - 减去一个 `LOAD_AVG_MAX` 相当于 **把判定门槛降低了一个“最大单实体”的量级**。这极大概率地消除了因累加舍入误差导致的误判，确保只要 CPU 的真实利用率接近 100%，就一定会触发 `lost_idle_time` 的累加，从而正确地补偿空闲时间
+
+##### 第四步：结合代码注释验证
+* 再看注释：
+> *"For optimization and computing rounding purpose, we don't take into account the position in the current window (period_contrib) and we use the higher bound of util_sum to decide."*
+
+- **“higher bound”** 在这里的语义是：**更容易触发繁忙判定的上限边界**。通过主动降低阈值（减去 `LOAD_AVG_MAX`），代码实现了这一“宽松上限”
+- 其工程哲学是：**宁可把 CPU 错误地判定为“完全繁忙”（导致 `lost_idle_time` 多累加一点），也绝不能把繁忙的 CPU 判定为“有空闲”**
+- 因为如果漏判，会导致空闲时间未被正确补偿，进而使后续的负载衰减过快，严重影响调度准确性
+
+##### 数值验证
+* 假设 `LOAD_AVG_MAX ≈ 47742`（这是一个众所周知的常数）：
+  - \( 1024 \times (47742 - 1024) = 1024 \times 46718 = 47,839,232 \)
+  - 减去 `LOAD_AVG_MAX`：`47,839,232 - 47,742 = 47,791,490`
+* 最终 `divider` 约为 **47,791,490**
+  * 这个数值比理论上的最小阈值（`47,839,232`）还要低约 0.1%
+  * 这个微小的降低，足以容纳整数运算带来的全部舍入误差，确保判定条件的健壮性
+
+##### `divider` 表达式的推导逻辑链是：
+
+1. **理论公式**：`util_sum >= 1024 * (LOAD_AVG_MAX - 1024 + period_contrib)`  
+2. **忽略动态变量**：取 `period_contrib = 0`，得 `1024 * (LOAD_AVG_MAX - 1024)`  
+3. **加入安全裕度**：减去一个 `LOAD_AVG_MAX`，以抵消多部分求和时的舍入误差，得到最终形式：  
+   \[
+   \boxed{((LOAD\_AVG\_MAX - 1024) \times 1024) - LOAD\_AVG\_MAX}
+   \]
+
+#### 2. 为什么“满载”时要增加 `lost_idle_time`？
+- **场景分析**：CPU 在过去一直 100% 繁忙。此时，由于频率缩放（比如降频了），`clock_pelt` 的前进速度比 `clock_task` **慢**（因为 `clock_pelt` 乘以了小于 1 的系数）
+- **即将发生的事**：`_update_idle_rq_clock_pelt()` 接下来会执行 `clock_pelt = clock_task`，这意味着 **`clock_pelt` 会瞬间追加上一大块之前“少走”的时间**
+- **如果不做处理**：`clock_pelt` 突然向前跳了一大步，之前因为降频欠的账不还就丢失了，导致记录的 PELT 时间比真实的快，然而实际上 CPU 并没有干那么多活。这种偏差会影响到负载均衡的正确性
+
+##### 数值证明
+
+* 取恒定缩放因子 `0.5`（比如一个跑在半频的 CPU），忽略 irq/steal，周期为 **10ms 满载忙 + 10ms 空闲**，且忙时 `util_sum >= divider`（每次都触发计账）
+
+| 时刻 | clock_task | clock_pelt | lost_idle_time | rq_clock_pelt() |
+|---|---|---|---|---|
+| 周期起点 | T | T | L | T−L |
+| 忙 10ms 后 | T+10 | T+5 | L | T+5−L |
+| 进 idle，计账 | T+10 | **T+10**（同步） | **L+5** | T+5−L |
+| 空闲 10ms 后 | T+20 | T+20（同步） | L+5 | T+15−L |
+
+* 两点值得注意：
+1. **`rq_clock_pelt()` 在同步的那一跳上完全连续** —— `(T+5)−L` → `(T+10)−(L+5)` 恒等。这就是 `lost_idle_time` 的全部意义：**当没有真实空闲时间可供"还账"时，精确抵消掉那一跳**。同步负责推进时钟，`lost_idle_time` 负责在不该推进时把它扣回来，二者是一体的
+2. N 个周期后：`lost_idle_time = 5N`，`clock_pelt = T₀+20N`，`rq_clock_pelt() = T₀+15N`。每 20ms 墙钟对应 15ms PELT 时间 = 10ms 忙 × 0.5 + 10ms 空闲 × 1.0。**语义完全正确且单调**
+
+* **而当 CPU 处于低负载（非满载）时**：`util_sum < divider`
+  * 说明 CPU 本来就有空闲时间，此时 `clock_task - clock_pelt` 的差值代表了“正常空闲导致的时钟偏差”，这部分差值不需要补偿，直接让 `clock_pelt` 跳变即可（因为历史负载本来就应该在空闲时衰减）
+  * `clock_pelt` 硬同步后跳变增大，`rq_clock_pelt()` 随之增大，导致负载正常衰减（符合预期）
+
+### 更新 PELT 时钟 `update_rq_clock_pelt()`
+* **情况 1**：如果 CPU 空闲时，强制同步 PELT 时钟与任务时钟。因为空闲期间没有实际的计算工作，再使用缩放时钟会导致时间轴漂移，同步是为了重置基准，为下一次任务唤醒做准备
+* **情况 2**：如果 CPU 非空闲
+  * 传入 `update_rq_clock_pelt()` 的 `delta`，是“当前 CPU 真正用于执行任务（CFS/RT/DL）的时间增量”，已经剔除了中断处理和虚拟机偷取的时间
+  * 含义：如果 CPU 运行在小核上（容量 `512`），或者处于降频状态（频率 `512`），那么 `1ms` 的硬件时间经过缩放后，`clock_pelt` 可能只前进 `0.5ms`
+  * 效果：这使得 `clock_pelt` 的 **前进速度与真实消耗的“算力”成正比**，保证了 PELT 在不同硬件条件下的 **不变性（Invariance）**
+  * 因此，`clock_pelt` 是 `clock_task` 的缩放版本，但它们之间没有简单的固定加减关系（`delta_pelt` 等于 `delta_task` 乘以两个因子）
+
+```cpp
 /*
  * The clock_pelt scales the time to reflect the effective amount of
  * computation done during the running delta time but then sync back to
@@ -1504,7 +1703,7 @@ static inline void update_rq_clock_pelt(struct rq *rq, s64 delta)
 	 * rq will be idle and the clock will be synced with
 	 * rq_clock_task.
 	 */
-
+  //缩放：乘以 CPU 容量因子（大核/小核）和频率因子（DVFS）
 	/*
 	 * Scale the elapsed time to reflect the real amount of
 	 * computation
@@ -1514,40 +1713,154 @@ static inline void update_rq_clock_pelt(struct rq *rq, s64 delta)
 
 	rq->clock_pelt += delta;
 }
-
-/*
- * When rq becomes idle, we have to check if it has lost idle time
- * because it was fully busy. A rq is fully used when the /Sum util_sum
- * is greater or equal to:
- * (LOAD_AVG_MAX - 1024 + rq->cfs.avg.period_contrib) << SCHED_CAPACITY_SHIFT;
- * For optimization and computing rounding purpose, we don't take into account
- * the position in the current window (period_contrib) and we use the higher
- * bound of util_sum to decide.
- */
-static inline void update_idle_rq_clock_pelt(struct rq *rq)
+```
+### 迁移前 PELT 衰减任务负载
+* 这个函数的目的是：==当源 CPU 处于空闲状态时，为即将迁移的调度实体（`se`）精确估算“当前”的 PELT 时间（`now`），以便在迁移前准确老化（衰减）该任务的负载==
+* 它之所以复杂，是因为它巧妙地绕过了一个陷阱：
+  * **在空闲期间，`rq_clock_pelt(rq)` 虽然跟随 `clock_task` 推进，但它依然携带了历史累积的 `lost_idle_time`（算力欠账）**
+  * 如果直接用这个全局值去计算单个任务的衰减，可能会因为历史欠账的干扰导致衰减速率不准确（尤其是在刚退出繁忙状态不久的空闲期）
+  * 因此，它选择在本地重建一个“纯净”的当前 PELT 时间
+```cpp
+static inline void migrate_se_pelt_lag(struct sched_entity *se)
 {
-	u32 divider = ((LOAD_AVG_MAX - 1024) << SCHED_CAPACITY_SHIFT) - LOAD_AVG_MAX;
-	u32 util_sum = rq->cfs.avg.util_sum;
-	util_sum += rq->avg_rt.util_sum;
-	util_sum += rq->avg_dl.util_sum;
+	u64 throttled = 0, now, lut;
+	struct cfs_rq *cfs_rq;
+	struct rq *rq;
+	bool is_idle;
+	//如果该任务的负载已经衰减到几乎为 0（低于阈值），就没有必要再浪费时间估算和更新了
+	if (load_avg_is_decayed(&se->avg))
+		return;
+
+	cfs_rq = cfs_rq_of(se);
+	rq = rq_of(cfs_rq);
+	//只有在源 CPU 当前正在运行 idle 进程时，才执行估算。原因如下：
+	//如果源 CPU 繁忙，rq->clock_pelt 会随着调度 tick 持续更新，se->avg.last_update_time
+	//也保持较新，无需额外估算。只有空闲时，时间轴才需要特殊处理
+	rcu_read_lock();
+	is_idle = is_idle_task(rcu_dereference_all(rq->curr));
+	rcu_read_unlock();
 
 	/*
-	 * Reflecting stolen time makes sense only if the idle
-	 * phase would be present at max capacity. As soon as the
-	 * utilization of a rq has reached the maximum value, it is
-	 * considered as an always running rq without idle time to
-	 * steal. This potential idle time is considered as lost in
-	 * this case. We keep track of this lost idle time compare to
-	 * rq's clock_task.
+	 * The lag estimation comes with a cost we don't want to pay all the
+	 * time. Hence, limiting to the case where the source CPU is idle and
+	 * we know we are at the greatest risk to have an outdated clock.
 	 */
-	if (util_sum >= divider)
-		rq->lost_idle_time += rq_clock_task(rq) - rq->clock_pelt;
+	if (!is_idle)
+		return;
 
-	_update_idle_rq_clock_pelt(rq);
+	/*
+	 * Estimated "now" is: last_update_time + cfs_idle_lag + rq_idle_lag, where:
+	 *
+	 *   last_update_time (the cfs_rq's last_update_time)
+	 *	= cfs_rq_clock_pelt()@cfs_rq_idle
+	 *      = rq_clock_pelt()@cfs_rq_idle
+	 *        - cfs->throttled_clock_pelt_time@cfs_rq_idle
+	 *
+	 *   cfs_idle_lag (delta between rq's update and cfs_rq's update)
+	 *      = rq_clock_pelt()@rq_idle - rq_clock_pelt()@cfs_rq_idle
+	 *   空闲期间的真实物理增量 = 当前硬件时间 - 空闲起点的硬件时间基准值
+	 *   rq_idle_lag (delta between now and rq's update)
+	 *      = sched_clock_cpu() - rq_clock()@rq_idle
+	 *
+	 * We can then write:
+	 *    从进入空闲到现在 PELT 时间推进的量 = 基准 + 物理增量 - 带宽冻结时间
+	 *    now = rq_clock_pelt()@rq_idle - cfs->throttled_clock_pelt_time +
+	 *          sched_clock_cpu() - rq_clock()@rq_idle
+	 * Where:
+	 *      rq_clock_pelt()@rq_idle is rq->clock_pelt_idle 空闲起点的 PELT 基准值
+	 *      rq_clock()@rq_idle      is rq->clock_idle      空闲起点的硬件时间基准值
+	 *      cfs->throttled_clock_pelt_time@cfs_rq_idle     CFS 带宽冻结时间
+	 *                              is cfs_rq->throttled_pelt_idle
+	 */
+
+#ifdef CONFIG_CFS_BANDWIDTH
+	throttled = u64_u32_load(cfs_rq->throttled_pelt_idle);
+	/* The clock has been stopped for throttling */
+	if (throttled == U64_MAX)
+		return;
+#endif
+	now = u64_u32_load(rq->clock_pelt_idle);
+	/*
+	 * Paired with _update_idle_rq_clock_pelt(). It ensures at the worst case
+	 * is observed the old clock_pelt_idle value and the new clock_idle,
+	 * which lead to an underestimation. The opposite would lead to an
+	 * overestimation.
+	 */
+	smp_rmb(); //配对读屏障
+	lut = cfs_rq_last_update_time(cfs_rq); //该队列上次更新负载的时间
+
+	now -= throttled;
+	if (now < lut) //如果估算出的时间竟然比上次更新时间还早（极小概率事件）
+		/*
+		 * cfs_rq->avg.last_update_time is more recent than our
+		 * estimation, let's use it.
+		 */
+		now = lut; //则使用上次更新时间作为保底，保证时间绝对单调递增
+	else //正常路径：将硬件时间差补上
+		now += sched_clock_cpu(cpu_of(rq)) - u64_u32_load(rq->clock_idle);
+
+	__update_load_avg_blocked_se(now, se);
 }
 ```
 
-* kernel/sched/pelt.c
+#### 估算公式的数学推导
+* 我们想要求解当前时刻的 PELT 时间（记为 `now`）。已知进入空闲那一刻（`idle` 时刻）的快照：
+  - `rq->clock_pelt_idle`**：进入空闲时的 PELT 时间
+  - `rq->clock_idle`**：进入空闲时的原始硬件时间
+  - **当前硬件时间**：`sched_clock_cpu()`
+* 由于 CPU 在空闲期间没有算力消耗，PELT 时钟与硬件时钟是 **1:1 同步推进**的（因为 `update_rq_clock_pelt` 中的 `is_idle` 路径会执行 `clock_pelt = clock_task`）
+* 因此，从进入空闲到现在，PELT 时间推进的量 **恰好等于** 硬件时间推进的量：
+
+\[
+\text{now} = \text{clock_pelt_idle} + (\text{sched_clock_cpu}() - \text{clock_idle})
+\]
+
+#### 考虑 CFS 带宽限制（`throttled`）
+
+```cpp
+#ifdef CONFIG_CFS_BANDWIDTH
+    throttled = u64_u32_load(cfs_rq->throttled_pelt_idle);
+    if (throttled == U64_MAX) return;
+    now -= throttled;
+#endif
+```
+- **背景**：如果 CFS 运行队列被带宽控制限制（`throttled`），PELT 时钟会停止推进（冻结）
+- **补偿**：`cfs_rq->throttled_pelt_idle` 记录了进入空闲时被冻结的时间量。在估算 `now` 时，需要**减去**这部分冻结时间，因为我们只关心实际流逝的有效时间
+
+#### 单调性与内存屏障保障
+- 内存屏障（`smp_rmb`）：
+  - **写端**（`_update_idle_rq_clock_pelt`）：先写 `clock_idle`，`smp_wmb()`，再写 `clock_pelt_idle`
+  - **读端**（这里）：先读 `clock_pelt_idle`，`smp_rmb()`，再读 `clock_idle`
+  - **为什么必须如此？** 如果读端读到的是**新的 `clock_pelt_idle`** 但配上了**旧的 `clock_idle`**，公式会高估 `now`（负载衰减过快）。反之则会低估。屏障保证读端要么读到旧/旧组合，要么新/新组合，绝无新旧混搭
+- 保底逻辑（`now < lut`）：
+  - `lut` 是 `cfs_rq->avg.last_update_time`，即该运行队列上次更新负载时的 PELT 时间
+  - 如果估算出的 `now` 比 `lut` 还小，说明出现了时钟倒退（可能因为刚解除 `throttled` 或快照误差），此时直接取 `lut` 作为 `now`，保证传入的时间绝不倒退
+
+#### 最终老化负载
+
+```c
+__update_load_avg_blocked_se(now, se);
+```
+- 使用这个精确估算出的 `now`，调用阻塞任务负载更新函数
+- 回顾我们之前澄清的原理：`__update_load_avg_blocked_se` 传入的三个标志位全是 `0`，因此 **`___update_load_sum()` 只会执行 `decay_load()`（衰减历史），不会累加新贡献**
+- 而这个 `now` 值决定了 `decay_load` 中的 `periods`（即 `delta / 1024`）大小，从而精确控制负载在迁移前应该衰减多少
+
+#### 为什么不用 `rq_clock_pelt(rq)` 直接替代？
+* 关键在于 `lost_idle_time`：`rq_clock_pelt(rq) = clock_pelt - lost_idle_time`
+- 如果该 CPU 之前经历过长时间的高负载（降频运行），`lost_idle_time` 中累积了较大的算力欠账
+- 在进入空闲后，虽然 `clock_pelt` 同步推进了，但 `lost_idle_time` 不变。因此 `rq_clock_pelt(rq)` 始终比真实物理时间“慢”一个固定的偏置量
+- 如果直接用 `rq_clock_pelt(rq)` 去老化任务，`decay_load()` 会认为时间过得比实际慢，导致衰减不足
+- **`migrate_se_pelt_lag()` 的估算公式完全绕开了 `lost_idle_time`**，只依赖进入空闲时的纯净快照（`clock_pelt_idle`）和真实的物理时间差，从而得到了一个不受历史欠账污染的“当前 PELT 时间”
+* 通过这种方式，即使在长时间空闲的 CPU 上迁移任务，内核也能精确补偿流逝的时间，确保该任务在被迁移到新 CPU 时，其负载值已经正确地反映了它在空闲期间应有的指数衰减。这完美地践行了观点：**负载衰减由 `decay_load()` 驱动，而 `now` 必须提供精确的时间输入以保证衰减速率正确**
+
+## 其他负载更新函数 `update_other_load_avgs()` 函数
+
+* 简单来说，`update_other_load_avgs()` 就像一个“保洁员”：它不负责生产新的负载数据（除了判断当前类标志），而是周期性地下沉到各个子系统的 `rq->avg_*` 中，确保历史的负载值按照指数规律衰减，同时把当前的运行状态（是否运行、压力多大）正确地累积进去，为调度器提供准确的“实时压力仪表盘”
+* 职责：非 CFS 类的 PELT 指标更新入口（RT、DL、HW、IRQ）
+* 调用频率：与 `scheduler_tick()` 同频（通常每毫秒一次），或在负载均衡前批量更新
+* 设计核心：**时间源分离**：RT/DL 用 PELT 缩放时钟（保证不变性），HW 用原始时钟（防止双重缩放），IRQ 传入 `0`（只衰减不累加）
+* 输出：统一返回是否发生了有效更新，供上层控制流决策
+  * kernel/sched/pelt.c
 ```cpp
 /*
  * Load avg and utiliztion metrics need to be updated periodically and before
@@ -1569,3 +1882,7 @@ bool update_other_load_avgs(struct rq *rq)
 		update_irq_load_avg(rq, 0);
 }
 ```
+### 返回值的设计意图
+* 注意：返回值为四个子函数返回值的 **逻辑或（`|`）**，而不是 `||`，四个子函数都会被调用
+* 每个子函数内部，只要 `___update_load_sum()` 跨过了至少一个 `1024us` 周期边界（即 `periods > 0`），就会返回 `1`
+* 因此，只要 RT、DL、HW、IRQ 中有 **任意一个** 的 `*_sum` 发生了实质性的“跨周期衰减或累加”，上层函数（如 `update_blocked_averages()`）就知道本次调用确实做了有效工作，需要相应地更新更上层的聚合统计
