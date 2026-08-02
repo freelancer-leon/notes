@@ -163,7 +163,7 @@ $$
 
 ![EEVDF paper example](pic/sched_eevdf_paper_eg1.png)
 
-* 上图中 D 时刻的描述有一个错误，virtual deadline 应该是 `1.5 < 2`，client 2 抢占 client 1，而不是 `1.5 < 1` 
+* 论文《A Proportional Share Resource Allocation Algorithm for Real-Time, Time-Shared Systems》修正了之前的错误
 * Eligible time 不是个 delta，而是 per-task 的某个时刻，它的计算跟权重（weight）有关，和请求的时间片（slice）无关。因此在权重一样的情况下，对时间的占用是公平的
   * 后面可以看到，其实它就是每个调度实体的 `vruntime`。选择任务的时候会通过 `vruntime_eligible()` 进行合格性检查，其实就是与 **应得的虚拟运行时间 V**（论文里的“系统虚拟时间”，图里的 `virtual time`）做个比较（相当于算了个 delta），所以与之前的理论并不冲突。这一点大部分文章没有点明，是不是纠结了这么久，知道真相后是不是眼泪都要掉下来了
 * Virtual deadline 的计算跟请求的时间片有关，请求的时间片越小，计算出来的 virtual deadline 会越接近
@@ -366,14 +366,21 @@ struct sched_entity {
 
 #define RB_DECLARE_CALLBACKS(RBSTATIC, RBNAME,              \
                  RBSTRUCT, RBFIELD, RBAUGMENTED, RBCOMPUTE) \
+...
+RBSTATIC const struct rb_augment_callbacks RBNAME = {           \
+    .propagate = RBNAME ## _propagate,              \
+    .copy = RBNAME ## _copy,                    \
+    .rotate = RBNAME ## _rotate                 \
+};
 ```
-* 声明一个用于更新红黑树上 `se->min_vruntime` 的增强计算回调函数 `min_vruntime_cb()`
+* 声明一个用于更新红黑树上 `se->min_vruntime` 的增强计算回调函数结构 `struct rb_augment_callbacks min_vruntime_cb`
   * kernel/sched/fair.c
 ```c
 RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
              run_node, min_vruntime, min_vruntime_update);
 ```
-* 红黑树遍历节点信息时会调用增强计算回调函数 `min_vruntime_update()`
+* 内核的红黑树增强框架会在插入、删除或旋转等操作后调用 `RB_DECLARE_CALLBACKS` 宏生成的 `.propagate` 回调函数，沿父链向上调用此回调，更新受影响的节点
+  * 此处即调用 `min_vruntime_update()` 计算函数来更新路径上的节点
 ```c
 #define vruntime_gt(field, lse, rse) ({ (s64)((lse)->field - (rse)->field) > 0; })
 
@@ -413,14 +420,13 @@ static inline bool min_vruntime_update(struct sched_entity *se, bool exit)
     //最大时间片同理
     return se->min_vruntime == old_min_vruntime &&
            se->min_slice == old_min_slice &&
-           se->max_slice == old_max_slice;  //发生变化返回 true，向上传播更新
+           se->max_slice == old_max_slice;
 }
 ```
-   * 内核的红黑树增强框架会自动在插入、删除等操作后调用这个计算函数来更新路径上的节点
-2. 增强的更新：
-   * 增强计算回调函数返回 `true` 表示向上传播更新
-   * 在旋转操作（左旋或右旋）后，会调用回调函数重新计算受影响节点的增强信息
-3. 性能：
+2. 增强计算回调函数
+   * 返回 `false` 表示聚合值已变，需要继续向上更新父节点
+   * 返回 `true` 表示当前节点的聚合值（三个值）与旧值完全相同，即该节点的子树状态未发生实质性变化。此时，`propagate` 函数会立即停止向上传播，不再继续更新其祖先节点
+3. 性能
    * 由于每次搜索都可以根据子树的信息跳过部分子树，因此整个搜索过程的时间复杂度为 `O(log n)`
 * 涉及的两个增强红黑树接口 `rb_add_augmented_cached()` 和 `rb_erase_augmented_cached()`
 
@@ -509,7 +515,7 @@ static void update_entity_lag(struct cfs_rq *cfs_rq, struct sched_entity *se)
     s64 vlag, limit;
 
     WARN_ON_ONCE(!se->on_rq);
-    //虚拟 lag = CFS 运行队列的加权平均虚拟运行时间 - 调度实体的虚拟运行时间
+    //虚拟 lag = CFS 运行队列的加权平均虚拟运行时间(V) - 调度实体的虚拟运行时间(v_i)
     vlag = avg_vruntime(cfs_rq) - se->vruntime;
     limit = calc_delta_fair(max_t(u64, 2*se->slice, TICK_NSEC), se); //转成虚拟时间
     //限定虚拟 lag 的范围在 [-limit, limit]
@@ -666,6 +672,7 @@ static inline bool entity_before(const struct sched_entity *a,
     ```
 * 红黑树增强结构：
   * 每个节点维护 `min_vruntime`（从其子树中各个节点的 `vruntime` 中选出的最小虚拟运行时间），通过比较 `cfs_rq->min_vruntime` 与子树 `min_vruntime`，快速跳过不合格子树
+    * 不合格意味着这个 `se` 代表的子树上所有的 $v_i > V$，没有滞后（子树 `min_vruntime` 来自子树上所有的 `se` 中最小的 $v_i$）
   * `vruntime_eligible(cfs_rq, vruntime)` 本来用来判断某个实体的 vlag 是否合法，但这里将 `se->min_vruntime` 作为 `vruntime` 参数，快速判断整个子树是否合格 
 * 可见这里调度实体有双重属性，`min_runtime` 关乎合格性，`deadline` 关乎紧迫性，前者是前提，但这两个属性又是有内在关联的
   * `deadline` 来自 `vruntime` 与加权过的时间片的和，随着任务的不断运行，`vruntime` 不断增加，必然推后任务在红黑树上的位置
@@ -744,7 +751,7 @@ static struct sched_entity *pick_eevdf(struct cfs_rq *cfs_rq)
         }
         //当前节点任务
         se = __node_2_se(node);
-        //左子树为空或者没有合格的实体，检查当前节点，因为它的虚拟截止时间排在所有左子数后面，
+        //左子树为空或者没有合格的实体，检查当前节点，因为它的虚拟截止时间排在所有左子树后面，
         //如果它的 vlag 合格，那么它就是最佳选择了
         /*
          * The left subtree either is empty or has no eligible
@@ -1084,8 +1091,10 @@ static void update_curr(struct cfs_rq *cfs_rq)
         return; //从上次更新到现在任务没真正得到运行，直接返回
     //vruntime 是进程累计使用的虚拟时间，需要将 delta_exec 经过加权运算后得到
     curr->vruntime += calc_delta_fair(delta_exec, curr);
-    resched = update_deadline(cfs_rq, curr); //任务得到运行了，相应地更新调度实体的虚拟截止时间
-    update_min_vruntime(cfs_rq);             //更新队列的最小运行时间
+    //任务得到运行了，相应地更新调度实体的虚拟截止时间
+    //如果虚拟截止时间发生改变（返回 true），意味着时间片用完，需要重新调度
+    resched = update_deadline(cfs_rq, curr);
+    update_min_vruntime(cfs_rq); //更新队列的最小运行时间
     //如果调度实体是任务，不是调度组
     if (entity_is_task(curr)) {
         struct task_struct *p = task_of(curr);
@@ -1188,7 +1197,7 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 {
     struct sched_entity *se = __pick_root_entity(cfs_rq); //红黑树的根节点对应的调度实体
     struct sched_entity *curr = cfs_rq->curr; //当前任务的调度实体
-    u64 vruntime = cfs_rq->min_vruntime; //记录当前 CFS 队列的最小虚拟运行时间
+    u64 vruntime = cfs_rq->min_vruntime; //记录当前 CFS 队列的最小虚拟运行时间，划定最低线
 
     if (curr) { //如果 CFS 队列上当前有任务在运行
         if (curr->on_rq) //如果当前任务正在运行
@@ -1199,7 +1208,7 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
     //如果当前红黑树根节点不为空
     if (se) {
         if (!curr) //如果当前没有任务在运行
-            vruntime = se->min_vruntime; //那么虚拟运行时间为根节点的最小虚拟运行时间
+            vruntime = se->min_vruntime; //那么虚拟运行时间为红黑树根节点的最小虚拟运行时间
         else //如果当前有任务在运行，虚拟运行时间为当前任务的虚拟运行时间和红黑树根节点的最小虚拟运行时间中的较小者
             vruntime = min_vruntime(vruntime, se->min_vruntime);
     }
@@ -1208,10 +1217,12 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
     cfs_rq->min_vruntime = __update_min_vruntime(cfs_rq, vruntime);
 }
 ```
+* 可见随着任务的执行，当前 CFS 队列的最小虚拟运行时间（`cfs_rq.min_vruntime` 即 $v0$）会被逐渐推高，加权相对虚拟运行时间（`cfs_rq.avg_vruntime`）会[减小](#cfs_rqmin_vruntime-单调递增时)，$V = avg\_vrumtime \times W$ 也会减小
+* 回忆[合格的调度实体](#合格的调度实体)判断条件为：$avg\_runtime >= (v_i - v0) \times W$，意味着随着任务的执行（$lag_i = w_i \times (V - v_i)$逐渐减小）而变得不合格
 
 ### 睡眠进程的虚拟 lag
 * 原理方面见 [前面“滞后和睡眠”](#滞后和睡眠)
-  * 不合格进程睡眠的时候在 `dequeue_entity()` 标记为延迟出队，此时 $V >= v_i$，即以下表达式不成立
+  * 不合格进程睡眠的时候在 `dequeue_entity()` 标记为延迟出队，此时 $V >= v_i$（即以下表达式）不成立
     ```c
     cfs_rq->avg_vruntime >= (s64)(se->vruntime - cfs_rq->min_vruntime) * cfs_rq->avg_load
     ```

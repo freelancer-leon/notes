@@ -611,9 +611,10 @@ void resched_curr_lazy(struct rq *rq)
 ```
 1. 发现时间片用完需要被调度的时候
 2. 任务唤醒的时候
+* 注意：这里只是设置 `TIF_NEED_RESCHED_LAZY` 标志位，并不是立即调度，发生调度需要等待运行调度点
 
 ### `PREEMPT_LAZY` 所谓的 lazy 体现在哪些方面？
-* lazy 标志有两个关键的"盲区" -- 在以下这两个检查点上被完全忽略：
+* lazy 标志有两个关键的"盲区" -- 在以下这两个检查点被完全忽略：
 1. **自愿抢占点**：`cond_resched()`、`might_sleep()` 等只检查 `TIF_NEED_RESCHED`
    * 也就是说，原本 `PREEMPT_NONE` 下会发生调度的点在 `PREEMPT_LAZY` 下失效了
    * 这是 `PREEMPT_NONE` 下唯一的内核态调度手段，如果没有它，长循环可以独占 CPU 数百毫秒
@@ -621,19 +622,20 @@ void resched_curr_lazy(struct rq *rq)
 2. **中断返回内核空间时**：`irqentry_exit_cond_resched()` 只检查 `TIF_NEED_RESCHED`
 
 ### 处于 lazy 状态的进程什么时候会获得调度的机会？
-1. 在 tick 中断时，如果检测到 `TIF_NEED_RESCHED_LAZY` 标志则会将其升级为 `TIF_NEED_RESCHED`，这样遇到下一个调度点时就会发生抢占了
+1. 在 tick 中断时，如果检测到 `TIF_NEED_RESCHED_LAZY` 标志则会将其升级为 `TIF_NEED_RESCHED`，这样 **遇到下一个调度点时** 就会发生抢占了
 ```cpp
 void sched_tick(void)
 {
 ...
         if (dynamic_preempt_lazy() && tif_test_bit(TIF_NEED_RESCHED_LAZY))
-                resched_curr(rq);
+                resched_curr(rq); //标志升级为 TIF_NEED_RESCHED
 
         donor->sched_class->task_tick(rq, donor, 0);
 ...
 }
 ```
-2. 进程返回用户态时，如果已设置了该标志则会发生调度，比如：
+2. 进程 **返回用户态时**，如果已设置了该标志则会发生调度，比如：
+   * 第一个调用处 v7.1 的内核代码 已经没有了，就只剩 **中断返回用户态** 和 **系统调用返回** 两个调度点了
 ```c
 1 include/linux/irq-entry-common.h|224| <<exit_to_user_mode_prepare_legacy>> __exit_to_user_mode_prepare(regs, EXIT_TO_USER_MODE_WORK);         
 2 include/linux/irq-entry-common.h|238| <<syscall_exit_to_user_mode_prepare>> __exit_to_user_mode_prepare(regs, EXIT_TO_USER_MODE_WORK_SYSCALL);
@@ -762,7 +764,7 @@ Preemption Mode              | NONE             | VOLUNTARY        | FULL       
 * `might_resched`：人为插入的抢占点，在 `PREEMPT_VOLUNTARY` 模式下生效，被定义为 `__cond_resched`
 * `preempt_schedule`：开启抢占时会调度的点
 * `preempt_schedule_notrace`：同上，提供给跟踪插桩函数使用，为了防止插桩函数开启抢占时递归
-* `irqentry_exit_cond_resched`：中断返回内核态时的调度点
+* `irqentry_exit_cond_resched`：**中断返回内核态时** 的调度点
 * `dynamic_preempt_lazy`：`dynamic_preempt_lazy()` 函数的返回值。如果开启了动态调整抢占模式特性，返回动态设置的 static key - `sk_dynamic_preempt_lazy` 的值；否则根据配置的 `CONFIG_PREEMPT_LAZY` 决定
 
 ### 如果不开启动态调节抢占模式，`PREEMPT_NONE` 如何禁止 *抢占启用* 和 *中断返回内核态时的调度点*？
