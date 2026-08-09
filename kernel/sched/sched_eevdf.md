@@ -246,7 +246,7 @@ $$
   * $\sum w_i := W =$ `cfs_rq->avg_load`
 * 相关的几个宏定义
   * kernel/sched/sched.h
-```c
+```cpp
 # define SCHED_FIXEDPOINT_SHIFT     10
 # define SCHED_FIXEDPOINT_SCALE     (1L << SCHED_FIXEDPOINT_SHIFT)
 
@@ -301,6 +301,14 @@ static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
                 __entity_less, &min_vruntime_cb);
 }
 ```
+* 传给 `rb_add_augmented_cached()` 的回调 `entity_before()` 是最主要的，决定其在红黑树上的位置，可见是以 **虚拟截止时间** 作为 key 的
+```cpp
+static inline bool __entity_less(struct rb_node *a, const struct rb_node *b)
+{
+    return entity_before(__node_2_se(a), __node_2_se(b));
+}
+```
+
 * 把调度实体从 CFS 运行队列删除的时候，作为求和公式中的项需要减掉
 ```c
 dequeue_task_fair()

@@ -305,7 +305,7 @@ static bool slit_cluster_symmetric(int N)
         for (int k = 0; k < u; k++) {
                 //内层从 k 开始，仅检查上三角（含对角线），避免重复检查对称对
                 for (int l = k; l < u; l++) {
-                        // 比较正向距离和反向距离是否相等
+                        //比较正向距离和反向距离是否相等
                         if (node_distance(N + k, N + l) !=
                             node_distance(N + l, N + k))
                                 return false;   //发现不对称，直接返回失败
@@ -336,7 +336,7 @@ static u32 slit_cluster_package(int N)
         for (int n = 0; n < u; n++) {
                 const struct cpumask *cpus = cpumask_of_node(N + n); //获取归属于该节点的所有 CPU 的掩码
                 int cpu;
-                // 遍历该节点上的每一个 CPU
+                //遍历该节点上的每一个 CPU
                 for_each_cpu(cpu, cpus) {
                         u32 id = topology_logical_package_id(cpu); //获取该 CPU 的逻辑封装 ID
                         //第一次设置：记录第一个遇到的封装 ID
@@ -376,9 +376,9 @@ static bool slit_validate(void)
                  * has a different package id.
                  *
                  */
-                if (!slit_cluster_symmetric(n))   //检查以节点 n 起始的簇是否内部对称
+                if (!slit_cluster_symmetric(n))   //检查以节点 n 起始的 cluster 是否内部对称
                         return false;
-                pkg_id = slit_cluster_package(n); //获取该簇的物理封装 ID
+                pkg_id = slit_cluster_package(n); //获取该 cluster 的物理封装 ID
                 if (pkg_id == ~0)                 //无效的 package ID
                         return false;
                 if (pkg && pkg_id == prev_pkg_id) //不同封装却得到相同的 ID（冲突）
@@ -433,7 +433,7 @@ static bool slit_validate(void)
 static int slit_cluster_distance(int i, int j)
 {
         static int slit_valid = -1;   //静态标志，记录 SLIT 表是否满足 SNC 修正的条件（-1:未初始化，0:无效，1:有效）
-        int u = topology_num_nodes_per_package(); //每个物理 CPU 封装内的 NUMA 节点数（即 SNC 划分的簇内节点数）
+        int u = topology_num_nodes_per_package(); //每个物理 CPU 封装内的 NUMA 节点数（即 SNC 划分的 cluster 内节点数）
         long d = 0;                   //用于累加距离和的临时变量
         int x, y;
 
@@ -449,7 +449,7 @@ static int slit_cluster_distance(int i, int j)
          * Is this a unit cluster on the trace?
          */
         if ((i / u) == (j / u) || !slit_valid)
-                return node_distance(i, j);  // 同 cluster 或 SLIT 表无效时，直接返回原始距离
+                return node_distance(i, j);  //同 cluster 或 SLIT 表无效时，直接返回原始距离
         //不同 cluster（Off-trace）的情况。
         /*
          * Off-trace cluster.
@@ -486,7 +486,7 @@ int arch_sched_node_distance(int from, int to)
 {
         int d = node_distance(from, to); //获取 BIOS 提供的原始 NUMA 距离
 
-        // 根据 CPU 型号决定是否需要修正
+        //根据 CPU 型号决定是否需要修正
         switch (boot_cpu_data.x86_vfm) {
         case INTEL_GRANITERAPIDS_X:   //Intel Granite Rapids X 系列
         case INTEL_ATOM_DARKMONT_X:   //Intel Atom Darkmont X 系列
@@ -499,9 +499,9 @@ int arch_sched_node_distance(int from, int to)
                  * Handle SNC-3 asymmetries.
                  * 处理 SNC-3 导致的不对称距离问题。
                  */
-                return slit_cluster_distance(from, to); // 调用上述平均化修正函数
+                return slit_cluster_distance(from, to); //调用上述平均化修正函数
         }
-        return d; // 其他 CPU 型号不做修正
+        return d; //其他 CPU 型号不做修正
 }
 ```
 ### 记录并提取 NUMA 节点间的所有唯一距离值
@@ -824,7 +824,7 @@ static void init_numa_topology_type(int offline_node)
                         return;
                 }
         }
-        // 如果未能通过上述逻辑确定类型（理论上不会发生），回退到直连并打印错误
+        //如果未能通过上述逻辑确定类型（理论上不会发生），回退到直连并打印错误
         pr_err("Failed to find a NUMA topology type, defaulting to DIRECT\n");
         sched_numa_topology_type = NUMA_DIRECT;
 }
@@ -1660,7 +1660,7 @@ build_sched_groups(struct sched_domain *sd, int cpu)
                 //get_group() 会根据当前 CPU 和 sdd 中的 per-CPU 数据，返回该 CPU 所在调度组（即该层级中与 i 共享同一组掩码的组）
                 //注意：这些组结构体在 __sdt_alloc() 中已经预先分配好
                 sg = get_group(i, sdd);
-                // 将该组的 CPU 掩码加入 covered，标记这些 CPU 已被处理
+                //将该组的 CPU 掩码加入 covered，标记这些 CPU 已被处理
                 cpumask_or(covered, covered, sched_group_span(sg));
 
                 if (!first) //如果是第一个组，将其设为链表头
@@ -2629,7 +2629,7 @@ sd_parent_degenerate(struct sched_domain *sd, struct sched_domain *parent)
         //4. 检查子域是否包含了父域的所有有效标志（~cflags & pflags 为 0 表示全部包含）
         if (~cflags & pflags)
                 return 0;   //子域缺少父域的某些标志，父域不能移除
-        // 所有条件满足，父域可以移除
+        //所有条件满足，父域可以移除
         return 1;
 }
 ```
@@ -2656,7 +2656,7 @@ static void free_sched_groups(struct sched_group *sg, int free_sgc)
         first = sg;
         do {
                 tmp = sg->next;   //保存下一个组指针，因为当前组可能被释放
-                // 如果需要释放 sgc，递减其引用计数，若归零则释放
+                //如果需要释放 sgc，递减其引用计数，若归零则释放
                 if (free_sgc && atomic_dec_and_test(&sg->sgc->ref))
                         kfree(sg->sgc);
                 //递减组本身的引用计数，若归零则释放
