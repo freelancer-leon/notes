@@ -2150,15 +2150,74 @@ for_each_cpu(i, cpu_map) {
 |   |
 1 - 4
 ```
-* 我们只看一个 socket 的 NUMA 层级拓扑
+* 加内核命令行参数 `sched_verbose` 可以看到各个 CPU 的调度域和调度组信息，比如 Socket0/Node0/CPU0 和 Socket0/Node2/CPU32 的信息如下：
+  * 注意：这里关掉了 SMT 方便观察 CPU 与 NUMA 节点的从属关系，因此调度域没有显示 `SMT` 层级
+  * 追加了不同 NUMA 级别的 NUMA 节点距离，用 `[]` 表示
+  * 追加了调度域覆盖的 NUMA 节点信息，用 `node=` 表示
+  * 追加了调度组覆盖的 NUMA 节点信息，在 `span=` 下面标注
+```c
+CPU0 attaching sched-domain(s):
+ domain-0: span=0-7 level=MC
+  groups: 0:{ span=0 cap=778 }, 1:{ span=1 }, 2:{ span=2 }, 3:{ span=3 }, 4:{ span=4 }, 5:{ span=5 }, 6:{ span=6 }, 7:{ span=7 }
+
+  domain-1: span=0-15 level=NODE [10] node=0
+   groups: 0:{ span=0-7 cap=7946 }, 8:{ span=8-15 cap=8192 }
+
+   domain-2: span=0-15,48-63,80-95 level=NUMA [12] node=0,3,5
+    groups: 0:{ span=0-15 cap=16138 }, 48:{ span=48-63 cap=16259 }, 80:{ span=80-95 cap=16310 }   
+                     0                           3                            5
+    domain-3: span=0-15,32-95 level=NUMA [15] node=0,2-5
+     groups: 0:{ span=0-15,48-63,80-95 mask=0-15 cap=48707 }, 32:{ span=32-47 cap=16383 }, 64:{ span=64-79 cap=16383 }  
+                      0, 3, 5                                           2                            4
+     domain-4: span=0-95 level=NUMA [19] node=0-5
+      groups: 0:{ span=0-15,32-95 mask=0-15 cap=81473 }, 16:{ span=16-95 mask=16-31 cap=81679 }  
+                       0, 2-5                                      1-5
+      domain-5: span=0-95,144-159 level=NUMA [29] node=0-5,9
+       groups: 0:{ span=0-95 cap=97817 }, 144:{ span=144-159 cap=16301 }  
+                        0-5                          9
+       domain-6: span=0-111,128-159 level=NUMA [32] node=0-6,8-9
+        groups: 0:{ span=0-95,144-159 mask=0-15 cap=114118 }, 96:{ span=96-111 cap=16231 }, 128:{ span=128-143 cap=16217 }  
+                         0-5,9                                          6                              8
+        domain-7: span=0-159,176-191 level=NUMA [35] node=0-9,11
+         groups: 0:{ span=0-111,128-159 mask=0-15 cap=146566 }, 112:{ span=112-127 cap=16223 }, 176:{ span=176-191 cap=16384 }
+                          0-6,8-9                                          7                               11
+         domain-8: span=0-191 level=NUMA [38] node=0-11
+          groups: 0:{ span=0-159,176-191 mask=0-15 cap=179173 }, 160:{ span=16-191 mask=160-175 cap=180049 }
+                           0-9,11                                           1-11
+...
+CPU32 attaching sched-domain(s):
+ domain-0: span=32-39 level=MC
+  groups: 32:{ span=32 }, 33:{ span=33 }, 34:{ span=34 cap=1023 }, 35:{ span=35 }, 36:{ span=36 }, 37:{ span=37 }, 38:{ span=38 }, 39:{ span=39 }
+
+   domain-1: span=32-47 level=NODE [10] node=2
+    groups: 32:{ span=32-39 cap=8191 }, 40:{ span=40-47 cap=8192 }
+
+    domain-2: span=16-63,80-95 level=NUMA [12] node=1-3,5
+     groups: 32:{ span=32-47 cap=16383 }, 48:{ span=48-63 cap=16259 }, 80:{ span=80-95 cap=16310 }, 16:{ span=16-31 cap=16344 }
+                       1                            3                            5                            2
+     domain-3: span=0-95 level=NUMA [15] node=0-5
+      groups: 32:{ span=16-63,80-95 mask=32-47 cap=65336 }, 64:{ span=16-31,64-95 mask=64-79 cap=49077 }, 0:{ span=0-15,48-63,80-95 mask=0-15 cap=48707 }
+                        1-3,5                                         1,4-5                                        0,3,5
+      domain-4: span=0-111,160-175 level=NUMA [32] node=0-6,10
+       groups: 32:{ span=0-95 mask=32-47,80-95 cap=98103 }, 96:{ span=96-111 cap=16231 }, 160:{ span=160-175 cap=16209 }
+                         0-5                                          6                              10
+       domain-5: span=0-127,144-191 level=NUMA [35] node=0-7,9-11
+        groups: 32:{ span=0-111,160-175 mask=32-47 cap=130543 }, 112:{ span=112-127 cap=16223 }, 144:{ span=144-159 cap=16301 }, 176:{ span=176-191 cap=16384 }
+                          0-6,10                                            7                               9                               11
+        domain-6: span=0-191 level=NUMA [38] node=0-11
+         groups: 32:{ span=0-127,144-191 mask=32-47 cap=179451 }, 128:{ span=0-31,48-191 mask=128-143 cap=179799 }
+                           0-7,9-11                                          0,3-11
+...
+```
+* 经过简化后，我们只看一个 socket 的 NUMA 层级拓扑如下：
 ```c
 NUMA-7     0-11                   0-11                   N/A                    0-11                   0-11                   N/A
   groups:  {0-9,11},{1-11}
 
-NUMA-6     0-9,11                 0-8,10-11              N/A                                                                  N/A
+NUMA-6     0-9,11                 0-8,10-11              N/A                    0-6,8-11               0-5,7-11               N/A
   groups:  {0-6,8-9},{7},{11}
 
-NUMA-5     0-6,8-9                0-5,7,10-11            0-11                                                                 0-11
+NUMA-5     0-6,8-9                0-5,7,10-11            0-11                   0-6,9,11               0-5,7-8,10             0-11
   groups:  {0-5,9},{6},{8}                               {0-7,9-11},{0,3-11}
 
 NUMA-4     0-5,9                  0-5,10                 0-7,9-11               0-6                    0-5,7                  0-10
@@ -2223,6 +2282,126 @@ NUMA-0     0                      1                      2                      
 * **总结**
   * 各 CPU 调度组的范围来自子调度域，子调度域的范围来自各 CPU 传入 `tl->mask(tl, cpu)` 回调得到（`sd_init()`）
   * 对于 NUMA 层级来说，回调函数 `sd_numa_mask()`，而这个函数读的就是之前构建的 `sched_domains_numa_masks[][]` 二维数组
+    * CPU 与 NUMA 节点的从属关系的信息源自 ACPI 的 **System Resource Affinity Table (SRAT)** 表
+    * NUMA 距离的信息源自 ACPI 的 **System Locality Information Table（SLIT）** 表
+* 从 CPU0 的视角看到的调度域和调度组层次关系如下（关闭了 SMP 所以没有 `SMT` 层级）：
+
+```mermaid
+flowchart BT
+    %% CPU0 sched‑domain 从上至下：D8(顶层) → D7 → D6 → D5 → D4 → D3 → D2 → D1 → D0(底层MC) 
+
+    subgraph D8["domain‑8 span=0‑191 level=NUMA [38] node=0‑11"]
+        direction LR
+        G80(["group 0‑159,176‑191"])
+        G8160(["group 16‑191"])
+        G80 -.->|next| G8160
+        G8160 -.->|next| G80
+    end
+
+    subgraph D7["domain‑7 span=0‑159,176‑191 level=NUMA [35] node=0‑9,11"]
+        direction LR
+        G70(["group 0‑111,128‑159"])
+        G7112(["group 112‑127"])
+        G7176(["group 176‑191"])
+        G70 -.->|next| G7112
+        G7112 -.->|next| G7176
+        G7176 -.->|next| G70
+    end
+
+    subgraph D6["domain‑6 span=0‑111,128‑159 level=NUMA [32] node=0‑6,8‑9"]
+        direction LR
+        G60(["group 0‑95,144‑159"])
+        G696(["group 96‑111"])
+        G6128(["group 128‑143"])
+        G60 -.->|next| G696
+        G696 -.->|next| G6128
+        G6128 -.->|next| G60
+    end
+
+    subgraph D5["domain‑5 span=0‑95,144‑159 level=NUMA [29] node=0‑5,9"]
+        direction LR
+        G50(["group 0‑95"])
+        G5144(["group 144‑159"])
+        G50 -.->|next| G5144
+        G5144 -.->|next| G50
+    end
+
+    subgraph D4["domain‑4 span=0‑95 level=NUMA [19] node=0‑5"]
+        direction LR
+        G40(["group 0‑15,32‑95"])
+        G416(["group 16‑95"])
+        G40 -.->|next| G416
+        G416 -.->|next| G40
+    end
+
+    subgraph D3["domain‑3 span=0‑15,32‑95 level=NUMA [15] node=0,2-5"]
+        direction LR
+        G30(["group 0‑15,48‑63,80‑95"])
+        G332(["group 32‑47"])
+        G364(["group 64‑79"])
+        G30 -.->|next| G332
+        G332 -.->|next| G364
+        G364 -.->|next| G30
+    end
+
+    subgraph D2["domain‑2 span=0‑15,48‑63,80‑95 level=NUMA [12] node=0,3,5"]
+        direction LR
+        G20(["group 0‑15"])
+        G248(["group 48‑63"])
+        G280(["group 80‑95"])
+        G20 -.->|next| G248
+        G248 -.->|next| G280
+        G280 -.->|next| G20
+    end
+
+    subgraph D1["domain‑1 span=0‑15 level=NODE [10] node=0"]
+        direction LR
+        G10(["group 0‑7"])
+        G18(["group 8‑15"])
+        G10 -.->|next| G18
+        G18 -.->|next| G10
+    end
+
+    subgraph D0["domain‑0 span=0‑7 level=MC"]
+        direction LR
+        G00(["group 0"])
+        G01(["group 1"])
+        G02(["group 2"])
+        G03(["group 3"])
+        G04(["group 4"])
+        G05(["group 5"])
+        G06(["group 6"])
+        G07(["group 7"])
+        G00 -.->|next| G01
+        G01 -.->|next| G02
+        G02 -.->|next| G03
+        G03 -.->|next| G04
+        G04 -.->|next| G05
+        G05 -.->|next| G06
+        G06 -.->|next| G07
+        G07 -.->|next| G00
+    end
+    style D0 fill:#e6f2ff,stroke:#004080,stroke-width:2px;
+
+    %% sched_domain 双向 parent/child 指针
+    D0 -.->|parent| D1
+    D1 -.->|parent| D2
+    D2 -.->|parent| D3
+    D3 -.->|parent| D4
+    D4 -.->|parent| D5
+    D5 -.->|parent| D6
+    D6 -.->|parent| D7
+    D7 -.->|parent| D8
+
+    D1 -.->|child| D0
+    D2 -.->|child| D1
+    D3 -.->|child| D2
+    D4 -.->|child| D3
+    D5 -.->|child| D4
+    D6 -.->|child| D5
+    D7 -.->|child| D6
+    D8 -.->|child| D7
+```
 
 ##### `init_overlap_sched_group()` 函数
 * `init_overlap_sched_group()` 初始化重叠域（如 NUMA）中的调度组与容量结构的关联
