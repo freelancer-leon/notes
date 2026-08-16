@@ -1,7 +1,7 @@
 # 内存管理
 
 ![http://ilinuxkernel.com/wp-content/uploads/2011/09/091011_1614_Linux1.png](pic/mm_segm_paging.png)
-![https://www.zhihu.com/question/274054284/answer/3203970743](https://picx.zhimg.com/80/v2-23f68bb6a217c98bde3120aa39cf29b5_1440w.webp?source=2c26e567)
+![Linux Memory Models](pic/flat_vs_sparse.webp)
 
 # 页（Pages）
 

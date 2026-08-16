@@ -256,6 +256,24 @@ static void nohz_csd_func(void *info)
   * 在这个窗口内，目标 CPU 可能已经被其他任务唤醒（`ttwu_pending` 或 `nr_running` 增加）
   * 如果目标 CPU 不再空闲，则绝不能在当前上下文中触发 `SCHED_SOFTIRQ`，否则会在一个正在繁忙执行任务的 CPU 上强行插入负载均衡软中断，既浪费算力，也破坏调度公平
 * 内存屏障隐含：`atomic_fetch_andnot` 和 `atomic_fetch_or` 本身包含完整的内存屏障（full barrier），确保了 `nohz_flags` 的修改与 `rq` 其他状态的可见性顺序，是多核并发下的安全保障
+
+#### `check_cpu_capacity()` 检查 CPU 算力是否“受损”
+* `check_cpu_capacity()` 比较的是 “当前剩余可用算力” 与 “理论最大原生算力” 的比值
+  * `arch_scale_cpu_capacity(cpu)`：该 CPU 的原生最大算力（基于最高频率和微架构，通常归一化为 `1024`）
+  * `rq->cpu_capacity`：该 CPU 当前实时可用算力。它会因为以下 “侧活动（Side Activity）” 而动态衰减：
+    * 运行了实时任务（RT/DL 类）抢占了大片时间片
+    * 处理硬件中断（IRQ）或软中断
+    * 遭遇温度限制（Thermal Throttling）导致降频
+    * 被 cgroup 的 `cpu.max` 限制
+  * `sd->imbalance_pct`：容忍阈值（通常为 `117`，即 `117%`）。用于防止算力因微小波动而频繁触发误判
+* 数学逻辑与判断条件（换算成百分比）：
+* 移项后，该条件等价于：
+   ```c
+  rq->cpu_capacity / arch_scale_cpu_capacity < 100 / sd->imbalance_pct
+   ```
+* 当 `imbalance_pct = 117` 时，`100 / 117 ≈ 85.4%`
+* 结论：如果当前可用算力 低于原生最大算力的 85%，函数返回 true，认为该 CPU 的算力“明显受损”
+
 ```cpp
 /*      
  * Check whether the capacity of the rq has been noticeably reduced by side
@@ -268,11 +286,217 @@ check_cpu_capacity(struct rq *rq, struct sched_domain *sd)
         return ((rq->cpu_capacity * sd->imbalance_pct) <
                                 (arch_scale_cpu_capacity(cpu_of(rq)) * 100));
 }
+```
+#### 设计意图
+* 在负载均衡中，如果某个 CPU 自身算力受损（比如被 RT 任务吃掉 `20%` 算力），调度器会放弃将新任务或重任务迁移给它，否则该任务会被“饿死”
+* 同时，如果算力受损的 CPU 上正跑着任务，它也会主动将这些任务推给其他算力健全的 CPU
 
+#### `check_cpu_capacity()` 检查是否存在“不匹配”的任务
+* 什么是 **“Misfit Task”（不匹配任务）**？
+  * 在异构（大小核）架构中，小核（LITTLE / E-core）算力有限，大核（big / P-core）算力充足
+  * 当一个任务的 PELT 平均利用率（`util_avg`）超过了当前 CPU 的最大算力（`cpu_capacity`）时，该任务就被标记为“**Misfit**”
+  * 形象比喻：让小核（只能扛 400 算力）去运行一个需要 600 算力的重负载游戏，就是“小牛拉大车”，属于“不匹配”
+* 谁来设置 `rq->misfit_task_load`？
+  * 在 CFS 调度类的 `update_misfit_status()` 函数中，每当任务入队或进行 PELT 更新时，会检查当前 CPU 上运行的任务的 `util_avg`
+  * 如果它大于该 CPU 的 `cpu_capacity`，`rq->misfit_task_load` 就被赋值为该任务的负载值，否则为 `0`
+#### 设计意图：
+* 一旦某个 CPU 上存在“Misfit Task”，调度器必须在负载均衡时采取紧急行动（Active Balance），将该任务迁移到算力更高的大核上去，以确保任务的性能（避免严重掉帧或延迟）
+* 这是智能手机和现代 PC 混合架构保证流畅度的核心机制
+```cpp
 /* Check if the rq has a misfit task */
 static inline bool check_misfit_status(struct rq *rq)
 {
         return rq->misfit_task_load;
+}
+```
+#### 前置工具函数：如何衡量“算力损耗”与“是否合适”
+* `hw_load_avg()` 读取硬件（如 Intel HWP 或 ARM DSU）反馈的“平均硬件负载”。如果硬件认为该 CPU 长期处于高负载，会主动限制最大频率
+  * kernel/sched/pelt.h
+```cpp
+static inline u64 hw_load_avg(struct rq *rq)
+{
+    return READ_ONCE(rq->avg_hw.load_avg);
+}
+```
+* 读取因 DVFS（动态电压频率调整）或温度限制（Thermal）导致的性能压力值
+  * include/linux/cpufreq.h
+```cpp
+DECLARE_PER_CPU(unsigned long, cpufreq_pressure);
+static inline unsigned long cpufreq_get_pressure(int cpu) 
+{
+    return READ_ONCE(per_cpu(cpufreq_pressure, cpu));
+}
+```
+* 实际可用算力 = 原生最大算力 - 两者中的较大者
+  * 这意味着只要硬件降频或过热，`get_actual_cpu_capacity()` 的值会明显变小
+  * kernel/sched/fair.c
+```cpp
+static inline unsigned long get_actual_cpu_capacity(int cpu)
+{
+    unsigned long capacity = arch_scale_cpu_capacity(cpu);
+
+    capacity -= max(hw_load_avg(cpu_rq(cpu)), cpufreq_get_pressure(cpu));
+
+    return capacity;
+}
+```
+* `fits_capacity()` 留有余地的“合身”判断
+  * 移项得：`cap < max * 0.8`
+  * 即：只有当当前利用率（`cap`）低于 CPU 最大算力（`max`）的 `80%` 时，才认为这个任务“合身”
+  * 这留出了 `20%` 的缓冲余量，避免任务刚一放上去就因为微小的算力波动而触发迁移
+```cpp
+/*
+ * The margin used when comparing utilization with CPU capacity.
+ *
+ * (default: ~20%)
+ */
+#define fits_capacity(cap, max) ((cap) * 1280 < (max) * 1024)
+```
+
+```cpp
+static inline int util_fits_cpu(unsigned long util, 
+                unsigned long uclamp_min,
+                unsigned long uclamp_max,
+                int cpu)
+{
+    unsigned long capacity = capacity_of(cpu);
+    unsigned long capacity_orig;
+    bool fits, uclamp_max_fits;
+
+    /*    
+     * Check if the real util fits without any uclamp boost/cap applied.
+     */
+    fits = fits_capacity(util, capacity);
+
+    if (!uclamp_is_used())
+        return fits; 
+
+    /*    
+     * We must use arch_scale_cpu_capacity() for comparing against uclamp_min and
+     * uclamp_max. We only care about capacity pressure (by using
+     * capacity_of()) for comparing against the real util.
+     *
+     * If a task is boosted to 1024 for example, we don't want a tiny
+     * pressure to skew the check whether it fits a CPU or not.
+     *
+     * Similarly if a task is capped to arch_scale_cpu_capacity(little_cpu), it
+     * should fit a little cpu even if there's some pressure.
+     *
+     * Only exception is for HW or cpufreq pressure since it has a direct impact
+     * on available OPP of the system.
+     *
+     * We honour it for uclamp_min only as a drop in performance level
+     * could result in not getting the requested minimum performance level.
+     *
+     * For uclamp_max, we can tolerate a drop in performance level as the
+     * goal is to cap the task. So it's okay if it's getting less.
+     */
+    capacity_orig = arch_scale_cpu_capacity(cpu);
+
+    /*
+     * We want to force a task to fit a cpu as implied by uclamp_max.
+     * But we do have some corner cases to cater for..
+     *
+     *
+     *                                 C=z
+     *   |                             ___
+     *   |                  C=y       |   |
+     *   |_ _ _ _ _ _ _ _ _ ___ _ _ _ | _ | _ _ _ _ _  uclamp_max
+     *   |      C=x        |   |      |   |
+     *   |      ___        |   |      |   |
+     *   |     |   |       |   |      |   |    (util somewhere in this region)
+     *   |     |   |       |   |      |   |
+     *   |     |   |       |   |      |   |
+     *   +----------------------------------------
+     *         CPU0        CPU1       CPU2
+     *
+     *   In the above example if a task is capped to a specific performance
+     *   point, y, then when:
+     *
+     *   * util = 80% of x then it does not fit on CPU0 and should migrate
+     *     to CPU1
+     *   * util = 80% of y then it is forced to fit on CPU1 to honour
+     *     uclamp_max request.
+     *
+     *   which is what we're enforcing here. A task always fits if
+     *   uclamp_max <= capacity_orig. But when uclamp_max > capacity_orig,
+     *   the normal upmigration rules should withhold still.
+     *
+     *   Only exception is when we are on max capacity, then we need to be
+     *   careful not to block overutilized state. This is so because:
+     *
+     *     1. There's no concept of capping at max_capacity! We can't go
+     *        beyond this performance level anyway.
+     *     2. The system is being saturated when we're operating near
+     *        max capacity, it doesn't make sense to block overutilized.
+     */
+    uclamp_max_fits = (capacity_orig == SCHED_CAPACITY_SCALE) && (uclamp_max == SCHED_CAPACITY_SCALE);
+    uclamp_max_fits = !uclamp_max_fits && (uclamp_max <= capacity_orig);
+    fits = fits || uclamp_max_fits;
+
+    /*
+     *
+     *                                 C=z
+     *   |                             ___       (region a, capped, util >= uclamp_max)
+     *   |                  C=y       |   |
+     *   |_ _ _ _ _ _ _ _ _ ___ _ _ _ | _ | _ _ _ _ _ uclamp_max
+     *   |      C=x        |   |      |   |
+     *   |      ___        |   |      |   |      (region b, uclamp_min <= util <= uclamp_max)
+     *   |_ _ _|_ _|_ _ _ _| _ | _ _ _| _ | _ _ _ _ _ uclamp_min
+     *   |     |   |       |   |      |   |
+     *   |     |   |       |   |      |   |      (region c, boosted, util < uclamp_min)
+     *   +----------------------------------------
+     *         CPU0        CPU1       CPU2
+     *
+     * a) If util > uclamp_max, then we're capped, we don't care about
+     *    actual fitness value here. We only care if uclamp_max fits
+     *    capacity without taking margin/pressure into account.
+     *    See comment above.
+     *
+     * b) If uclamp_min <= util <= uclamp_max, then the normal
+     *    fits_capacity() rules apply. Except we need to ensure that we
+     *    enforce we remain within uclamp_max, see comment above.
+     *
+     * c) If util < uclamp_min, then we are boosted. Same as (b) but we
+     *    need to take into account the boosted value fits the CPU without
+     *    taking margin/pressure into account.
+     *
+     * Cases (a) and (b) are handled in the 'fits' variable already. We
+     * just need to consider an extra check for case (c) after ensuring we
+     * handle the case uclamp_min > uclamp_max.
+     */
+    uclamp_min = min(uclamp_min, uclamp_max);
+    if (fits && (util < uclamp_min) &&
+        (uclamp_min > get_actual_cpu_capacity(cpu)))
+        return -1;
+
+    return fits;
+}
+...
+static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
+{
+    int cpu = cpu_of(rq);
+
+    if (!sched_asym_cpucap_active())
+        return;
+
+    /*    
+     * Affinity allows us to go somewhere higher?  Or are we on biggest
+     * available CPU already? Or do we fit into this CPU ?
+     */
+    if (!p || (p->nr_cpus_allowed == 1) || 
+        (arch_scale_cpu_capacity(cpu) == p->max_allowed_capacity) ||
+        task_fits_cpu(p, cpu)) {
+
+        rq->misfit_task_load = 0;
+        return;
+    }
+
+    /*    
+     * Make sure that misfit_task_load will not be null even if
+     * task_h_load() returns 0.
+     */
+    rq->misfit_task_load = max_t(unsigned long, task_h_load(p), 1);
 }
 ```
 ```c
