@@ -272,7 +272,7 @@ static void nohz_csd_func(void *info)
   rq->cpu_capacity / arch_scale_cpu_capacity < 100 / sd->imbalance_pct
    ```
 * 当 `imbalance_pct = 117` 时，`100 / 117 ≈ 85.4%`
-* 结论：如果当前可用算力 低于原生最大算力的 85%，函数返回 true，认为该 CPU 的算力“明显受损”
+* **结论**：如果 *当前可用算力* 低于 *原生最大算力* 的 `85%`，函数返回 `true`，认为该 CPU 的算力“明显受损”
 
 ```cpp
 /*      
@@ -287,7 +287,7 @@ check_cpu_capacity(struct rq *rq, struct sched_domain *sd)
                                 (arch_scale_cpu_capacity(cpu_of(rq)) * 100));
 }
 ```
-#### 设计意图
+##### 设计意图
 * 在负载均衡中，如果某个 CPU 自身算力受损（比如被 RT 任务吃掉 `20%` 算力），调度器会放弃将新任务或重任务迁移给它，否则该任务会被“饿死”
 * 同时，如果算力受损的 CPU 上正跑着任务，它也会主动将这些任务推给其他算力健全的 CPU
 
@@ -299,7 +299,7 @@ check_cpu_capacity(struct rq *rq, struct sched_domain *sd)
 * 谁来设置 `rq->misfit_task_load`？
   * 在 CFS 调度类的 `update_misfit_status()` 函数中，每当任务入队或进行 PELT 更新时，会检查当前 CPU 上运行的任务的 `util_avg`
   * 如果它大于该 CPU 的 `cpu_capacity`，`rq->misfit_task_load` 就被赋值为该任务的负载值，否则为 `0`
-#### 设计意图：
+##### 设计意图：
 * 一旦某个 CPU 上存在“Misfit Task”，调度器必须在负载均衡时采取紧急行动（Active Balance），将该任务迁移到算力更高的大核上去，以确保任务的性能（避免严重掉帧或延迟）
 * 这是智能手机和现代 PC 混合架构保证流畅度的核心机制
 ```cpp
@@ -309,8 +309,10 @@ static inline bool check_misfit_status(struct rq *rq)
         return rq->misfit_task_load;
 }
 ```
+
+### 更新不匹配任务的状态
 #### 前置工具函数：如何衡量“算力损耗”与“是否合适”
-* `hw_load_avg()` 读取硬件（如 Intel HWP 或 ARM DSU）反馈的“平均硬件负载”。如果硬件认为该 CPU 长期处于高负载，会主动限制最大频率
+* **`hw_load_avg()`** 读取硬件（如 Intel HWP 或 ARM DSU）反馈的“平均硬件负载”。如果硬件认为该 CPU 长期处于高负载，会主动限制最大频率
   * kernel/sched/pelt.h
 ```cpp
 static inline u64 hw_load_avg(struct rq *rq)
@@ -318,7 +320,7 @@ static inline u64 hw_load_avg(struct rq *rq)
     return READ_ONCE(rq->avg_hw.load_avg);
 }
 ```
-* 读取因 DVFS（动态电压频率调整）或温度限制（Thermal）导致的性能压力值
+* **`cpufreq_get_pressure()`** 读取因 DVFS（动态电压频率调整）或温度限制（Thermal）导致的性能压力值
   * include/linux/cpufreq.h
 ```cpp
 DECLARE_PER_CPU(unsigned long, cpufreq_pressure);
@@ -327,7 +329,7 @@ static inline unsigned long cpufreq_get_pressure(int cpu)
     return READ_ONCE(per_cpu(cpufreq_pressure, cpu));
 }
 ```
-* 实际可用算力 = 原生最大算力 - 两者中的较大者
+* **实际可用算力** = 原生最大算力 - 两者中的较大者
   * 这意味着只要硬件降频或过热，`get_actual_cpu_capacity()` 的值会明显变小
   * kernel/sched/fair.c
 ```cpp
@@ -353,50 +355,87 @@ static inline unsigned long get_actual_cpu_capacity(int cpu)
 #define fits_capacity(cap, max) ((cap) * 1280 < (max) * 1024)
 ```
 
+#### `util_fits_cpu()` 判断给定利用率是否“适合”在指定CPU上运行
+* 该函数是调度器“任务-CPU适配性”检查的核心，主要服务于：
+   - 负载均衡中判断是否应将任务迁移到该 CPU（特别是异构大小核系统）
+   - 更新 `misfit` 状态时判断任务是否需要紧急搬移
+* 核心设计思想：
+1. 基础适配性：使用 `fits_capacity()` 宏检查原始 `util` 是否低于 CPU 容量（`capacity_of(cpu)`）的 `80%`，预留 `20%` 余量以避免频繁抖动
+2. UClamp 影响：
+   * `uclamp_max`：若任务被“上限”钳制（即不允许超过某个性能点），则只要该上限值不大于 **CPU 原生算力**（`arch_scale_cpu_capacity()`），就认为适配，忽略实际压力。因为设置了上限意味着任务不想跑太快，可以接受性能损失
+   * `uclamp_min`：若任务被“下限”提升（即必须达到最低性能），则必须保证 CPU 在当前硬件 / CPUFreq 压力下的 **实际可用算力**（`get_actual_cpu_capacity()`）不低于 `uclamp_min`，否则返回 `-1`（坚决拒绝）
+3. 区分“原生算力”与“当前实际可用算力”：
+   - `capacity_of()` 包含因 RT/IRQ 等“软压力”导致的衰减，用于判断普通 `util` 是否适配
+   - `arch_scale_cpu_capacity()` 是 **硬件原生最大算力**（不受软压力影响），用于 UClamp 比较，因为 UClamp 是用户对性能的硬性需求，不应因临时软压力而缩水
+   - `get_actual_cpu_capacity()` 进一步 **减去硬件/CPUFreq 压力**，用于 `uclamp_min` 的强制检查，因为这些压力直接导致 OPP下降，影响实际性能天花板
 ```cpp
+/*
+ * @util:       任务的 PELT 平均利用率（原始值，未经 UClamp 修正）
+ * @uclamp_min: 任务的 UClamp 最小性能要求（[0..SCHED_CAPACITY_SCALE]）
+ * @uclamp_max: 任务的 UClamp 最大性能限制（[0..SCHED_CAPACITY_SCALE]）
+ * @cpu:        目标 CPU 编号
+ *
+ * 返回值：
+ *   1  — 适合：任务可以在该 CPU 上良好运行
+ *   0  — 不适合：任务在该 CPU 上会超载或无法满足需求
+ *  -1  — 特别不适合：由于 UClamp_min 要求高于该 CPU 的实际可用算力（考虑硬件/CPUFreq压力），
+ *        即使任务当前利用率很低，也必须拒绝该 CPU
+ */
 static inline int util_fits_cpu(unsigned long util, 
                 unsigned long uclamp_min,
                 unsigned long uclamp_max,
                 int cpu)
 {
-    unsigned long capacity = capacity_of(cpu);
+    unsigned long capacity = capacity_of(cpu); //该 CPU 最大算力（受软压力影响）
     unsigned long capacity_orig;
     bool fits, uclamp_max_fits;
-
+    //检查真实的利用率是否合适没有应用任何 uclamp 限制或提升能力下的 CPU 最大算力
     /*    
      * Check if the real util fits without any uclamp boost/cap applied.
      */
     fits = fits_capacity(util, capacity);
-
+    //未启用 UClamp 时，直接使用基础判断
     if (!uclamp_is_used())
-        return fits; 
-
+        return fits;
+    //UClamp 启用后，需要区分“原生容量”和“当前可用容量”。对于 uclamp_min/max 的比较，使用
+    //原生容量（不受软压力影响），因为软压力（如RT任务）是临时的，不应影响用户设定的性能要求
     /*    
      * We must use arch_scale_cpu_capacity() for comparing against uclamp_min and
      * uclamp_max. We only care about capacity pressure (by using
      * capacity_of()) for comparing against the real util.
+     * 在与 uclamp_min、uclamp_max 做比对时，必须使用 arch_scale_cpu_capacity()。
+     * 只有在和真实利用率做比对时，才需要通过 capacity_of() 考量算力压力。
      *
      * If a task is boosted to 1024 for example, we don't want a tiny
      * pressure to skew the check whether it fits a CPU or not.
+     * 举例来说，如果一个任务被提升至 1024，我们不希望微小的算力压力干扰该任务是否适合运行在某颗 CPU 上的判断。
      *
      * Similarly if a task is capped to arch_scale_cpu_capacity(little_cpu), it
      * should fit a little cpu even if there's some pressure.
+     * 同理，如果任务被限制为 arch_scale_cpu_capacity (little_cpu)，即便存在一定算力压力，该任务也应当可以运行在小核 CPU 上。
      *
      * Only exception is for HW or cpufreq pressure since it has a direct impact
      * on available OPP of the system.
+     * 唯一例外是硬件压力或调频子系统压力，这类压力会直接影响系统可用的 OPP 性能档位。
      *
      * We honour it for uclamp_min only as a drop in performance level
      * could result in not getting the requested minimum performance level.
+     * 仅针对 uclamp_min 我们会考虑该压力因素：性能档位下降，可能导致无法达到任务要求的最低性能等级。
      *
      * For uclamp_max, we can tolerate a drop in performance level as the
      * goal is to cap the task. So it's okay if it's getting less.
+     * 对于 uclamp_max，可以容忍性能档位下降，因为该约束的目的是限制任务性能上限，实际得到的性能低于上限是可接受的。
      */
     capacity_orig = arch_scale_cpu_capacity(cpu);
-
+    //处理 uclamp_max（上限钳制）
+    //若任务被限制在某个性能点以下，则只要该上限不超过原生容量，就认为该 CPU 是“适配”的
+    //（忽略软压力，因为软压力只会让它跑得更慢，但任务本身就允许慢）
+    //特殊情况：若 CPU 已是最大容量（capacity_orig == SCHED_CAPACITY_SCALE）且 uclamp_max
+    //也是最大，则没有限制意义，不应强制适配，保持原有 fits 不变
     /*
      * We want to force a task to fit a cpu as implied by uclamp_max.
      * But we do have some corner cases to cater for..
-     *
+     * 我们希望依据 uclamp_max 的约束，强制让任务能够适配某颗 CPU。但仍需要处理一些边界场景。
      *
      *                                 C=z
      *   |                             ___
@@ -412,28 +451,38 @@ static inline int util_fits_cpu(unsigned long util,
      *
      *   In the above example if a task is capped to a specific performance
      *   point, y, then when:
-     *
+     *   以上示例中，若任务被限制在特定性能点 y，则：
      *   * util = 80% of x then it does not fit on CPU0 and should migrate
      *     to CPU1
+     *     当利用率为 x 的 80% 时，该任务无法在 CPU0 上运行，应当迁移至 CPU1
      *   * util = 80% of y then it is forced to fit on CPU1 to honour
      *     uclamp_max request.
-     *
+     *     当利用率为 y 的 80% 时，为满足 uclamp_max 的配置要求，强制该任务适配 CPU1
+     *  
      *   which is what we're enforcing here. A task always fits if
      *   uclamp_max <= capacity_orig. But when uclamp_max > capacity_orig,
      *   the normal upmigration rules should withhold still.
-     *
+     *   这正是此处要实现的逻辑。当 uclamp_max <= capacity_orig 时，任务始终可以适配 CPU。
+     *   但当 uclamp_max > capacity_orig 时，常规的向上迁移规则仍应当生效。
+     * 
      *   Only exception is when we are on max capacity, then we need to be
      *   careful not to block overutilized state. This is so because:
-     *
+     *   唯一的例外：当 CPU 处于最大算力状态时，需要注意不能阻塞超饱和状态。原因如下：
      *     1. There's no concept of capping at max_capacity! We can't go
      *        beyond this performance level anyway.
+     *        最大算力下不存在限流的概念！系统本身就无法超越该性能等级。
      *     2. The system is being saturated when we're operating near
      *        max capacity, it doesn't make sense to block overutilized.
+     *        系统运行在接近最大算力时已经处于饱和状态，阻塞超饱和状态没有实际意义。
      */
     uclamp_max_fits = (capacity_orig == SCHED_CAPACITY_SCALE) && (uclamp_max == SCHED_CAPACITY_SCALE);
     uclamp_max_fits = !uclamp_max_fits && (uclamp_max <= capacity_orig);
     fits = fits || uclamp_max_fits;
-
+    //处理 uclamp_min（最低性能保障）
+    //仅当任务被“boost”（即 util < uclamp_min）时需要额外检查
+    //此时，必须确保即使存在硬件/CPUFreq 压力，实际可用算力仍能达到 uclamp_min
+    //若不能，返回 -1 表示“坚决拒绝”，因为用户要求的最低性能无法保证
+    //注意：这里使用 get_actual_cpu_capacity()，它减去了硬件负载和 CPUFreq 压力
     /*
      *
      *                                 C=z
@@ -452,27 +501,53 @@ static inline int util_fits_cpu(unsigned long util,
      *    actual fitness value here. We only care if uclamp_max fits
      *    capacity without taking margin/pressure into account.
      *    See comment above.
+     *    若 util > uclamp_max，则任务处于限流状态，此处不关注实际适配度。
+     *    仅判断 uclamp_max 是否适配 CPU 算力，不考虑余量与算力压力。
      *
      * b) If uclamp_min <= util <= uclamp_max, then the normal
      *    fits_capacity() rules apply. Except we need to ensure that we
      *    enforce we remain within uclamp_max, see comment above.
+     *    若 uclamp_min ≤ util ≤ uclamp_max，则执行标准 fits_capacity() 判断逻辑。
+     *    但必须保证任务运行不超出 uclamp_max 限制，参见上文注释。
      *
      * c) If util < uclamp_min, then we are boosted. Same as (b) but we
      *    need to take into account the boosted value fits the CPU without
      *    taking margin/pressure into account.
+     *    若 util < uclamp_min，则任务处于提频增压状态。逻辑同 (b)，但需要基于增压后的
+     *    数值判断是否适配 CPU，不考虑余量与算力压力。
      *
      * Cases (a) and (b) are handled in the 'fits' variable already. We
      * just need to consider an extra check for case (c) after ensuring we
      * handle the case uclamp_min > uclamp_max.
+     * 场景 (a) 与 (b) 已由 fits 变量完成处理。只需在处理完 uclamp_min > uclamp_max 的
+     * 边界条件后，额外增加对场景 (c) 的判断。
      */
-    uclamp_min = min(uclamp_min, uclamp_max);
+    uclamp_min = min(uclamp_min, uclamp_max); //合法性修正：min 不能大于 max
     if (fits && (util < uclamp_min) &&
         (uclamp_min > get_actual_cpu_capacity(cpu)))
         return -1;
-
+    //返回最终适配结果
     return fits;
 }
-...
+```
+* 注意：当 `fits && util < uclamp_min && uclamp_min < get_actual_cpu_capacity` 成立时，可以返回 `true`（合适），理由是：
+  * CPU 不仅当下的空闲算力足够应付任务现状（`fits`），而且其物理硬件能力（扣除降频压力后）完全有能力兜住任务未来的最低性能需求（`uclamp_min`）
+  * 既然既能保底，又能舒适，当然是最佳选择
+  * 这个逻辑确保了 “提升（Boost）” 场景下的任务总能得到一块“不会因为未来负载突增而掉链子”的 CPU
+
+```cpp
+static inline int task_fits_cpu(struct task_struct *p, int cpu)
+{
+        unsigned long uclamp_min = uclamp_eff_value(p, UCLAMP_MIN);
+        unsigned long uclamp_max = uclamp_eff_value(p, UCLAMP_MAX);
+        unsigned long util = task_util_est(p);
+        /*
+         * Return true only if the cpu fully fits the task requirements, which
+         * include the utilization but also the performance hints.
+         */
+        return (util_fits_cpu(util, uclamp_min, uclamp_max, cpu) > 0);
+}
+
 static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
 {
     int cpu = cpu_of(rq);
