@@ -136,8 +136,8 @@ static inline int find_new_ilb(void)
         int this_cpu = smp_processor_id();
         const struct cpumask *hk_mask;
         int ilb_cpu;
-        //在开启了 CONFIG_NO_HZ_FULL 的系统中，某些 CPU 被隔离用于用户态低延迟任务
-        //（HK_TYPE_KERNEL_NOISE），它们不允许被用作 ILB，必须排除在 housekeeping 之外
+        //在开启了 CONFIG_NO_HZ_FULL 的系统中，某些 CPU 被隔离用于用户态低延迟任务，它们不允许被用作 ILB，
+        //必须排除在 housekeeping 之外
         hk_mask = housekeeping_cpumask(HK_TYPE_KERNEL_NOISE); //获取“内务处理（Housekeeping）” 掩码
         //遍历所有 tick 已停止的空闲 CPU 与允许做内核工作的 CPU（housekeeping）的交集
         for_each_cpu_and(ilb_cpu, nohz.idle_cpus_mask, hk_mask) {
@@ -154,6 +154,9 @@ static inline int find_new_ilb(void)
         return -1;
 }
 ```
+* “内务处理”（Housekeeping）CPU 是那些没有被隔离、可以执行各种常规内核工作的 CPU
+  * `HK_TYPE_KERNEL_NOISE` 是内务处理 CPU 的一种类型，它代表了没有被配置为 `nohz_full` 的 CPU 集合，可以安全地执行“内核噪声”类工作
+
 ### NOHZ 空闲负载均衡的跨核唤醒
 * `nohz_flags(cpu)` 是一个 per CPU 的原子位掩码（`atomic_t`），用于记录该 CPU 上待处理的 NOHZ 均衡请求类型（如普通均衡 `NOHZ_BALANCE_KICK`、统计更新 `NOHZ_STATS_KICK` 等）
   * 它充当了一个无锁工作队列，用于在多个繁忙 CPU 同时想唤醒同一个空闲 CPU 时进行仲裁
@@ -205,7 +208,7 @@ static void kick_ilb(unsigned int flags)
         if ((atomic_read(nohz_flags(ilb_cpu)) & flags) == flags)
                 return; 
         //对 rq::nohz_csd 的访问由 NOHZ_KICK_MASK 做串行保护；第一个置位标志的调用方持有该对象；
-        //由 nohz_csd_func () 完成清除操作
+        //由 nohz_csd_func() 完成清除操作
         /*
          * Access to rq::nohz_csd is serialized by NOHZ_KICK_MASK; he who sets
          * the first flag owns it; cleared by nohz_csd_func().
@@ -297,7 +300,7 @@ check_cpu_capacity(struct rq *rq, struct sched_domain *sd)
   * 当一个任务的 PELT 平均利用率（`util_avg`）超过了当前 CPU 的最大算力（`cpu_capacity`）时，该任务就被标记为“**Misfit**”
   * 形象比喻：让小核（只能扛 400 算力）去运行一个需要 600 算力的重负载游戏，就是“小牛拉大车”，属于“不匹配”
 * 谁来设置 `rq->misfit_task_load`？
-  * 在 CFS 调度类的 `update_misfit_status()` 函数中，每当任务入队或进行 PELT 更新时，会检查当前 CPU 上运行的任务的 `util_avg`
+  * 在 CFS 调度类的 `update_misfit_status()` 函数中，每当 **任务入队** 或 **进行 PELT 更新** 时，会检查当前 CPU 上运行的任务的 `util_avg`
   * 如果它大于该 CPU 的 `cpu_capacity`，`rq->misfit_task_load` 就被赋值为该任务的负载值，否则为 `0`
 ##### 设计意图：
 * 一旦某个 CPU 上存在“Misfit Task”，调度器必须在负载均衡时采取紧急行动（Active Balance），将该任务迁移到算力更高的大核上去，以确保任务的性能（避免严重掉帧或延迟）
@@ -398,7 +401,7 @@ static inline int util_fits_cpu(unsigned long util,
     if (!uclamp_is_used())
         return fits;
     //UClamp 启用后，需要区分“原生容量”和“当前可用容量”。对于 uclamp_min/max 的比较，使用
-    //原生容量（不受软压力影响），因为软压力（如RT任务）是临时的，不应影响用户设定的性能要求
+    //原生容量（不受软压力影响），因为软压力（如 RT 任务）是临时的，不应影响用户设定的性能要求
     /*    
      * We must use arch_scale_cpu_capacity() for comparing against uclamp_min and
      * uclamp_max. We only care about capacity pressure (by using
@@ -412,7 +415,7 @@ static inline int util_fits_cpu(unsigned long util,
      *
      * Similarly if a task is capped to arch_scale_cpu_capacity(little_cpu), it
      * should fit a little cpu even if there's some pressure.
-     * 同理，如果任务被限制为 arch_scale_cpu_capacity (little_cpu)，即便存在一定算力压力，该任务也应当可以运行在小核 CPU 上。
+     * 同理，如果任务被限制为 arch_scale_cpu_capacity(little_cpu)，即便存在一定算力压力，该任务也应当可以运行在小核 CPU 上。
      *
      * Only exception is for HW or cpufreq pressure since it has a direct impact
      * on available OPP of the system.
@@ -534,7 +537,11 @@ static inline int util_fits_cpu(unsigned long util,
   * CPU 不仅当下的空闲算力足够应付任务现状（`fits`），而且其物理硬件能力（扣除降频压力后）完全有能力兜住任务未来的最低性能需求（`uclamp_min`）
   * 既然既能保底，又能舒适，当然是最佳选择
   * 这个逻辑确保了 “提升（Boost）” 场景下的任务总能得到一块“不会因为未来负载突增而掉链子”的 CPU
-
+* 注意：如果前面是因为 `fits = false`，`uclamp_max_fits = true` 而使 `fits = fits || uclamp_max_fits = true`，`fits && util < uclamp_min && uclamp_min < get_actual_cpu_capacity` 成立，这是一种什么样的场景？
+  * 这是一种 “CPU 正被临时事务（软中断/RT任务）骚扰，但物理硬件本身完好无损，且任务被‘限流（Capped）’了” 的场景
+  * CPU 因为临时噪声（软中断）显得很忙，但物理硬件过硬（没降频），且任务被严格限速（`uclamp_max` 较低）。虽然表面挤了点，但实际塞得下，且能保证任务的最低要求（`uclamp_min`），因此是合适的
+  * 就是防止调度器在软压力（瞬时的 RT/IRQ）下过度反应，错误地将“被限流”的任务迁移走，从而节省功耗和迁移开销。只有当硬压力（降频）威胁到 `uclamp_min` 时，它才返回 `-1` 采取紧急行动
+#### `update_misfit_status()` 更新不匹配任务的状态
 ```cpp
 static inline int task_fits_cpu(struct task_struct *p, int cpu)
 {
@@ -551,10 +558,13 @@ static inline int task_fits_cpu(struct task_struct *p, int cpu)
 static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
 {
     int cpu = cpu_of(rq);
-
+    //系统不是异构架构（没有大小核区分），不需要考虑任务匹配的问题
     if (!sched_asym_cpucap_active())
         return;
-
+    //1. !p：没有正在运行的任务
+    //2. p->nr_cpus_allowed == 1：该任务被绑核了（CPU亲和性限制），只能在这一个 CPU 上跑，根本无法迁移，报了也没用
+    //3. arch_scale_cpu_capacity(cpu) == p->max_allowed_capacity：当前 CPU 已经是该任务允许的最高性能核（比如已经在大核上了），没必要再往上迁
+    //4. task_fits_cpu(p, cpu)：调用 util_fits_cpu() 判定，如果返回 true，说明任务在当前 CPU 上跑得很舒服（利用率低于 80%），不需要挪窝
     /*    
      * Affinity allows us to go somewhere higher?  Or are we on biggest
      * available CPU already? Or do we fit into this CPU ?
@@ -562,11 +572,11 @@ static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
     if (!p || (p->nr_cpus_allowed == 1) || 
         (arch_scale_cpu_capacity(cpu) == p->max_allowed_capacity) ||
         task_fits_cpu(p, cpu)) {
-
+        //认为当前没有“不匹配任务”
         rq->misfit_task_load = 0;
         return;
     }
-
+    //能走到这里说明这个任务确实“小马拉大车”了
     /*    
      * Make sure that misfit_task_load will not be null even if
      * task_h_load() returns 0.
@@ -574,7 +584,14 @@ static inline void update_misfit_status(struct task_struct *p, struct rq *rq)
     rq->misfit_task_load = max_t(unsigned long, task_h_load(p), 1);
 }
 ```
-```c
+* `task_h_load(p)`：计算该任务在层次化调度（cgroups）下的真实负载权重
+* `max_t(unsigned long, task_h_load(p), 1)` 防止 `task_h_load()` 返回 `0`（虽然极少发生，但在极端轻载或特定 cgroup 配置下可能为 `0`）
+  * 如果负载值为 `0`，`check_misfit_status()` 会认为没有 misfit（因为 `0` 被视为 `false`）
+  * 这里强制设为 `1`，是为了“占位”，确保即使负载值为 `0`，Misfit 标志也能被正确识别，从而触发迁移
+
+### NOHZ 空闲负载均衡的决策中心
+* `nohz_balancer_kick()`：当系统中存在空闲 CPU 时，用于触发空闲负载均衡器的现行决策点
+```cpp
 /*
  * Current decision point for kicking the idle load balancer in the presence
  * of idle CPUs in the system.
@@ -586,13 +603,16 @@ static void nohz_balancer_kick(struct rq *rq)
         struct sched_domain *sd;
         int nr_busy, i, cpu = rq->cpu;
         unsigned int flags = 0;
-
+        //如果当前 CPU 正在执行 idle_balance（即它本身就是被唤醒来干活的 ILB），
+        //则直接返回，避免自己踢自己造成死循环
         if (unlikely(rq->idle_balance))
                 return;
-
+        //将当前 CPU 从 nohz.idle_cpus_mask 中移除（因为它此刻正在运行 tick，不算严格意义上的空闲 CPU 了
         /*
          * We may be recently in ticked or tickless idle mode. At the first
          * busy tick after returning from idle, we will update the busy stats.
+         * 我们近期可能处于有 ticked 或 tickless 的空闲模式。从空闲状态退出后的第一个
+         * 忙 tick 时刻，会更新忙状态统计信息。
          */
         nohz_balance_exit_idle(rq);
 
@@ -603,15 +623,22 @@ static void nohz_balancer_kick(struct rq *rq)
         /*
          * Most of the time system is not 100% busy. i.e nohz.nr_cpus > 0
          * Skip the read if time is not due.
-         *
+         * 大多数情况下系统不会处于 100% 繁忙状态，也就是 nohz.nr_cpus > 0。
+         * 若尚未到达执行时机，则跳过本次读取操作
+         * 
          * If none are in tickless mode, there maybe a narrow window
          * (28 jiffies, HZ=1000) where flags maybe set and kick_ilb called.
          * But idle load balancing is not done as find_new_ilb fails.
          * That's very rare. So read nohz.nr_cpus only if time is due.
+         * 如果没有 CPU 处于 tickless 模式，会存在一个很短的时间窗口（28 个 jiffies，HZ=1000）：
+         * 该场景下标志位可能被置位，同时调用 kick_ilb。
+         * 但由于 find_new_ilb 执行失败，空闲负载均衡并不会实际执行。该情况发生概率极低。
+         * 因此仅当到达执行时机时，才读取 nohz.nr_cpus
          */
-        if (time_before(now, nohz.next_balance))
-                goto out;
-
+        if (time_before(now, nohz.next_balance)) //如果还没到下一次负载均衡的时间
+                goto out; //先不急着决策，只处理可能的统计更新
+        //如果当前系统中压根没有处于 NOHZ 空闲状态的 CPU（nohz.idle_cpus_mask 为空），
+        //那么没必要折腾 ILB，直接返回。因为没有空闲 CPU 可以用来帮忙干活。
         /*
          * None are in tickless mode and hence no need for NOHZ idle load
          * balancing
