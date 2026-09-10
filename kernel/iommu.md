@@ -1,5 +1,11 @@
 # IOMMU
 
+* IOMMU Extended Context Mode
+![IOMMU Extended Context Mode](pic/iommu_extended_context_mode.jpeg)
+
+* IOMMU Scalable Mode
+![IOMMU Scalable Mode](pic/iommu_scalable_mode.jpeg)
+
 ## Qemu
 * hw/vfio/common.c
 ```cpp
