@@ -1805,9 +1805,9 @@ static inline void migrate_se_pelt_lag(struct sched_entity *se)
 
 #### 估算公式的数学推导
 * 我们想要求解当前时刻的 PELT 时间（记为 `now`）。已知进入空闲那一刻（`idle` 时刻）的快照：
-  - `rq->clock_pelt_idle`**：进入空闲时的 PELT 时间
-  - `rq->clock_idle`**：进入空闲时的原始硬件时间
-  - **当前硬件时间**：`sched_clock_cpu()`
+  - **`rq->clock_pelt_idle`**：进入空闲时的 PELT 时间
+  - **`rq->clock_idle`**：进入空闲时的原始硬件时间
+  - **`sched_clock_cpu()`**：当前硬件时间
 * 由于 CPU 在空闲期间没有算力消耗，PELT 时钟与硬件时钟是 **1:1 同步推进**的（因为 `update_rq_clock_pelt` 中的 `is_idle` 路径会执行 `clock_pelt = clock_task`）
 * 因此，从进入空闲到现在，PELT 时间推进的量 **恰好等于** 硬件时间推进的量：
 
@@ -1825,13 +1825,13 @@ static inline void migrate_se_pelt_lag(struct sched_entity *se)
 #endif
 ```
 - **背景**：如果 CFS 运行队列被带宽控制限制（`throttled`），PELT 时钟会停止推进（冻结）
-- **补偿**：`cfs_rq->throttled_pelt_idle` 记录了进入空闲时被冻结的时间量。在估算 `now` 时，需要**减去**这部分冻结时间，因为我们只关心实际流逝的有效时间
+- **补偿**：`cfs_rq->throttled_pelt_idle` 记录了进入空闲时被冻结的时间量。在估算 `now` 时，需要 **减去** 这部分冻结时间，因为我们只关心实际流逝的有效时间
 
 #### 单调性与内存屏障保障
 - 内存屏障（`smp_rmb`）：
   - **写端**（`_update_idle_rq_clock_pelt`）：先写 `clock_idle`，`smp_wmb()`，再写 `clock_pelt_idle`
   - **读端**（这里）：先读 `clock_pelt_idle`，`smp_rmb()`，再读 `clock_idle`
-  - **为什么必须如此？** 如果读端读到的是**新的 `clock_pelt_idle`** 但配上了**旧的 `clock_idle`**，公式会高估 `now`（负载衰减过快）。反之则会低估。屏障保证读端要么读到旧/旧组合，要么新/新组合，绝无新旧混搭
+  - **为什么必须如此？** 如果读端读到的是 **新的 `clock_pelt_idle`** 但配上了 **旧的 `clock_idle`**，公式会高估 `now`（负载衰减过快）。反之则会低估。屏障保证读端要么读到旧/旧组合，要么新/新组合，绝无新旧混搭
 - 保底逻辑（`now < lut`）：
   - `lut` 是 `cfs_rq->avg.last_update_time`，即该运行队列上次更新负载时的 PELT 时间
   - 如果估算出的 `now` 比 `lut` 还小，说明出现了时钟倒退（可能因为刚解除 `throttled` 或快照误差），此时直接取 `lut` 作为 `now`，保证传入的时间绝不倒退
