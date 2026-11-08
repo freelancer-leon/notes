@@ -1,5 +1,8 @@
 # What is RCU, Fundamentally?
 
+Paul E. McKenney, IBM Linux Technology Center
+Jonathan Walpole, Portland State University Department of Computer Science
+
 ## 引言
 读-拷贝更新（RCU，Read-copy update）是 2002 年 10 月加入 Linux 内核的一种同步机制。RCU 通过允许读操作与更新操作并发执行，提升了系统的可扩展性。
 传统锁原语会对所有并发线程（无论读者还是更新者）强制互斥；读写锁虽然支持并发读，但一旦存在更新就不允许读。和它们不同，RCU 支持 **一个更新者与多个读者并发运行**。
@@ -815,6 +818,206 @@ srcu_read_unlock(&srcucb, idx);
 34 }
 ```
 
+# RCU part 3: the RCU API
+
+## 引言
+读-拷贝-更新（RCU）是一种同步机制，于 2002 年 10 月加入 Linux 内核。RCU 最常被视作读写锁的替代方案，但它还有很多其他用途。
+RCU 的一大特点是：RCU 读端与更新端之间不需要直接同步，这使得 RCU 读路径的开销极低；同时，即使读端和更新端并发执行，读端依然可以正常完成有效工作。
+
+由此引出一个问题：**RCU 究竟是什么？** 本文档将从 Linux 内核 RCU API 的角度来回答这个问题。
+
+1. [RCU 拥有一组“等待操作完成”的 API](#rcu-拥有一组等待完成wait-to-finish系列api)
+2. [RCU 提供发布-订阅以及多版本维护 API](#rcu-发布-订阅与版本维护-api)
+3. [那么，RCU 的本质到底是什么？](#那么rcu-的本质究竟是什么)
+
+上述章节之后是 [参考文献]()，以及 [快速自测题的答案]()。
+
+## RCU 拥有一组“等待完成（Wait-to-Finish）”系列API
+对于“RCU 是什么”这个问题，最直白的回答是：RCU 是 Linux 内核中使用的一套 API，本节的两张表格对其做了汇总（第一张表格展示 API 中等待 RCU 读端完成的部分，第二张表格展示发布/订阅相关的 API）。或者更准确地说，RCU 是由多张表格列出的一系列 API 构成的集合，表格中的每一列对应 RCU API 家族里的一个分支。
+
+如果你是 RCU 初学者，可以先只聚焦下表中的某一列。举例来说，如果你主要想了解 RCU 在 Linux 内核里的实际用法，可以从 **经典 RCU（RCU Classic）** 入手，它的使用场景最多。
+反之，如果你单纯想研究 RCU 本身的原理，**SRCU** 的 API 是最简单的。其余分支你可以后续再学习。
+
+如果你已经熟悉 RCU，下面这两张表格也可以当作一份实用参考手册。
+
+属性    | RCU Classic | RCU BH         | RCU Sched      | Realtime RCU | SRCU      | QRCU
+--------|-------------|---------------|-----------------|--------------|----------|--------------------
+目的     | 原本的       | 防止 DDoS 攻击 | 等待硬中断和 NMI | 实时响应      | 读者睡眠 |	读者睡眠与快速宽限期
+可用性   | 2.5.43   	 | 2.6.9          | 2.6.12          | Aug 2005 -rt | 2.6.19   |
+读侧原语 | <span style="background:#ddffdd;">rcu_read_lock()</br>rcu_read_unlock()</span> | rcu_read_lock_bh()</br>rcu_read_unlock_bh() | preempt_disable()</br>preempt_enable()(and friends) | rcu_read_lock()</br>rcu_read_unlock() | srcu_read_lock()</br>srcu_read_unlock() | qrcu_read_lock()</br>qrcu_read_unlock()
+更新侧原语（同步）|synchronize_rcu()</br>synchronize_net()| | synchronize_sched() | synchronize_rcu()</br>synchronize_net() | synchronize_srcu() |synchronize_qrcu()
+更新侧原语（异步/回调）| <span style="background:#ddffdd;">call_rcu()</span> | call_rcu_bh() | | call_rcu() | <span style="background:#ffdddd;">N/A</span> | <span style="background:#ffdddd;">N/A</span>
+更新侧原语（等待回调）| rcu_barrier() | | | rcu_barrier() | <span style="background:#ffdddd;">N/A</span> | <span style="background:#ffdddd;">N/A</span>
+读侧限制 | 非阻塞    | 不开启中断 | 非阻塞 | 除抢占和锁获取外非阻塞 | 无 synchronize_srcu() | 无 synchronize_qrcu()
+读侧开销 | 抢占关/开（非抢占则无）| BH 关闭/开启 | 抢占关/开（非抢占则无）| 简单指令，中断关/开 | 简单指令，抢占关/开 | 原子增加和减少共享变量
+异步更新侧开销（例如 `call_rcu()`）| 半微秒 | 半微秒 | | 半微秒 | <span style="background:#ffdddd;">N/A</span> | <span style="background:#ffdddd;">N/A</span>
+宽限期延迟 | 10 毫秒 | 10 毫秒 | 10 毫秒 | 10 毫秒 | 10 毫秒 | 无读者时 10 纳秒
+非 PREEMPT_RT 实现 | RCU Classic | RCU BH | RCU Classic | N/A | SRCU | N/A
+PREEMPT_RT 实现 | N/A | 实时 RCU | 强制在所有 CPU 上调度 | 实时 RCU | SRCU | N/A
+
+**快速自测题 1**：上表中部分单元格为什么标为绿色？
+
+“经典 RCU（RCU Classic）”一列对应最初的 RCU 实现。
+它的 RCU 读端临界区由 `rcu_read_lock()` 和 `rcu_read_unlock()` 划定，支持嵌套。
+对应的同步更新原语是 `synchronize_rcu()`，以及别名 `synchronize_net()`，作用是等待所有正在执行的 RCU 读端临界区执行完毕；这段等待时间就称为 **宽限期（grace period）**。
+异步更新原语 `call_rcu()` 会在后续一个宽限期结束后，以指定参数调用传入的函数。例如 `call_rcu(p,f);` 会在宽限期过后执行 RCU 回调 `f(p)`。
+[有些场景下，比如卸载使用了 `call_rcu()` 的内核模块](http://lwn.net/Articles/217484/)，需要等待所有未完成的 RCU 回调执行结束，`rcu_barrier()` 就是用来做这件事的。
+
+“RCU BH”这一列：`rcu_read_lock_bh()` / `rcu_read_unlock_bh()` 划定 RCU 读端临界区，`call_rcu_bh()` 在宽限期结束后触发回调。
+注意，RCU BH 没有同步接口 `synchronize_rcu_bh()`，不过有需要的话可以很容易新增该接口。
+
+**快速自测题 2**：混用不同 RCU 原语会发生什么？举个例子：用 `rcu_read_lock()` / `rcu_read_unlock()` 标记读临界区，但是用 `call_rcu_bh()` 提交 RCU 回调？
+
+“RCU Sched”这一列：任何关闭抢占的场景都等价于 RCU 读端临界区，`synchronize_sched()` 等待对应的 RCU 宽限期。
+这组 RCU API 是 2.6.12 内核引入的，它把旧的 `synchronize_kernel()` 拆分成现在的 `synchronize_rcu()`（给经典 RCU）和 `synchronize_sched()`（给 RCU Sched）。
+RCU Sched 没有异步接口 `call_rcu_sched()`，按需可以添加。
+
+**快速自测题 3**：混用经典 RCU 和 RCU Sched 会怎样？
+
+“实时 RCU（Realtime RCU）”的 API 和经典 RCU 完全一致；唯一区别是它的读端临界区允许被抢占，也可以在获取自旋锁时阻塞。
+实时 RCU 的设计在 LWN 文章[《The design of preemptible read-copy-update》](http://lwn.net/Articles/253651/) 中有描述。
+
+**快速自测题 4**：混用实时 RCU 和经典 RCU 会怎样？
+
+“SRCU”是专用 RCU 接口，允许 RCU 读端临界区内任意睡眠，LWN 文章《Sleepable RCU》有介绍。
+注意：**不能在 SRCU 读临界区里调用 `synchronize_srcu()`，否则会自死锁**。
+SRCU 和前面几种 RCU 实现的差别是：使用者要为每一组独立的 SRCU 场景分配一个 `srcu_struct`。这样设计可以保证一组 SRCU 的读临界区不会阻塞其他无关的 `synchronize_srcu()`。
+另外，该变体中，`srcu_read_lock()` 返回一个值，必须传给配对的 `srcu_read_unlock()`。
+
+“QRCU”的 API 结构和 SRCU 一致，但它针对 **无读者时极低延迟的宽限期** 做了优化，见 LWN 文章[《Using Promela and Spin to verify parallel algorithms》](http://lwn.net/Articles/243851/)。
+和 SRCU 一样，在临界区内调用 `synchronize_qrcu()` 会造成自死锁，应当避免。
+QRCU 至今还没有并入 Linux 主线内核，但值得一提——它是唯一能做到深亚微秒级（boast deep sub-microsecond）宽限期延迟的 RCU 实现。
+
+**快速自测题 5**：为什么 SRCU 和 QRCU 都没有异步版本的 `call_srcu()`、`call_qrcu()`？
+**快速自测题 6**：在什么条件下，可以在 SRCU 读临界区内部安全调用 `synchronize_srcu()`？
+
+Linux 内核如今拥有数量相当多的 RCU API 与实现。未来有希望缩减这个数量：证据是，一份内核编译配置下，最多只会启用三套底层实现、对外暴露四组 API（经典 RCU 和实时 RCU 共用同一套API）。但这需要仔细审查与分析，和众多锁 API 的精简工作一样。
+
+## RCU 发布-订阅与版本维护 API
+幸运的是，下表中的 RCU 发布订阅、版本维护原语适用于上面介绍的所有 RCU 变体。这种通用性在部分场景下可以复用更多代码，从而避免 API 数量过度膨胀。
+
+分类     | 原语                      | 可用性 | 开销
+--------|---------------------------|--------|-------------------------------
+链表遍历 | list_for_each_entry_rcu() | 2.5.59 | 简单指令（在 Alpha 上是内存屏障）
+链表更新 | list_add_rcu()            | 2.5.44 | 内存屏障
+.       | list_add_tail_rcu()       | 2.5.44 | 内存屏障
+.       | list_del_rcu()            | 2.5.44 | 简单指令
+.       | list_replace_rcu()        | 2.6.9  | 内存屏障
+.       | list_splice_init_rcu()    | 2.6.21 | 宽限期延迟
+Hlist 遍历 | hlist_for_each_entry_rcu() | 2.6.8  | 简单指令（在 Alpha 上是内存屏障）
+Hlist 更新 | hlist_add_after_rcu()      | 2.6.14 | 内存屏障
+.          | hlist_add_before_rcu()     | 2.6.14 | 内存屏障
+.          | hlist_add_head_rcu()       | 2.5.64 | 内存屏障
+.          | hlist_del_rcu()            | 2.5.64 | 简单指令
+.          | hlist_replace_rcu()        | 2.6.15 | 内存屏障
+指针遍历 | rcu_dereference()             | 2.6.9  | 简单指令（在 Alpha 上是内存屏障）
+指针更新 | rcu_assign_pointer()          | 2.6.10 | 内存屏障
+
+第一组接口用于操作 Linux 的 `struct list_head` 链表，也就是循环双向链表。
+`list_for_each_entry_rcu()` 原语以类型安全的方式遍历受 RCU 保护的链表，同时保证内存序：链表遍历与新节点插入并发执行时，保证访问顺序正确。
+在非 Alpha 平台上，该原语相比普通 `list_for_each_entry()` 几乎没有性能损耗。
+`list_add_rcu()`、`list_add_tail_rcu()`、`list_replace_rcu()` 对应普通版本的链表操作，但在弱序架构上会额外引入内存屏障开销。
+`list_del_rcu()` 同样对应普通删除接口，有意思的是它反而会略快一点：它只毒化 `prev` 指针，而普通 `list_del()` 需要同时毒化 `prev` 和 `next` 指针。
+最后，`list_splice_init_rcu()` 类似普通的链表拼接接口，但会引入一整个宽限期延迟。
+设置宽限期的目的：在把源链表从链表头彻底断开之前，等待 RCU 读者完成源链表的遍历；如果不这么做，读者可能永远无法结束遍历。
+
+**快速自测题 7**：为什么 `list_del_rcu()` 不同时毒化 `next` 和 `prev` 指针？
+
+第二组接口用于 Linux 的 `struct hlist_head`，即线性哈希链表。
+相比 `struct list_head`，`hlist_head` 的一个优势是链表头只需要单个指针，在大型哈希表中可以节省大量内存。
+表中 `hlist` 系列 RCU 原语和普通 hlist 接口的对应关系，和 list_head 系列 RCU 原语保持一致。
+
+最后一组接口直接操作指针，适合用来构建非链表类 RCU 保护数据结构，例如 RCU 保护的数组、树结构。
+`rcu_assign_pointer()` 原语保证：在弱序处理器上，指针赋值之前的所有初始化操作，都会排在指针赋值动作之前。
+与之对应，`rcu_dereference()` 原语保证：在 Alpha CPU 上，后续解引用该指针的代码，可以看到对应 `rcu_assign_pointer()` 之前的初始化效果；在非 Alpha CPU 上，`rcu_dereference()` 主要起到注释作用，标明此处指针访问受 RCU 保护。
+
+**快速自测题 8**：一般来说，所有交给 `rcu_dereference()` 读取的指针，都必须用 `rcu_assign_pointer()` 更新。这条规则有什么例外？
+**快速自测题 9**：这些遍历、更新原语可以搭配任意一类 RCU API 使用，这一点有没有弊端？
+
+## 那么，RCU 的本质究竟是什么？
+
+RCU 的核心，本质上就是一套 API，它支持插入操作的发布与订阅、等待所有 RCU 读者执行完成，以及维护多版本数据。
+
+尽管如此，我们可以在 RCU 之上构建更高层级的同步组件，包括配套文章里提到的读写锁、引用计数、存在性保证机制。
+而且我毫不怀疑，Linux 社区会持续发掘 RCU 新颖的用法，就像对待内核里其他各类同步原语一样。
+
+最后，要完整理解 RCU，还需要了解可以用这些 API 实现的全部能力。
+
+## 参考文献
+略
+
+## 快速自测题答案
+**自测题 1**：上表中部分单元格为什么标为绿色？
+
+答：这些绿色标注的 API（`rcu_read_lock()`、`rcu_read_unlock()`、`call_rcu()`）是 Paul E. McKenney 在 90 年代中期所知的仅有的 Linux RCU 接口。那段时期，他曾误以为自己已经掌握了 RCU 的全部知识。
+
+**自测题 2**：混用不同 RCU 原语会发生什么？举例：用`rcu_read_lock()`/`rcu_read_unlock()`标记 RCU 读端临界区，却调用`call_rcu_bh()`提交 RCU 回调？
+
+答：如果调用 `call_rcu_bh()` 时，没有由 `rcu_read_lock_bh()`/`rcu_read_unlock_bh()` 划定的 RCU 读临界区在运行，RCU 就有权立刻执行回调，这就有可能释放一个仍被 RCU 读临界区正在使用的数据结构！
+这不只是理论上的风险：一个长时间运行、由 `rcu_read_lock()`/`rcu_read_unlock()` 保护的读临界区，就会遇到这种错误。
+在 -rt 实时内核中该风险消失，此时经典 RCU 与 RCU BH 底层共用同一套实现。
+
+**自测题 3**：混用经典 RCU 与 RCU Sched 会怎样？
+
+答：在非抢占内核或者普通抢占内核上，这种混用能跑通只是巧合——在这类内核配置里，经典 RCU 和 RCU Sched 复用同一套底层实现。
+但在打上 -rt 补丁集的 PREEMPT_RT 内核中，这样混用会引发严重问题：实时 RCU 的读临界区允许被抢占，`synchronize_sched()` 有可能在读临界区执行到 `rcu_read_unlock()` 之前就提前返回，进而导致数据结构在读端还在使用时就被释放，大大增加内核崩溃的概率。
+==事实上，之所以把经典 RCU 和 RCU Sched 拆分成两套接口，初衷就是为了支持可抢占的 RCU 读临界区。==
+
+**自测题 4**：混用实时 RCU 和经典 RCU 会怎样？
+
+答：这需要你自行修改内核代码才能实现这种混用。当前内核中，启用经典 RCU 的内核无法使用实时 RCU，反之亦然。
+
+**自测题 5**：为什么 SRCU 和 QRCU 都没有异步版本 `call_srcu()`、`call_qrcu()` 接口？
+
+答：如果提供异步接口，单个任务可以注册数量无上限的 SRCU/QRCU 回调，造成内存无节制增长。
+而现有的同步接口 `synchronize_srcu()`、`synchronize_qrcu()` 有约束：一个任务必须等待上一次宽限期完成之后，才能发起下一次等待。
+
+**自测题 6**：在什么条件下，可以在 SRCU 读临界区内部安全调用 `synchronize_srcu()`？
+
+答：理论上，你可以在使用 **A 份`srcu_struct`** 的 SRCU 读临界区中，调用针对另一份独立 `srcu_struct`（B）的 `synchronize_srcu()`。
+但实际开发中，几乎不建议这么写。
+比如下面这段代码，依然会形成死锁：
+```c
+idx = srcu_read_lock(&ssa);
+synchronize_srcu(&ssb);
+srcu_read_unlock(&ssa, idx);
+
+/* …… */
+
+idx = srcu_read_lock(&ssb);
+synchronize_srcu(&ssa);
+srcu_read_unlock(&ssb, idx);
+```
+
+**自测题 7**：为什么 `list_del_rcu()` 不会同时毒化 `next`、`prev` 两个指针？
+
+答：如果毒化 `next` 指针，会干扰正在遍历链表的 RCU 读者，读者必须依靠 `next` 指针向后遍历。
+而 RCU 读者规范上不允许使用 `prev` 指针，所以 `prev` 指针可以安全毒化。
+
+**自测题 8**：一般来说，所有由 `rcu_dereference()` 读取的指针，都必须用 `rcu_assign_pointer()` 更新。这条规则有什么例外？
+
+答：一种典型场景：一个多节点链表结构在初始化阶段，其他 CPU 还无法访问它，此时可以先完成内部所有指针赋值，最后只调用一次 `rcu_assign_pointer()` 把全局指针指向这个完整建好的结构。
+初始化阶段内部的指针赋值不需要 `rcu_assign_pointer()`；但一旦这个结构对全局可见之后，后续任何指针修改都必须使用 `rcu_assign_pointer()`。
+不过，除非这段初始化代码是极高频的热点路径，否则即便理论上不需要，也建议统一使用`rcu_assign_pointer()`。
+一旦后续代码发生微小改动，很容易打破“私有初始化、无并发访问”这个前提假设。
+
+**自测题 9**：这些遍历、更新原语可以搭配任意一类 RCU API 使用，这一点有没有弊端？
+
+答：自动化代码检查工具（例如 sparse），甚至开发者自己，有时很难判断一段 RCU 遍历代码对应的是哪一类 RCU 读临界区。
+举个例子：
+```c
+rcu_read_lock();
+preempt_disable();
+p = rcu_dereference(global_pointer);
+
+/* …… */
+
+preempt_enable();
+rcu_read_unlock();
+```
+这里的 `rcu_dereference()` 是处在经典 RCU 临界区，还是 RCU Sched 临界区？你要怎么判断？
+
 # References
 - [LWN - What is RCU, Fundamentally?](https://lwn.net/Articles/262464/)
 - [LWN - What is RCU? Part 2: Usage](https://lwn.net/Articles/263130/)
+- [LWN - RCU part 3: the RCU API](https://lwn.net/Articles/264090/)
